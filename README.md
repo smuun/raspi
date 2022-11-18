@@ -12,3 +12,7 @@ No built-in target triple.  Resources:
 
 - [Rust users](https://users.rust-lang.org/t/how-to-compile-freestanding-binary-for-armv6/50980/7)
 - [OSDev](https://wiki.osdev.org/Raspberry_Pi_Bare_Bones_Rust).
+
+# ARM assembler for the raspberry pi 
+
+[Good intro](https://thinkingeek.com/2013/01/09/arm-assembler-raspberry-pi-chapter-1/).
