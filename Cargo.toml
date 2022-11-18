@@ -2,6 +2,7 @@
 name = "raspi"
 version = "0.1.0"
 edition = "2021"
+authors = "Silas Bailey <72632230+smuun@users.noreply.github.com>"
 
 [dependencies]
 

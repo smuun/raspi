@@ -1,3 +1,7 @@
+# Blog OS
+
+Loosely following https://os.phil-opp.com/, but for arm.
+
 # QEMU
 
 [QEMU](https://www.qemu.org/docs/master/system/arm/raspi.html).
@@ -15,4 +19,6 @@ No built-in target triple.  Resources:
 
 # ARM assembler for the raspberry pi 
 
-[Good intro](https://thinkingeek.com/2013/01/09/arm-assembler-raspberry-pi-chapter-1/).
+Resources: 
+- [Intro tutorial](https://thinkingeek.com/2013/01/09/arm-assembler-raspberry-pi-chapter-1/).
+- [Whirlwind tour](https://www.coranac.com/tonc/text/asm.htm).

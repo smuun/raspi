@@ -11,10 +11,14 @@ fn panic(_info: &PanicInfo) -> ! {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    setup();
+    loop {}
+}
+
+fn setup() {
     unsafe {
+        // 
         asm!("mov sp, #0x8000");
-        asm!("mov r5, #0xffffffff");
         
     }
-    loop {}
 }
