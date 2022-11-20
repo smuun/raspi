@@ -12,6 +12,7 @@
     "linker": "arm-none-eabi-gcc",
     "pre-link-args": {
         "gcc": [
+            "-Tlinker.ld",
             "-Wall",
             "-nostdlib",
             "-nostartfiles",
