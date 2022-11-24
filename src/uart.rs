@@ -1,4 +1,7 @@
 use crate::utils::*;
+use spin::Mutex;
+use lazy_static::lazy_static;
+use core::fmt;
 
 // Raspi1 has peripheral base address 0x20000000
 // (see refs peripheral refs for details)
@@ -48,15 +51,15 @@ pub fn uart_init() {
 }
 
 /// Output a &str.  The UART must be initialized and in tx mode but can be busy.
-pub fn write(s: &str) {
+pub fn uart_write(s: &str) {
     const OOPS: u8 = '?' as u8;
     spin_while(UART_FR, 1 << 5);
     for c in s.chars() {
         if c.is_ascii() {
             let tmp = c as u8;
-            writec(&tmp);
+            uart_writec(&tmp);
         } else {
-            writec(&OOPS);
+            uart_writec(&OOPS);
         }
     }
 }
@@ -103,8 +106,41 @@ pub fn getc() -> u8 {
 
 /// Print a character to the UART.  The UART must be initialized and in tx
 /// mode.  The UART must not have a full tx fifo.
-pub fn writec(c: &u8) {
+pub fn uart_writec(c: &u8) {
     unsafe {
         write_volatile(UART_DR, *c);
     }
+}
+
+
+pub struct Writer {}
+
+
+impl fmt::Write for Writer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        uart_write(s);
+        Ok(())
+    }
+}
+
+lazy_static! {
+    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {});
+}
+
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::uart::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    WRITER.lock().write_fmt(args).unwrap();
 }
