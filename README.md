@@ -15,6 +15,8 @@ Progress:
   and write characters). This is instead of VGA text mode, which doesn't exist on
   ARM (I think).
 - [ ] Working testing in Rust.
+  currently stuck on the following: there's a bug where it won't compile with
+  panic=abort, but I can't figure out how to define the normal panic stuff
 
 
 # QEMU
