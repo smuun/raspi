@@ -25,87 +25,81 @@ const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 .set CR_RXE,      (CR   + 0x09)
  */
 
+// spin while the busy bit at mask is set
 fn spinlock(ptr: *const u32, mask: u32) {
     unsafe{
-        while !((read_volatile(ptr) & mask) == mask)  {}
+        while (((read_volatile(ptr)) & mask) == mask)  {}
     }
 }
 fn uart_init() {
+    unsafe{
+        // disable the UART
+        // UARTEN is control reg bit 0
+        let mut scratch: u32 = read_volatile(UART_CR); 
+        scratch &= !(1 << 0);
+        write_volatile(UART_CR, scratch);
+        
+        // wait while busy
+        spinlock(UART_FR, 1 << 5);
+
+        // configure the LCRH
+        // disable the fifos (lcrh bit 4)
+        scratch = read_volatile(UART_LCRH); 
+        scratch &= !(1 << 4);
+        write_volatile(UART_LCRH, scratch);
+        
+        // configure word length
+        // must be done with fifos disabled
+        scratch = read_volatile(UART_LCRH);
+        // 5th bit should be 0b11 for 1 byte word
+        scratch |= (1 << 5);
+        scratch |= (1 << 6);
+        write_volatile(UART_LCRH, scratch);
+
+        // reenable the fifos 
+        scratch = read_volatile(UART_LCRH); 
+        scratch |= (1 << 4);
+        write_volatile(UART_LCRH, scratch);
+
+        // configure the CR
+        // disable RX and enable TX
+        scratch = read_volatile(UART_CR);
+        // rx off 
+        scratch &= !(1 << 9);
+        // tx on
+        scratch |= (1 << 8);
+        write_volatile(UART_CR, scratch);
+
+        // renable the UART
+        scratch = read_volatile(UART_CR); 
+        scratch |= (1 << 0);
+        write_volatile(UART_CR, scratch);
+    }
 }
 
 
 fn uart_write(s: &str) {
     const oops: u8 = '?' as u8;
     for c in s.chars() {
-        let out: u8 = c.is_ascii() ? c as u8 : oops;
-        uart_writec(&out);
+        if c.is_ascii() {
+            let tmp = c as u8;
+            uart_writec(&tmp);
+        } else {
+            uart_writec(&oops);
+        }
     }
 }
 
 fn uart_writec(c: &u8) {
-
     unsafe {
         write_volatile(UART_DR, *c);
     }
 }
 #[no_mangle]
 pub extern "C" fn kernel_main() {
-    /*
-    mov r0, #0b0
-    mov r1, #0b1
-
-    // i think this isnt working??  not sure
-
-    // UART CONFIG
-    ldr r2, =CR_UARTEN
-    str r0, [r2]  // disable the UART
-
-    // wait for end of transmission / reception
-    ldr r2, =FR_BUSY
-    1:
-        ldr r3, [r2]
-        cmp r3, r1
-        beq 1b
-
-    // configure the LCRH
-    ldr r2, =LCRH_FEN
-    str r0, [r2] // flush the tx FIFO
-
-    mov r4, #0b11
-    ldr r2, =LCRH_WLEN
-    str r4, [r2] // set the two bits at WLEN and WLEN + 1 (sets word length to 1 byte)
-
-    ldr r2, =LCRH_FEN
-    str r1, [r2] // reenable the tx FIFO
-
-    // configure the CR
-    ldr r2, =CR_RXE
-    str r0, [r2] // unset RXE
-
-    ldr r2, =CR_TXE
-    str r1, [r2] // set TXE
-
-    ldr r2, =CR_UARTEN
-    str r1, [r2] // reenable the UART
-
-    // write AAAAAAAAAAAAAAAAAAAAAAAAAA
-    mov r5, #65
-    ldr r2, =DR
-    ldr r4, =FR_BUSY
-    2:
-        3:
-            ldr r3, [r4]
-            cmp r3, r1
-            beq 3b
-
-        str r5, [r2]
-    b 2b
-
-    bx lr"
-    */
     let a: u8 = 65;
     uart_init();
-    // FR_BUSY is at bit 5
-    let busy_mask: u32 = 1 << 5;
+    // wait until bit 5 (tx_full) is clear
+    spinlock(UART_FR, 1 << 5);
     uart_write("Hello, world!");
 }
