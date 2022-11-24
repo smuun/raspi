@@ -2,36 +2,41 @@
 #![no_main]
 #![feature(core_intrinsics, lang_items)]
 
-use core::intrinsics::volatile_load;
-use core::intrinsics::volatile_store;
+use core::ptr::write_volatile;
+use core::ptr::read_volatile;
 use core::arch::asm;
 
+// The "bootloader" code is top level in setup. Including mod setup runs it.
 mod setup;
 mod utils;
 
-// raspi1 has peripheral base address 0x20000000
-// see refs for details
-const UART_DR: u32 = 0x20201000;
-const UART_FR: u32 = 0x20201018;
+// Raspi1 has peripheral base address 0x20000000
+// (see refs peripheral refs for details)
+const UART: u32 = 0x20201000;
+const UART_DR: u32 = UART + 0x0;
+const UART_FR: u32 = UART + 0x18;
+const UART_CR: u32 = UART + 0x30;
+const UART_LCRH: u32 = UART + 0x2c;
+/*
+.set LCRH_FEN    (LCRH + 0x04)
+.set LCRH_WLEN   (LCRH + 0x05)       //2 bits -- 5 and 6
+.set FR_BUSY     (FR   + 0X03)
+.set CR_UARTEN,   (CR   + 0x00)
+.set CR_TXE,      (CR   + 0x08)
+.set CR_RXE,      (CR   + 0x09)
+ */ 
 
+fn uart_init() {
+}
+fn uart_writec(c: &u8) {
+    unsafe{
+        write_volatile(UART_DR as *mut u8, *c);
+    }
+}
 
 #[no_mangle]
 pub extern fn kernel_main() {
-    unsafe{
-    #[allow(named_asm_labels)]
-    asm!(
-    ".set UART,        0x20201000 // using physical addresses
-    .set DR,          (UART)
-    .set LCRH,        (UART + 0x2c)
-    .set LCRH_FEN,    (LCRH + 0x04)
-    .set LCRH_WLEN,   (LCRH + 0x05)       //2 bits -- 5 and 6
-    .set FR,          (UART + 0X18)
-    .set FR_BUSY,     (FR   + 0X03)
-    .set CR,          (UART + 0x30)
-    .set CR_UARTEN,   (CR   + 0x00)
-    .set CR_TXE,      (CR   + 0x08)
-    .set CR_RXE,      (CR   + 0x09)
-
+    /*
     mov r0, #0b0
     mov r1, #0b1
 
@@ -82,7 +87,10 @@ pub extern fn kernel_main() {
         str r5, [r2]
     b 2b
 
-    bx lr");
+    bx lr"
+    */
+    let a: u8 = 65;
+    loop {
+        uart_writec(&a);
     }
-    loop {}
 }
