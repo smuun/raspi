@@ -31,50 +31,58 @@ fn spinlock(ptr: *const u32, mask: u32) {
         while (((read_volatile(ptr)) & mask) == mask)  {}
     }
 }
-fn uart_init() {
-    unsafe{
-        // disable the UART
-        // UARTEN is control reg bit 0
-        let mut scratch: u32 = read_volatile(UART_CR); 
-        scratch &= !(1 << 0);
-        write_volatile(UART_CR, scratch);
-        
-        // wait while busy
-        spinlock(UART_FR, 1 << 5);
 
-        // configure the LCRH
-        // disable the fifos (lcrh bit 4)
-        scratch = read_volatile(UART_LCRH); 
-        scratch &= !(1 << 4);
-        write_volatile(UART_LCRH, scratch);
-        
-        // configure word length
-        // must be done with fifos disabled
-        scratch = read_volatile(UART_LCRH);
-        // 5th bit should be 0b11 for 1 byte word
-        scratch |= (1 << 5);
-        scratch |= (1 << 6);
-        write_volatile(UART_LCRH, scratch);
-
-        // reenable the fifos 
-        scratch = read_volatile(UART_LCRH); 
-        scratch |= (1 << 4);
-        write_volatile(UART_LCRH, scratch);
-
-        // configure the CR
-        // disable RX and enable TX
-        scratch = read_volatile(UART_CR);
-        // rx off 
-        scratch &= !(1 << 9);
-        // tx on
-        scratch |= (1 << 8);
-        write_volatile(UART_CR, scratch);
-
-        // renable the UART
-        scratch = read_volatile(UART_CR); 
-        scratch |= (1 << 0);
+fn write_bit(base: *mut u32, offset: u8, bit: bool) {
+    unsafe {
+        let mut scratch: u32 = read_volatile(base); 
+        if bit {
+            scratch |= (1 << offset);
+        } else {
+            scratch &= !(1 << offset);
+        }
         write_volatile(UART_CR, scratch);
     }
+}
+
+fn set_uart(state: bool) {
+    // disable the UART
+    // UARTEN is control reg bit 0
+    write_bit(UART_CR, 0, state);
+}
+
+fn set_fifos(state: bool) {
+    // FEN (lcrh bit 4)
+    write_bit(UART_LCRH, 4, state);
+}
+
+fn set_byte_wlen() {
+    write_bit(UART_LCRH, 5, true);
+    write_bit(UART_LCRH, 6, true);
+}
+
+fn set_rx(state: bool) {
+    // rx byte 9
+    write_bit(UART_CR, 9, state);
+}
+
+fn set_tx(state: bool) {
+    // rx byte 9
+    write_bit(UART_CR, 9, state);
+}
+
+fn uart_init() {
+        // must disable before configuring the LCRH
+        set_uart(false);
+        // wait for busy
+        spinlock(UART_FR, 1 << 5);
+        // configure the LCRH
+        set_fifos(false);
+        set_byte_wlen();
+        set_fifos(true);
+        // configure the CR
+        set_rx(false);
+        set_tx(true);
+        set_uart(true);
 }
 
 
