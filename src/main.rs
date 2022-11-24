@@ -32,9 +32,6 @@ Boot complete.  Executing in kernel_main.
     }
 }
 
-mod test_runner{
-    use crate::print;
-    use crate::println;
     #[cfg(test)]
     fn test_runner(tests: &[&dyn Fn()]) {
         println!("Running {} tests", tests.len());
@@ -42,4 +39,3 @@ mod test_runner{
             test();
         }
     }
-}
