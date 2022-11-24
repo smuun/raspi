@@ -1,12 +1,20 @@
 # Blog OS / WIP
 
-Loosely following https://os.phil-opp.com/, but for arm.
+Loosely following https://os.phil-opp.com/.  But this is on arm, and I am also
+writing (some of) my own code.
+
 Progress:
-- [X] get a freestanding executable running on QEMU
-- [ ] VGA text mode: doesn't really exist on the raspberry pi.  
-  instead: try and print hello world over UART.
-  I guess we need a bootloader: https://github.com/s-matyukevich/raspberry-pi-os/blob/master/docs/lesson01/rpi-os.md
-  there is already some sort of bootloader (bootcode.bin).
+- [X] Freestanding executable running on QEMU.  See cargo config and target json
+  for details (cross-compilation, custom linker.ld, etc).  Pieced together from
+  the internet and the arm reference manual.
+- [X] Bootloader.  The bootloader crate doesn't work on arm, so instead of that
+  I'm using a (slightly adapted) bootloader example from the osdev reference.
+  It basically just defines a stack, zeroes out bss, and hands off execution to
+  kernel_main.
+- [X] Basic input and output over the raspi1's UART (configure the UART and read
+  and write characters). This is instead of VGA text mode, which doesn't exist on
+  ARM (I think).
+- [ ] Working testing in Rust.
 
 
 # QEMU
