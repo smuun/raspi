@@ -11,7 +11,14 @@ use crate::uart::*;
 #[no_mangle]
 pub extern "C" fn kernel_main() {
     uart_init();
-    write("Hello, world!");
+    write(
+        "
+-----------------------------------------
+Boot complete.  Executing in kernel_main.
+-----------------------------------------
+\n\n
+",
+    );
     // this fails at 1095 characters? Interesting.
     loop {
         set_mode(UartMode::Rx);

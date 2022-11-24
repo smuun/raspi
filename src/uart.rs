@@ -8,18 +8,6 @@ const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
 const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
 const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 
-fn write_bit(base: *mut u32, offset: u8, bit: bool) {
-    unsafe {
-        let mut scratch: u32 = read_volatile(base);
-        if bit {
-            scratch |= 1 << offset;
-        } else {
-            scratch &= !(1 << offset);
-        }
-        write_volatile(UART_CR, scratch);
-    }
-}
-
 fn set_uarten(state: bool) {
     // disable the UART
     // UARTEN is control reg bit 0
@@ -37,15 +25,16 @@ fn set_byte_wlen() {
 }
 
 fn set_rx(state: bool) {
-    // rx byte 9
+    // rx bit 9
     write_bit(UART_CR, 9, state);
 }
 
 fn set_tx(state: bool) {
-    // rx byte 9
-    write_bit(UART_CR, 9, state);
+    // tx bit 8
+    write_bit(UART_CR, 8, state);
 }
 
+/// Initialize the UART.  Sets the UART to tx mode.
 pub fn uart_init() {
     // must disable before configuring the LCRH
     set_uarten(false);
@@ -58,6 +47,7 @@ pub fn uart_init() {
     set_mode(UartMode::Tx);
 }
 
+/// Output a &str.  The UART must be initialized and in tx mode but can be busy.
 pub fn write(s: &str) {
     const OOPS: u8 = '?' as u8;
     spin_while(UART_FR, 1 << 5);
@@ -75,6 +65,8 @@ pub enum UartMode {
     Rx,
     Tx,
 }
+
+/// Set / change the UART mode.  
 pub fn set_mode(m: UartMode) {
     // must disable before configuring the LCRH
     set_uarten(false);
@@ -95,6 +87,8 @@ pub fn set_mode(m: UartMode) {
     set_uarten(true);
 }
 
+/// Get a character from the UART.  The UART must be initialized and in rx
+/// mode.  The UART must not have a full rx fifo.
 pub fn getc() -> u8 {
     spin_while(UART_FR, 1 << 4);
     let mut c;
@@ -107,6 +101,8 @@ pub fn getc() -> u8 {
     c
 }
 
+/// Print a character to the UART.  The UART must be initialized and in tx
+/// mode.  The UART must not have a full tx fifo.
 pub fn writec(c: &u8) {
     unsafe {
         write_volatile(UART_DR, *c);
