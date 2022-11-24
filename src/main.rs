@@ -2,9 +2,8 @@
 #![no_main]
 #![feature(core_intrinsics, lang_items)]
 
-use core::ptr::write_volatile;
 use core::ptr::read_volatile;
-use core::arch::asm;
+use core::ptr::write_volatile;
 
 // The "bootloader" code is top level in setup. Including mod setup runs it.
 mod setup;
@@ -13,10 +12,10 @@ mod utils;
 // Raspi1 has peripheral base address 0x20000000
 // (see refs peripheral refs for details)
 const UART: u32 = 0x20201000;
-const UART_DR: u32 = UART + 0x0;
-const UART_FR: u32 = UART + 0x18;
-const UART_CR: u32 = UART + 0x30;
-const UART_LCRH: u32 = UART + 0x2c;
+const UART_DR: *mut u8 = (UART + 0x0) as *mut u8;
+const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
+const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
+const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 /*
 .set LCRH_FEN    (LCRH + 0x04)
 .set LCRH_WLEN   (LCRH + 0x05)       //2 bits -- 5 and 6
@@ -24,18 +23,33 @@ const UART_LCRH: u32 = UART + 0x2c;
 .set CR_UARTEN,   (CR   + 0x00)
 .set CR_TXE,      (CR   + 0x08)
 .set CR_RXE,      (CR   + 0x09)
- */ 
+ */
 
+fn spinlock(ptr: *const u32, mask: u32) {
+    unsafe{
+        while !((read_volatile(ptr) & mask) == mask)  {}
+    }
+}
 fn uart_init() {
 }
-fn uart_writec(c: &u8) {
-    unsafe{
-        write_volatile(UART_DR as *mut u8, *c);
+
+
+fn uart_write(s: &str) {
+    const oops: u8 = '?' as u8;
+    for c in s.chars() {
+        let out: u8 = c.is_ascii() ? c as u8 : oops;
+        uart_writec(&out);
     }
 }
 
+fn uart_writec(c: &u8) {
+
+    unsafe {
+        write_volatile(UART_DR, *c);
+    }
+}
 #[no_mangle]
-pub extern fn kernel_main() {
+pub extern "C" fn kernel_main() {
     /*
     mov r0, #0b0
     mov r1, #0b1
@@ -56,7 +70,7 @@ pub extern fn kernel_main() {
     // configure the LCRH
     ldr r2, =LCRH_FEN
     str r0, [r2] // flush the tx FIFO
-    
+
     mov r4, #0b11
     ldr r2, =LCRH_WLEN
     str r4, [r2] // set the two bits at WLEN and WLEN + 1 (sets word length to 1 byte)
@@ -90,7 +104,8 @@ pub extern fn kernel_main() {
     bx lr"
     */
     let a: u8 = 65;
-    loop {
-        uart_writec(&a);
-    }
+    uart_init();
+    // FR_BUSY is at bit 5
+    let busy_mask: u32 = 1 << 5;
+    uart_write("Hello, world!");
 }

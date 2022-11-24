@@ -1,7 +1,8 @@
 use core::arch::global_asm;
 // what would typically be in boot.S.
 // Copied from osdev reference
-global_asm!(r#"
+global_asm!(
+    r#"
 // AArch32 mode
  
 // To keep this in the first portion of the binary.
@@ -46,4 +47,5 @@ _start:
     // halt
 halt:
     b halt
-"#);
+"#
+);
