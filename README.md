@@ -14,7 +14,10 @@ Progress:
 - [X] Basic input and output over the raspi1's UART (configure the UART and read
   and write characters). This is instead of VGA text mode, which doesn't exist on
   ARM (I think).
-- [ ] Working testing in Rust.
+- [ ] Testing.  Basically working, still to-do:
+    - integrate with QEMU
+    - figure out the whole test_main thing
+    - set up integration tests (not 100% sure I want it, but probably yes)
 
 
 # QEMU

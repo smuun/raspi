@@ -1,6 +1,15 @@
 use core::panic::PanicInfo;
+use crate::println;
 pub use core::ptr::read_volatile;
 pub use core::ptr::write_volatile;
+
+#[cfg(test)]
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    println!("Running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+}
 
 #[panic_handler]
 pub fn panic(_info: &PanicInfo) -> ! {
