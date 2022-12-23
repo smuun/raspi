@@ -9,6 +9,7 @@
 // The "bootloader" code is top level in setup. Including mod setup runs it.
 mod setup;
 mod uart;
+
 #[macro_use]
 mod utils;
 use crate::uart::*;
@@ -39,6 +40,7 @@ Boot complete.  Executing in kernel_main.
     }
 }
 
+#[cfg(test)]
 mod tests{
     use super::*;
     #[test_case]
