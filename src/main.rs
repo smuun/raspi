@@ -12,7 +12,7 @@ mod uart;
 
 #[macro_use]
 mod utils;
-use crate::{uart::*, utils::kernel_halt};
+use crate::uart::*;
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -25,26 +25,30 @@ Boot complete.  Executing in kernel_main.
 ");
     #[cfg(test)]
     test_main();
+    fun_cli_app();
+    shutdown_tasks();
+    //bootloader halts upon return from kernel_main
+}
 
+fn shutdown_tasks() {
+    println!("Shutdown.");
+}
+
+fn fun_cli_app() {
     // this fails at 1095 characters? Interesting.
-    set_mode(UartMode::Tx);
+    println!("Enter a character to print 10x.");
+    let c = getc() as u8;
     for i in 0..10  {
-        // set_mode(UartMode::Rx);
-        // let c = getc();
-        let c = 65;
-        let num = 0x060 + i as u8;
-        if c == '\r' as u8 {
-            // Entered a CR, i.e. \r, ASCII 13
-            // Convert it to \n
-            println!("");
-        }
+        let num = 0x030 + i as u8;
         println!("{} number {}", c as char, num as char);
     }
+    println!("Done.  Entering scratchpad mode. Type q to shutdown.");
     loop {
-        set_mode(UartMode::Rx);
-        let c = getc();
-        set_mode(UartMode::Tx);
-        if c == '\r' as u8 {
+        let c = getc() as char;
+        if c == 'q' {
+            return
+        }
+        if c == '\r' {
             // Entered a CR, i.e. \r, ASCII 13
             // Convert it to \n
             println!("");

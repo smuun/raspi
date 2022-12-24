@@ -47,6 +47,7 @@ _start:
  
     // halt
 halt:
+    b _qemu_halt_normal
     b halt
 
 _qemu_halt_normal:

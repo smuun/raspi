@@ -37,7 +37,7 @@ fn set_tx(state: bool) {
     write_bit(UART_CR, 8, state);
 }
 
-/// Initialize the UART.  Sets the UART to tx mode.
+/// Initialize the UART.  
 pub fn uart_init() {
     // must disable before configuring the LCRH
     set_uarten(false);
@@ -47,11 +47,11 @@ pub fn uart_init() {
     set_fifos(false);
     set_byte_wlen();
     set_fifos(true);
-    set_mode(UartMode::Tx);
 }
 
 /// Output a &str.  The UART must be initialized and in tx mode but can be busy.
 pub fn uart_write(s: &str) {
+    set_mode(UartMode::Tx);
     const OOPS: u8 = '?' as u8;
     spin_while(UART_FR, 1 << 5);
     for c in s.chars() {
@@ -93,6 +93,7 @@ pub fn set_mode(m: UartMode) {
 /// Get a character from the UART.  The UART must be initialized and in rx
 /// mode.  The UART must not have a full rx fifo.
 pub fn getc() -> u8 {
+    set_mode(UartMode::Rx);
     spin_while(UART_FR, 1 << 4);
     let mut c;
     unsafe {
