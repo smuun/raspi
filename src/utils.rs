@@ -1,5 +1,6 @@
 use core::panic::PanicInfo;
 use crate::println;
+use core::arch::asm;
 pub use core::ptr::read_volatile;
 pub use core::ptr::write_volatile;
 
@@ -13,7 +14,12 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
 
 #[panic_handler]
 pub fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    if let Some(s) = _info.payload().downcast_ref::<&str>() {
+        println!("panicked: {s:?}");
+    } else {
+        println!("panicked at unknown");
+    }
+    kernel_halt();
 }
 // spin while the bit at mask is set
 pub fn spin_while(ptr: *const u32, mask: u32) {
@@ -37,5 +43,20 @@ pub fn write_bit(base: *mut u32, offset: u8, bit: bool) {
             scratch &= !(1 << offset);
         }
         write_volatile(base, scratch);
+    }
+}
+
+/// Trigger a system shutdown.
+pub fn kernel_halt() -> ! {
+    //TODO add hardware support
+    qemu_angel_exit();
+    loop{}
+}
+
+/// Use QEMU angel mode (-semihosting must be enabled)
+/// to exit.  Use for testing.
+fn qemu_angel_exit() {
+    unsafe{
+        asm!("b _qemu_halt");
     }
 }

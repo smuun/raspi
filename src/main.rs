@@ -6,13 +6,13 @@
 #![reexport_test_harness_main = "test_main"]
 
 
-// The "bootloader" code is top level in setup. Including mod setup runs it.
+// The "bootloader" code is top level in mod setup
 mod setup;
 mod uart;
 
 #[macro_use]
 mod utils;
-use crate::uart::*;
+use crate::{uart::*, utils::kernel_halt};
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -27,27 +27,28 @@ Boot complete.  Executing in kernel_main.
     test_main();
 
     // this fails at 1095 characters? Interesting.
-    loop {
-        set_mode(UartMode::Rx);
-        let c = getc();
-        set_mode(UartMode::Tx);
+    set_mode(UartMode::Tx);
+    for i in 0..10  {
+        // set_mode(UartMode::Rx);
+        // let c = getc();
+        let c = 65;
+        let num = 0x060 + i as u8;
         if c == '\r' as u8 {
             // Entered a CR, i.e. \r, ASCII 13
             // Convert it to \n
             println!("");
         }
-        print!("{}", c as char);
+        println!("{} number {}", c as char, num as char);
     }
+    kernel_halt();
 }
 
 #[cfg(test)]
 mod tests{
     use super::*;
     #[test_case]
-    fn prints_10_lines() {
-        for i in 0..10 {
-            println!("Line {i}");
-        }
+    fn is_ok() {
+        assert!(1 == 1);
         println!("[ok]");
     }
 }
