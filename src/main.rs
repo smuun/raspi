@@ -40,15 +40,25 @@ Boot complete.  Executing in kernel_main.
         }
         println!("{} number {}", c as char, num as char);
     }
-    kernel_halt();
+    loop {
+        set_mode(UartMode::Rx);
+        let c = getc();
+        set_mode(UartMode::Tx);
+        if c == '\r' as u8 {
+            // Entered a CR, i.e. \r, ASCII 13
+            // Convert it to \n
+            println!("");
+        } else {
+            print!("{}", c as char);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests{
     use super::*;
     #[test_case]
-    fn is_ok() {
+    fn trivial() {
         assert!(1 == 1);
-        println!("[ok]");
     }
 }

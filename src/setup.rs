@@ -9,7 +9,8 @@ global_asm!(
 .section ".text.boot"
 // Make _start global.
 .globl _start
-.globl _qemu_halt
+.globl _qemu_halt_normal
+.globl _qemu_halt_fail
  
         .org 0x8000
 // Entry point for the kernel.
@@ -48,16 +49,23 @@ _start:
 halt:
     b halt
 
-_qemu_halt:
+_qemu_halt_normal:
+    mov r1, #0x20000
+    add r1, r1, #0x00026
+    b qemu_halt
 
+_qemu_halt_fail:
+    mov r1, #0x20000
+    add r1, r1, #0x00027
+    b qemu_halt
+
+qemu_halt:
     //call angel interrupt 
     //at svc 123456 with
     //#0x18 in r0 and
-    //#0x20026 in r1
-    
+    //exit code in r1.
+    //normal exit is 0x20026
     mov r0, #0x18
-    mov r1, #0x20000
-    add r1, r1, #0x00026
     svc 0x00123456
 "#
 );
