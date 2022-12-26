@@ -2,6 +2,7 @@ use crate::*;
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use core::error::Error;
 
 // Raspi1 has peripheral base address 0x20000000
 // (see refs peripheral refs for details)
@@ -11,11 +12,55 @@ const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
 const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
 const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 
-fn set_uarten(state: bool) {
-    // disable the UART
-    // UARTEN is control reg bit 0
-    write_bit(UART_CR, 0, state);
+
+// TODO this singleton pattern from the embedded rust book 
+// type SerialPort = ();
+// struct Peripherals {
+//     serial: Option<SerialPort>,
+// }
+// impl Peripherals {
+//     fn take_serial(&mut self) -> SerialPort {
+//     
+//         let p = replace(&mut self.serial, None);
+//         p.unwrap()
+//     }
+// }
+// static mut PERIPHERALS: Peripherals = Peripherals {
+//     serial: Some(SerialPort),
+//
+//     so: there is only one static mut;
+//     when you take_serial you replace PERIPHS.serial with None
+//
+// };
+
+/// Write a config value to the UART setup registers.
+/// Set the config register at address 'base' to:
+/// its current state, except that every bit in 'set' will
+/// be set to its value in Value.
+/// set & values & current config must be a valid uart config
+/// panics if the write operation fails
+fn configure(base: *mut u32, values: u32, set: u32) {
+    unsafe {
+        let mut word: u32 = read_volatile(base);
+        // if a 'set' bit is high, change the current bit to
+        // the corresponding Value
+        word &= values & set;
+        write_volatile(base, word);
+        assert_eq!(read_volatile(base), word);
+    }
 }
+
+// CR
+const UARTEN: u32 = 1 << 0;
+const FIFOSEN: u32 = 1 << 4;
+const TX: u32 = 1 << 8;
+const RX: u32 = 1 << 9;
+
+// LCRH
+const BWLEN: u32 = (1 << 4) | (1 << 5);
+
+
+
 
 fn set_fifos(state: bool) {
     // FEN (lcrh bit 4)
@@ -39,11 +84,16 @@ fn set_tx(state: bool) {
 
 /// Initialize the UART.  
 pub fn uart_init() {
+    configure(UART_CR, UARTEN & 0);
+
     // must disable before configuring the LCRH
-    set_uarten(false);
     // wait for busy (tx and rx)
     spin_while(UART_FR, 1 << 5);
     spin_until(UART_FR, 1 << 4);
+
+    write_config_flags(UART_CR,
+                       
+                       );
     set_fifos(false);
     set_byte_wlen();
     set_fifos(true);
@@ -112,8 +162,7 @@ pub fn uart_writec(c: &u8) {
         write_volatile(UART_DR, *c);
     }
 }
-
-pub struct Writer {}
+pub struct Writer { }
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
