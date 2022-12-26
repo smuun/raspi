@@ -1,7 +1,8 @@
-use crate::utils::*;
-use spin::Mutex;
-use lazy_static::lazy_static;
+
+use crate::*;
 use core::fmt;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
 // Raspi1 has peripheral base address 0x20000000
 // (see refs peripheral refs for details)
@@ -113,9 +114,7 @@ pub fn uart_writec(c: &u8) {
     }
 }
 
-
 pub struct Writer {}
-
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -127,7 +126,6 @@ impl fmt::Write for Writer {
 lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {});
 }
-
 
 #[macro_export]
 macro_rules! print {

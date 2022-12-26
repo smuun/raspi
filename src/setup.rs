@@ -1,6 +1,5 @@
 use core::arch::global_asm;
-// what would typically be in boot.S.
-// Copied from osdev reference
+
 global_asm!(
     r#"
 // AArch32 mode
