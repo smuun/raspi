@@ -107,7 +107,7 @@ mod tests {
 
     #[test_case]
     fn volatile_write_should_equal_read() {
-        write_bit(0xc as *mut u32, 3, true);
+        write_bit(0xc as *mut u32, 4, true);
         assert_eq!(true, read_bit(0x12345c as *mut u32, 3));
     }
 

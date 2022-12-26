@@ -1,4 +1,3 @@
-
 use crate::*;
 use core::fmt;
 use lazy_static::lazy_static;
@@ -142,4 +141,21 @@ macro_rules! println {
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     WRITER.lock().write_fmt(args).unwrap();
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn uart_should_init() {
+        uart_init();
+    }
+
+    #[test_case]
+    fn uart_should_print() {
+        uart_write("Hello!");
+    }
+
 }

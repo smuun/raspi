@@ -13,5 +13,5 @@ pub extern "C" fn kernel_main() {
 
 #[test_case]
 fn test_println() {
-    println!("test string...");
+    println!("Boot test initialized");
 }
