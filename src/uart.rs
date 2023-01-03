@@ -3,57 +3,87 @@ use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-// Raspi1 has peripheral base address 0x20000000
-// (see refs peripheral refs for details)
+// raspi1 has peripheral base address 0x20000000
 const UART: u32 = 0x20201000;
 const UART_DR: *mut u8 = (UART + 0x0) as *mut u8;
 const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
 const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
 const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 
-fn set_uarten(state: bool) {
-    // disable the UART
-    // UARTEN is control reg bit 0
-    write_bit(UART_CR, 0, state);
+
+// TODO this singleton pattern from the embedded rust book 
+// type SerialPort = ();
+// struct Peripherals {
+//     serial: Option<SerialPort>,
+// }
+// impl Peripherals {
+//     fn take_serial(&mut self) -> SerialPort {
+//     
+//         let p = replace(&mut self.serial, None);
+//         p.unwrap()
+//     }
+// }
+// static mut PERIPHERALS: Peripherals = Peripherals {
+//     serial: Some(SerialPort),
+//
+//     so: there is only one static mut;
+//     when you take_serial you replace PERIPHS.serial with None
+//
+// };
+
+/// Write a config value to the UART setup registers.
+/// Set the config register at address 'register_base' to:
+/// its current state, except that every bit in 'set' will
+/// be set to its value in Value.
+/// set & values & current config must be a valid uart config
+/// panics if the write operation fails
+fn configure(register_base: *mut u32, values: u32, set: u32) {
+    unsafe {
+        let mut word: u32 = read_volatile(register_base);
+        // if a 'set' bit is high, change the current bit to
+        // the corresponding Value
+        word &= values & set;
+        write_volatile(register_base, word);
+        assert_eq!(read_volatile(register_base), word);
+    }
 }
 
-fn set_fifos(state: bool) {
-    // FEN (lcrh bit 4)
-    write_bit(UART_LCRH, 4, state);
-}
+// CR
+const UARTEN: u32 = 1 << 0;
+const FIFOSEN: u32 = 1 << 4;
+const TX: u32 = 1 << 8;
+const RX: u32 = 1 << 9;
 
-fn set_byte_wlen() {
-    write_bit(UART_LCRH, 5, true);
-    write_bit(UART_LCRH, 6, true);
-}
+// LCRH
+const BWLEN: u32 = (1 << 4) | (1 << 5);
 
-fn set_rx(state: bool) {
-    // rx bit 9
-    write_bit(UART_CR, 9, state);
-}
+// FR
+// tx FIFO full
+const TXFF: u32 = 1 << 5;
+// rx FIFO empty
+const RXFE: u32 = 1 << 4;
 
-fn set_tx(state: bool) {
-    // tx bit 8
-    write_bit(UART_CR, 8, state);
-}
+/// wait until tx FIFO is not full
+/// and rx FIFO is empty
 
 /// Initialize the UART.  
 pub fn uart_init() {
-    // must disable before configuring the LCRH
-    set_uarten(false);
-    // wait for busy (tx and rx)
-    spin_while(UART_FR, 1 << 5);
-    spin_until(UART_FR, 1 << 4);
-    set_fifos(false);
-    set_byte_wlen();
-    set_fifos(true);
+    // disable the UART
+    configure(UART_CR, 0x0, UARTEN);
+    // configure the LCRH:
+    spin_while(UART_FR, TXFF);
+    spin_until(UART_FR, RXFE);
+    // disable fifos, set word length, reenable fifos
+    configure(UART_LCRH, 0x0, FIFOSEN);
+    configure(UART_LCRH, u32::MAX, BWLEN); 
+    configure(UART_LCRH, u32::MAX, FIFOSEN);
 }
 
 /// Output a &str.  The UART must be initialized and in tx mode but can be busy.
 pub fn uart_write(s: &str) {
     set_mode(UartMode::Tx);
     const OOPS: u8 = '?' as u8;
-    spin_while(UART_FR, 1 << 5);
+    spin_while(UART_FR, TXFF);
     for c in s.chars() {
         if c.is_ascii() {
             let tmp = c as u8;
@@ -69,32 +99,30 @@ pub enum UartMode {
     Tx,
 }
 
-/// Set / change the UART mode.  
+/// Set / change the UART mode
+/// and wait until ready
 pub fn set_mode(m: UartMode) {
-    // must disable before configuring the LCRH
-    set_uarten(false);
-    // wait for busy (tx and rx)
-    spin_while(UART_FR, 1 << 5);
-    spin_until(UART_FR, 1 << 4);
-    // configure the CR
+    // disable before configuring the LCRH
+    configure(UART_CR, 0x0, UARTEN);
+    spin_while(UART_FR, TXFF);
+    spin_until(UART_FR, RXFE);
     match m {
         UartMode::Tx => {
-            set_rx(false);
-            set_tx(true);
+            configure(UART_CR, TX, TX | RX);
         }
         UartMode::Rx => {
-            set_rx(true);
-            set_tx(false);
+            configure(UART_CR, RX, TX | RX);
         }
     }
-    set_uarten(true);
+    configure(UART_CR, u32::MAX, UARTEN);
 }
 
 /// Get a character from the UART.  The UART must be initialized and in rx
 /// mode.  The UART must not have a full rx fifo.
 pub fn getc() -> u8 {
+    // wait until I enter a character ?? why this order
     set_mode(UartMode::Rx);
-    spin_while(UART_FR, 1 << 4);
+    spin_while(UART_FR, RXFE);
     let mut c;
     unsafe {
         c = read_volatile(UART_DR);
@@ -142,7 +170,6 @@ pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     WRITER.lock().write_fmt(args).unwrap();
 }
-
 
 #[cfg(test)]
 mod tests {
