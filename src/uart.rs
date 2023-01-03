@@ -10,15 +10,14 @@ const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
 const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
 const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
 
-
-// TODO this singleton pattern from the embedded rust book 
+// TODO this singleton pattern from the embedded rust book
 // type SerialPort = ();
 // struct Peripherals {
 //     serial: Option<SerialPort>,
 // }
 // impl Peripherals {
 //     fn take_serial(&mut self) -> SerialPort {
-//     
+//
 //         let p = replace(&mut self.serial, None);
 //         p.unwrap()
 //     }
@@ -63,9 +62,6 @@ const TXFF: u32 = 1 << 5;
 // rx FIFO empty
 const RXFE: u32 = 1 << 4;
 
-/// wait until tx FIFO is not full
-/// and rx FIFO is empty
-
 /// Initialize the UART.  
 pub fn uart_init() {
     // disable the UART
@@ -75,7 +71,7 @@ pub fn uart_init() {
     spin_until(UART_FR, RXFE);
     // disable fifos, set word length, reenable fifos
     configure(UART_LCRH, 0x0, FIFOSEN);
-    configure(UART_LCRH, u32::MAX, BWLEN); 
+    configure(UART_LCRH, u32::MAX, BWLEN);
     configure(UART_LCRH, u32::MAX, FIFOSEN);
 }
 
@@ -184,5 +180,4 @@ mod tests {
     fn uart_should_print() {
         uart_write("Hello!");
     }
-
 }

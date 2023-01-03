@@ -55,12 +55,11 @@ pub fn write_bit(base: *mut u32, offset: u8, bit: bool) {
 }
 
 pub fn read_bit(base: *mut u32, offset: u8) -> bool {
-    unsafe{
+    unsafe {
         let scratch: u32 = read_volatile(base);
         return (scratch & 1 << offset) == 0x0;
     }
 }
-
 
 //Testing, generally
 
@@ -111,5 +110,4 @@ mod tests {
         write_bit(0xc as *mut u32, 4, true);
         assert_eq!(true, read_bit(0x12345c as *mut u32, 3));
     }
-
 }

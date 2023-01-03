@@ -14,11 +14,13 @@ Progress:
 - [X] Basic input and output over the raspi1's UART (configure the UART and read
   and write characters). This is instead of VGA text mode, which doesn't exist on
   ARM (I think).
-- [ ] Testing.  Basically working, still to-do:
-    - integrate with QEMU
+- [X] Testing.  Basically working, still to-do:
+    - [X] integrate with QEMU
     - figure out the whole test_main thing
     - set up integration tests (not 100% sure I want it, but probably yes)
-
+- [ ] Refactor the uart code to use the singleton example
+- [ ] Refactor the getc code so it acts more like std?
+- [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock
 
 # QEMU
 
