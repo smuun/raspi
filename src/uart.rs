@@ -65,17 +65,14 @@ const RXFE: u32 = 1 << 4;
 
 /// wait until tx FIFO is not full
 /// and rx FIFO is empty
-fn spin_while_busy() {
-    spin_while(UART_FR, TXFF);
-    spin_until(UART_FR, RXFE);
-}
 
 /// Initialize the UART.  
 pub fn uart_init() {
     // disable the UART
     configure(UART_CR, 0x0, UARTEN);
     // configure the LCRH:
-    spin_while_busy();
+    spin_while(UART_FR, TXFF);
+    spin_until(UART_FR, RXFE);
     // disable fifos, set word length, reenable fifos
     configure(UART_LCRH, 0x0, FIFOSEN);
     configure(UART_LCRH, u32::MAX, BWLEN); 
@@ -84,7 +81,6 @@ pub fn uart_init() {
 
 /// Output a &str.  The UART must be initialized and in tx mode but can be busy.
 pub fn uart_write(s: &str) {
-    spin_until(UART_FR, RXFE);
     set_mode(UartMode::Tx);
     const OOPS: u8 = '?' as u8;
     spin_while(UART_FR, TXFF);
@@ -108,6 +104,8 @@ pub enum UartMode {
 pub fn set_mode(m: UartMode) {
     // disable before configuring the LCRH
     configure(UART_CR, 0x0, UARTEN);
+    spin_while(UART_FR, TXFF);
+    spin_until(UART_FR, RXFE);
     match m {
         UartMode::Tx => {
             configure(UART_CR, TX, TX | RX);
@@ -122,8 +120,9 @@ pub fn set_mode(m: UartMode) {
 /// Get a character from the UART.  The UART must be initialized and in rx
 /// mode.  The UART must not have a full rx fifo.
 pub fn getc() -> u8 {
-    spin_while(UART_FR, TXFF);
+    // wait until I enter a character ?? why this order
     set_mode(UartMode::Rx);
+    spin_while(UART_FR, RXFE);
     let mut c;
     unsafe {
         c = read_volatile(UART_DR);
