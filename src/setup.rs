@@ -10,6 +10,9 @@ global_asm!(
 .globl _start
 .globl _qemu_halt_normal
 .globl _qemu_halt_fail
+
+PendSV_Handler:
+    b qemu_halt
  
         .org 0x8000
 // Entry point for the kernel.

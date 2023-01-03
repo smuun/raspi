@@ -6,6 +6,16 @@
 
 use raspi::uart::{getc, uart_init};
 use raspi::{print, println};
+use core::arch::asm;
+use core::ptr::write_volatile;
+
+pub extern "C" fn trigger_pendsv() {
+  let icsr: *mut u32 = 0xe000ed04 as *mut u32;
+  // Pend a PendSV exception using by writing 1 to PENDSVSET at bit 28
+  unsafe{
+  write_volatile(icsr, 1 << 28);
+  }
+}
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -20,6 +30,7 @@ Boot complete.  Executing in kernel_main.
     #[cfg(test)]
     test_main();
 
+    trigger_pendsv();
     fun_cli_app();
     shutdown_tasks();
     //bootloader halts upon return from kernel_main

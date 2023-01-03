@@ -17,7 +17,7 @@
             "-nostdlib",
             "-nostartfiles",
             "-ffreestanding",
-            "-march=armv6"
+            "-march=armv6-m"
         ]
     },
     "panic-strategy": "abort",
