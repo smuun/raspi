@@ -1,5 +1,6 @@
 use core::arch::global_asm;
 
+//TODO write this in Rust!  Just for practice.
 global_asm!(
     r#"
 // AArch32 mode
@@ -11,7 +12,8 @@ global_asm!(
 .globl _qemu_halt_normal
 .globl _qemu_halt_fail
 
-    // .org 0x8000
+// OBVIOUSLY THE IVT NEEDS TO BE HERE. DUMBASS.
+    .org 0x8000
 // Entry point for the kernel.
 // r15 -> should begin execution at 0x8000.
 // r0 -> 0x00000000

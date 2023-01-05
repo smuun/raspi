@@ -4,12 +4,13 @@
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+mod exceptions;
+
 use core::arch::asm;
 use core::ptr::write_volatile;
 use raspi::uart::{getc, uart_init};
 use raspi::{print, println};
 
-mod exceptions;
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -21,6 +22,9 @@ Boot complete.  Executing in kernel_main.
 -----------------------------------------
 "
     );
+
+    unsafe { asm!("trap"); }
+
     #[cfg(test)]
     test_main();
 

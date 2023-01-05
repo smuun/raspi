@@ -11,9 +11,10 @@ SECTIONS
     {
         /* Start execution after reboot or reset */
         KEEP(*(.vector_table.reset_vector))
+        /* Define 14 exception vectors */
+        KEEP(*(.vector_table.exceptions)); 
 
     }
-    . = ALIGN(4096); /* align to page size */
     __text_start = .;
     .text :
     {
@@ -52,3 +53,12 @@ SECTIONS
     __bss_size = __bss_end - __bss_start;
     __end = .;
 }
+
+PROVIDE(NMI = DefaultExceptionHandler);
+/* PROVIDE(HardFault = DefaultExceptionHandler); */
+PROVIDE(MemManage = DefaultExceptionHandler);
+PROVIDE(BusFault = DefaultExceptionHandler);
+PROVIDE(UsageFault = DefaultExceptionHandler);
+PROVIDE(SVCall = DefaultExceptionHandler);
+PROVIDE(PendSV = DefaultExceptionHandler);
+PROVIDE(SysTick = DefaultExceptionHandler);
