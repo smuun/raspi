@@ -1,4 +1,7 @@
+use std::fmt::format;
 use std::{env, error::Error, fs::File, io::Write, path::PathBuf};
+use std::process::Command;
+extern crate cc;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // build directory for this crate
@@ -9,8 +12,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // put `linker.ld` in the build directory
     File::create(out_dir.join("linker.ld"))?.write_all(include_bytes!("src/linker.ld"))?;
+    // put `setup.s` in the build directory
+    File::create(out_dir.join("setup.S"))?.write_all(include_bytes!("src/setup.S"))?;
+
+    cc::Build::new()
+        .file("src/setup.S")
+        .flag("-Wall")
+        .flag("-nostdlib")
+        .flag("-nostartfiles")
+        .flag("-ffreestanding")
+        .flag("-march=armv6-m")
+        .compile("setup.o");
 
     println!("cargo:rerun-if-changed=src/linker.ld");
+    println!("cargo:rerun-if-changed=src/setup.S");
+
 
     Ok(())
 }

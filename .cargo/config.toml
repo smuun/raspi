@@ -4,5 +4,8 @@ build-std = ["core","compiler_builtins"]
 [build]
 target = "arm-none-eabihf.json"
 
+[env]
+CC_arm-none-eabihf = { value = "arm-none-eabi-gcc", force = true }
+
 [target.'cfg(target_os = "none")']
 runner = "qemu-system-arm -display none -serial stdio -semihosting -M raspi1ap -kernel"

@@ -1,8 +1,3 @@
-use core::arch::global_asm;
-
-//TODO write this in Rust!  Just for practice.
-global_asm!(
-    r#"
 // AArch32 mode
  
 .section ".text.boot"
@@ -11,7 +6,7 @@ global_asm!(
 .globl _qemu_halt_normal
 .globl _qemu_halt_fail
 
-// OBVIOUSLY THE IVT NEEDS TO BE HERE. DUMBASS.
+// OBVIOUSLY THE IVT NEEDS TO BE HERE
 // Entry point for the kernel.
 // r15 -> should begin execution at 0x8000.
 // r0 -> 0x00000000
@@ -34,7 +29,7 @@ _start:
  
 1:
     // store multiple at r4.
-    stmia r4!, {{r5-r8}}
+    stmia r4!, {r5-r8}
  
     // If we are still below bss_end, loop.
 2:
@@ -43,7 +38,8 @@ _start:
  
     // Call kernel_main
     ldr r3, =kernel_main
-    blx r3
+    @ blx r3
+    b kernel_main
  
     // halt
 halt:
@@ -68,5 +64,3 @@ qemu_halt:
     //normal exit is 0x20026
     mov r0, #0x18
     svc 0x00123456
-"#
-);
