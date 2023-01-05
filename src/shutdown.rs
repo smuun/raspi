@@ -15,12 +15,19 @@ pub enum QemuExitCode {
 /// Use QEMU angel mode (-semihosting must be enabled)
 /// to exit.  Use for testing.
 pub fn qemu_angel_exit(code: QemuExitCode) {
+    fool_rustc();
     match code {
         QemuExitCode::Ok => unsafe {
-            asm!("b _qemu_halt_normal");
         },
         QemuExitCode::Fail => unsafe {
-            asm!("b _qemu_halt_fail");
         },
+    }
+}
+
+// for some reason this is necessary not to optimize away the entire
+// setup.s????
+pub fn fool_rustc() {
+    unsafe{
+        asm!("ldr r0, =_start");
     }
 }

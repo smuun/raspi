@@ -1,5 +1,3 @@
-// AArch32 mode
- 
 .section ".text.boot"
 
 .globl _start
