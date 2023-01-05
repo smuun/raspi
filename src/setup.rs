@@ -13,7 +13,6 @@ global_asm!(
 .globl _qemu_halt_fail
 
 // OBVIOUSLY THE IVT NEEDS TO BE HERE. DUMBASS.
-    .org 0x8000
 // Entry point for the kernel.
 // r15 -> should begin execution at 0x8000.
 // r0 -> 0x00000000

@@ -13,11 +13,11 @@ pub unsafe extern "C" fn Reset() -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn DefaultExceptionHandler() {
-    loop {}
+pub unsafe extern "C" fn DefaultExceptionHandler() {
+    // loop {}
 }
 
-#[link_section = ".vector_table.reset_vector"]
+#[link_section = ".ivt.reset"]
 #[no_mangle]
 pub static RESET_VECTOR: unsafe extern "C" fn() -> ! = Reset;
 
@@ -34,23 +34,18 @@ extern "C" {
     fn SVCall();
     fn PendSV();
     fn SysTick();
+    fn HardFault();
 }
 
-#[no_mangle]
-unsafe extern "C" fn HardFault() {
-    loop{}
-}
 
-#[link_section = ".vector_table.exceptions"]
+#[link_section = ".ivt.exceptions"]
 #[no_mangle]
 pub static EXCEPTIONS: [Vector; 14] = [
     Vector { handler: NMI },
     Vector { handler: HardFault },
     Vector { handler: MemManage },
     Vector { handler: BusFault },
-    Vector {
-        handler: UsageFault,
-    },
+    Vector { handler: UsageFault, },
     Vector { reserved: 0 },
     Vector { reserved: 0 },
     Vector { reserved: 0 },

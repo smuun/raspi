@@ -1,4 +1,4 @@
-ENTRY(Reset)
+/* ENTRY(_reset) */
 EXTERN(RESET_VECTOR)
 EXTERN(EXCEPTIONS)
  
@@ -6,19 +6,18 @@ SECTIONS
 {
     /* Initial stack pointer value; GPU starts execution here.*/
     . = 0x8000;
-    __start = .;
+    __reset = .;
     .vector_table : 
     {
         /* Start execution after reboot or reset */
-        KEEP(*(.vector_table.reset_vector))
+        *(.ivt.reset)
         /* Define 14 exception vectors */
-        KEEP(*(.vector_table.exceptions)); 
-
+        *(.ivt.exceptions)
     }
     __text_start = .;
     .text :
     {
-        KEEP(*(.text.boot))
+        *(.text.boot)
         *(.text)
     }
     . = ALIGN(4096); /* align to page size */
@@ -55,7 +54,7 @@ SECTIONS
 }
 
 PROVIDE(NMI = DefaultExceptionHandler);
-/* PROVIDE(HardFault = DefaultExceptionHandler); */
+PROVIDE(HardFault = DefaultExceptionHandler);
 PROVIDE(MemManage = DefaultExceptionHandler);
 PROVIDE(BusFault = DefaultExceptionHandler);
 PROVIDE(UsageFault = DefaultExceptionHandler);
