@@ -6,14 +6,12 @@ global_asm!(
  
 // To keep this in the first portion of the binary.
 .section ".text.boot"
-// Make _start global.
-
 
 .globl _start
 .globl _qemu_halt_normal
 .globl _qemu_halt_fail
 
-    .org 0x8000
+    // .org 0x8000
 // Entry point for the kernel.
 // r15 -> should begin execution at 0x8000.
 // r0 -> 0x00000000

@@ -38,29 +38,6 @@ pub fn spin_until(ptr: *const u32, mask: u32) {
     unsafe { while ((read_volatile(ptr)) & mask) != mask {} }
 }
 
-/// Write bit at base (word = 32 bit aligned) + offset.
-/// Safe when:
-///     - base is a valid, word aligned pointer
-///     - we're allowed to write to base + offset
-pub fn write_bit(base: *mut u32, offset: u8, bit: bool) {
-    unsafe {
-        let mut scratch: u32 = read_volatile(base);
-        if bit {
-            scratch |= 1 << offset;
-        } else {
-            scratch &= !(1 << offset);
-        }
-        write_volatile(base, scratch);
-    }
-}
-
-pub fn read_bit(base: *mut u32, offset: u8) -> bool {
-    unsafe {
-        let scratch: u32 = read_volatile(base);
-        return (scratch & 1 << offset) == 0x0;
-    }
-}
-
 //Testing, generally
 
 pub trait Testable {
@@ -103,11 +80,10 @@ Boot complete. Executing in kernel_main (TESTING)
 
 #[cfg(test)]
 mod tests {
+    #[allow(dead_code)]
     use super::*;
 
     #[test_case]
-    fn volatile_write_should_equal_read() {
-        write_bit(0xc as *mut u32, 4, true);
-        assert_eq!(true, read_bit(0x12345c as *mut u32, 3));
+    fn trivial() {
     }
 }
