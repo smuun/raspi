@@ -5,7 +5,6 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::arch::asm;
-use core::ptr::write_volatile;
 use raspi::uart::{getc, uart_init};
 use raspi::{print, println};
 

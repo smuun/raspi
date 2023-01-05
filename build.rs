@@ -1,5 +1,3 @@
-use std::fmt::format;
-use std::process::Command;
 use std::{env, error::Error, fs::File, io::Write, path::PathBuf};
 extern crate cc;
 

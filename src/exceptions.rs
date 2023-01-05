@@ -1,11 +1,10 @@
-use core::arch::asm;
 use core::ptr::write_volatile;
 
 // IVT needs to be at 0x0 but the raspberry pi starts execution at 0x8000
 unsafe fn move_ivt() {
     let vec = 0x0 as *mut u32;
     //4 byte increment
-    let inc = 0x4 as *mut u32;
+    let _inc = 0x4 as *mut u32;
     //the first entry should be the reset vector
     write_volatile(vec, RESET_VECTOR as u32);
 }
