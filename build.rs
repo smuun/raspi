@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .flag("-nostdlib")
         .flag("-nostartfiles")
         .flag("-ffreestanding")
-        .flag("-march=armv6-m")
+        .flag("-mcpu=arm1176jzf-s")
         .compile("setup.o");
 
     println!("cargo:rerun-if-changed=src/linker.ld");
