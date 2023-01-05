@@ -1,10 +1,18 @@
-ENTRY(_start)
+ENTRY(Reset)
+EXTERN(RESET_VECTOR)
  
 SECTIONS
 {
-    /* Starts at LOADER_ADDR. */
+    /* Initial stack pointer value; GPU starts execution here.*/
     . = 0x8000;
     __start = .;
+    .vector_table : 
+    {
+        /* Start execution after reboot or reset */
+        KEEP(*(.vector_table.reset_vector))
+
+    }
+    . = ALIGN(4096); /* align to page size */
     __text_start = .;
     .text :
     {
@@ -31,12 +39,14 @@ SECTIONS
     __data_end = .;
  
     __bss_start = .;
-    .bss :
-    {
+    .bss : {
         bss = .;
         *(.bss)
     }
-    . = ALIGN(4096); /* align to page size */
+    /* at some point, we might need to FILL() the intervening sections.  See
+     * https://github.com/RusPiRo/ruspiro-boot/blob/v0.5.4/link64.ld */
+
+    . = ALIGN(4096); /* align to page size */ 
     __bss_end = .;
     __bss_size = __bss_end - __bss_start;
     __end = .;
