@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // put `linker.ld` in the build directory
     File::create(out_dir.join("linker.ld"))?.write_all(include_bytes!("src/linker.ld"))?;
 
-        println!("cargo:rerun-if-changed=src/linker.ld");
-        // println!("cargo:rerun-if-changed=src/setup.S");
+    println!("cargo:rerun-if-changed=src/linker.ld");
+    // println!("cargo:rerun-if-changed=src/setup.S");
 
     Ok(())
 }

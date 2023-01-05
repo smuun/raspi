@@ -4,9 +4,9 @@
 #![test_runner(test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+use core::ptr::write_volatile;
 use raspi::println;
 use raspi::shutdown::{qemu_angel_exit, QemuExitCode};
-use core::ptr::write_volatile;
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -19,11 +19,11 @@ fn pendsv_halts() {
     trigger_pendsv();
 }
 pub extern "C" fn trigger_pendsv() {
-  let icsr: *mut u32 = 0xe000ed04 as *mut u32;
-  // Pend a PendSV exception using by writing 1 to PENDSVSET at bit 28
-  unsafe{
-  write_volatile(icsr, 1 << 28);
-  }
+    let icsr: *mut u32 = 0xe000ed04 as *mut u32;
+    // Pend a PendSV exception using by writing 1 to PENDSVSET at bit 28
+    unsafe {
+        write_volatile(icsr, 1 << 28);
+    }
 }
 pub fn test_runner(tests: &[&dyn Fn()]) {
     println!("Running {} tests", tests.len());
@@ -33,5 +33,4 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
         qemu_angel_exit(QemuExitCode::Fail);
     }
     qemu_angel_exit(QemuExitCode::Ok);
-    
 }
