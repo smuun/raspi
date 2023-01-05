@@ -1,4 +1,4 @@
-/* ENTRY(_reset) */
+/* ENTRY(Reset); */
 EXTERN(RESET_VECTOR)
 EXTERN(EXCEPTIONS)
  
@@ -9,10 +9,8 @@ SECTIONS
     __reset = .;
     .vector_table : 
     {
-        /* Start execution after reboot or reset */
+        /* Start executing directly in Reset */
         *(.ivt.reset)
-        /* Define 14 exception vectors */
-        *(.ivt.exceptions)
     }
     __text_start = .;
     .text :

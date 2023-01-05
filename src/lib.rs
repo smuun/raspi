@@ -17,6 +17,7 @@ use shutdown::{qemu_angel_exit, QemuExitCode};
 
 #[macro_use]
 
+mod exceptions;
 //Run the setup assembly unconditionally.
 mod setup;
 

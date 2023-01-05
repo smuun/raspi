@@ -4,7 +4,6 @@
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-mod exceptions;
 
 use core::arch::asm;
 use core::ptr::write_volatile;
