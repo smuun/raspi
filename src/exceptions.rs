@@ -8,7 +8,6 @@ unsafe fn move_ivt() {
     let inc = 0x4 as *mut u32;
     //the first entry should be the reset vector
     write_volatile(vec, RESET_VECTOR as u32);
-
 }
 
 // IDIOT.
@@ -41,7 +40,9 @@ pub static IVT: [Vector; 14] = [
     Vector { handler: HardFault },
     Vector { handler: MemManage },
     Vector { handler: BusFault },
-    Vector { handler: UsageFault, },
+    Vector {
+        handler: UsageFault,
+    },
     Vector { reserved: 0 },
     Vector { reserved: 0 },
     Vector { reserved: 0 },

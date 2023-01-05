@@ -14,11 +14,12 @@ pub extern "C" fn kernel_main() {
     test_main();
 }
 
-
 #[test_case]
 fn catch_trap() {
     println!("Executing trap (should hang)...");
-    unsafe {asm!("trap"); }
+    unsafe {
+        asm!("trap");
+    }
 }
 
 pub fn test_runner(tests: &[&dyn Fn()]) {

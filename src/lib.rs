@@ -84,6 +84,5 @@ mod tests {
     use super::*;
 
     #[test_case]
-    fn trivial() {
-    }
+    fn trivial() {}
 }

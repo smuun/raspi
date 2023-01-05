@@ -1,6 +1,6 @@
 use std::fmt::format;
-use std::{env, error::Error, fs::File, io::Write, path::PathBuf};
 use std::process::Command;
+use std::{env, error::Error, fs::File, io::Write, path::PathBuf};
 extern crate cc;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -26,7 +26,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("cargo:rerun-if-changed=src/linker.ld");
     println!("cargo:rerun-if-changed=src/setup.S");
-
 
     Ok(())
 }
