@@ -5,18 +5,26 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::arch::asm;
-use core::ptr::write_volatile;
 use raspi::println;
 use raspi::shutdown::{qemu_angel_exit, QemuExitCode};
+use raspi::uart::uart_init;
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
+    uart_init();
     test_main();
+}
+
+#[cfg(test)]
+#[no_mangle]
+pub unsafe extern "C" fn HardFault() {
+    asm!("ldr r0, =0x456");
+    qemu_angel_exit(QemuExitCode::Ok);
 }
 
 #[test_case]
 fn catch_trap() {
-    println!("Executing trap (should hang)...");
+    println!("Executing trap (should be caught and exit)...");
     unsafe {
         asm!("trap");
     }

@@ -9,8 +9,7 @@ SECTIONS
     .vector_table : 
     {
         /* Start executing directly in Reset */
-        *(.text.ivt.reset)
-        *(.text.ivt.exceptions)
+        *(.text.ivt)
     }
     __text_start = .;
     .text :
@@ -52,11 +51,11 @@ SECTIONS
 }
 
 PROVIDE(NMI = DefaultExceptionHandler);
-PROVIDE(HardFault = DefaultExceptionHandler);
+/* PROVIDE(HardFault = DefaultExceptionHandler); */
 PROVIDE(MemManage = DefaultExceptionHandler);
 PROVIDE(BusFault = DefaultExceptionHandler);
 PROVIDE(UsageFault = DefaultExceptionHandler);
 PROVIDE(DebugMonitor = DefaultExceptionHandler);
 PROVIDE(SVCall = DefaultExceptionHandler);
-PROVIDE(PendSV = DefaultExceptionHandler);
+/* PROVIDE(PendSV = DefaultExceptionHandler); */
 PROVIDE(SysTick = DefaultExceptionHandler);

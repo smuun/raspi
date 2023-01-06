@@ -1,17 +1,16 @@
 .code 32
-.section ".text.ivt.reset"
 .balign 4
-.globl _reset
-_reset:
-    b Reset
 
-.section ".text.ivt.exceptions"
+.section ".text.ivt"
+.globl _reset
 .globl _ivt
 .globl _ivt_end
 
+_reset:
 _ivt:
+    ldr pc, addr_Reset
     ldr pc, addr_NMI
-    ldr pc, =addr_HardFault
+    ldr pc, addr_HardFault
     ldr pc, addr_MemManage
     ldr pc, addr_BusFault
     ldr pc, addr_UsageFault
@@ -26,7 +25,17 @@ _ivt:
 _ivt_end:
     ldr pc, addr_SysTick
 
+@ Vector_Table
+@                 LDR pc, Reset_Addr
+@                 LDR pc, Undefined_Addr
+@                 LDR pc, SVC_Addr
+@                 LDR pc, Prefetch_Addr
+@                 LDR pc, Abort_Addr
+@                 NOP                    ;Reserved vector
+@                 LDR pc, IRQ_Addr
+@ FIQ_Handler
 _ivt_addrs:
+    addr_Reset:        .word Reset
     addr_NMI:          .word NMI
     addr_HardFault:    .word HardFault
     addr_MemManage:    .word MemManage
@@ -42,10 +51,12 @@ _ivt_addrs_end:
 .section ".text.boot"
 .balign 4
 .globl _bootldr
-
 .globl Reset
 
 Reset: 
+    /* enable interrupts and FIQ */
+    cpsie i
+    cpsie f
     /* load r0 with the address of reset */
     ldr r0, =_reset
     mov r2, #0
