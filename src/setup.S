@@ -1,11 +1,14 @@
+.code 32
 .section ".text.ivt.reset"
+.balign 4
 .globl _reset
-.func _reset
 _reset:
     b Reset
 
-.section ".ivt.exceptions"
+.section ".text.ivt.exceptions"
+.balign 4
 .globl _ivt
+.globl _ivt_end
 _ivt:
     b NMI
     b HardFault
@@ -17,29 +20,46 @@ _ivt:
     b 0
     b 0
     b SVCall
-    b 0
+    b DebugMonitor
     b 0
     b PendSV
+_ivt_end:
     b SysTick
+
 .section ".text.boot"
+.balign 4
 .globl _bootldr
+
 .globl Reset
 
 Reset: 
-    /* move the reset vector to address 0 */
+    /* load r0 with the address of reset */
     ldr r0, =_reset
     mov r2, #0
-    ldr r1, [r0, #4]
-    str r1, [r2, #4]
+    /* load r1 with the instruction at r0 */
+    /* which should be, "b HardFault or whatever" */
+    ldr r1, [r0]
+    /* increment r0 by 4 bytes = 32 bits = 1 word */
+    /* obviously there is a built-in way to do this */
+    /* but this is very clear */
+    add r0, #4
+    str r1, [r2]
+    add r2, #4
 
     /* move the rest of the IVT */
-    ldr r0, =_ivt
+    /* since the reset vector and the IVT */
+    /* are contiguous in memory we don't need to reload r0*/
+    @ ldr r0, =_ivt
+    ldr r4, =_ivt_end
     b 2f
     1:
-        ldr r1, [r0, #4]
-        str r1, [r2, #4]
+        ldr r1, [r0]
+        add r0, #4
+        str r1, [r2]
+        add r2, #4
     2:
-        cmp r2, #0x14
+    /* loop if not last entry in IVT */
+        cmp r0, r4
         blt 1b
     b _bootldr
 

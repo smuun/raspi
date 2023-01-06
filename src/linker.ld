@@ -56,6 +56,7 @@ PROVIDE(HardFault = DefaultExceptionHandler);
 PROVIDE(MemManage = DefaultExceptionHandler);
 PROVIDE(BusFault = DefaultExceptionHandler);
 PROVIDE(UsageFault = DefaultExceptionHandler);
+PROVIDE(DebugMonitor = DefaultExceptionHandler);
 PROVIDE(SVCall = DefaultExceptionHandler);
 PROVIDE(PendSV = DefaultExceptionHandler);
 PROVIDE(SysTick = DefaultExceptionHandler);
