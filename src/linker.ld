@@ -47,7 +47,7 @@ SECTIONS
     __end = .;
 }
 
-PROVIDE(handle_undefined_instruction = handle_default);
+/* PROVIDE(handle_undefined_instruction = handle_default); */
 PROVIDE(handle_swi = handle_default);
 PROVIDE(handle_prefetch_abrt = handle_default);
 PROVIDE(handle_data_abrt = handle_default);

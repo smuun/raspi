@@ -24,7 +24,7 @@ mod exceptions;
 
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
-    println!("panicked at {}", info);
+    println!("{}", info);
     qemu_angel_exit(QemuExitCode::Fail);
     loop {}
 }

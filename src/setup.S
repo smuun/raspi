@@ -35,6 +35,8 @@ _ivt_addrs_end:
 .globl _reset
 
 _reset: 
+    @ sp grows downwards from code start
+    mov sp, #0x8000
     /* enable irq and fiq */
     cpsie i
     cpsie f
@@ -63,8 +65,6 @@ _reset:
     b _bootldr
 
 _bootldr:
-    @ sp grows downwards from code start
-    mov sp, #0x8000
  
     /* clear out bss */
     ldr r4, =__bss_start
@@ -89,27 +89,35 @@ _bootldr:
     b kernel_main
 
 /* interrupts start out with an unintialized stack */
-
+/* TODO preserve registers! */
 _undefined_instruction:
     mov sp, #0x6000
+    push {r14}
     bl handle_undefined_instruction
+    pop {r14}
+    subs pc, r14, #4
 
 _swi:
     mov sp, #0x6000
     bl handle_swi
+    subs pc, lr, #4
 
 _prefetch_abrt:
     mov sp, #0x6000
     bl handle_prefetch_abrt
+    subs pc, lr, #4
 
 _data_abrt:
     mov sp, #0x6000
     bl handle_data_abrt
+    subs pc, lr, #4
 
 _irq:
     mov sp, #0x6000
     bl handle_irq
+    subs pc, lr, #4
 
 _fiq:
     mov sp, #0x6000
     bl handle_fiq
+    subs pc, lr, #4
