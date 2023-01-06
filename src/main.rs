@@ -24,7 +24,6 @@ Boot complete.  Executing in kernel_main.
     #[cfg(test)]
     test_main();
 
-    trigger_exception();
     fun_cli_app();
     shutdown_tasks();
     kernel_halt();
@@ -39,12 +38,6 @@ pub fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
     qemu_angel_exit(QemuExitCode::Fail);
     loop {}
-}
-
-fn trigger_exception() {
-    // let icsr = 0xe000ed04 as *mut u32;
-    println!("triggering exception");
-    println!("in main sp = {:#x}", unsafe { raspi::read_sp() });
 }
 
 fn fun_cli_app() {
