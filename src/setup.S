@@ -37,9 +37,9 @@ _ivt_addrs_end:
 _reset: 
     @ sp grows downwards from code start
     mov sp, #0x8000
-    /* enable irq and fiq */
-    @ cpsie i
-    @ cpsie f
+    /* disable irq and fiq */
+    cpsid i
+    cpsid f
 
     /* move the IVT */
     /* since the reset vector and the IVT */

@@ -14,13 +14,30 @@ pub unsafe extern "C" fn handle_undefined_instruction() {
     println!("warning: skipping undefined instruction");
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn handle_swi() {
+    uart_init();
+    println!("in swi handler sp = {:#x}", read_sp());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_prefetch_abrt() {
+    uart_init();
+    println!("prefetch abort: unhandled");
+    loop {}
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn handle_data_abrt() {
+    uart_init();
+    println!("prefetch abort: unhandled");
+    loop {}
+}
+
 #[allow(dead_code)]
 extern "C" {
     fn _reset();
     // TODO implement these?
-    fn handle_swi();
-    fn handle_prefetch_abrt();
-    fn handle_data_abrt();
     fn handle_irq();
     fn handle_fiq();
 }
