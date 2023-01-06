@@ -10,21 +10,21 @@ _reset:
 .globl _ivt
 .globl _ivt_end
 _ivt:
-    b NMI
-    b HardFault
-    b MemManage
-    b BusFault
-    b UsageFault
-    b 0
-    b 0
-    b 0
-    b 0
-    b SVCall
-    b DebugMonitor
-    b 0
-    b PendSV
+    ldr pc, =NMI
+    ldr pc, =HardFault
+    ldr pc, =MemManage
+    ldr pc, =BusFault
+    ldr pc, =UsageFault
+    .word 0
+    .word 0
+    .word 0
+    .word 0
+    ldr pc, =SVCall
+    ldr pc, =DebugMonitor
+    .word 0
+    ldr pc, =PendSV
 _ivt_end:
-    b SysTick
+    ldr pc, =SysTick
 
 .section ".text.boot"
 .balign 4
