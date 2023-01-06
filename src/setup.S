@@ -9,22 +9,36 @@ _reset:
 .balign 4
 .globl _ivt
 .globl _ivt_end
+
 _ivt:
-    ldr pc, =NMI
-    ldr pc, =HardFault
-    ldr pc, =MemManage
-    ldr pc, =BusFault
-    ldr pc, =UsageFault
+    ldr pc, addr_NMI
+    ldr pc, addr_HardFault
+    ldr pc, addr_MemManage
+    ldr pc, addr_BusFault
+    ldr pc, addr_UsageFault
     .word 0
     .word 0
     .word 0
     .word 0
-    ldr pc, =SVCall
-    ldr pc, =DebugMonitor
+    ldr pc, addr_SVCall
+    ldr pc, addr_DebugMonitor
     .word 0
-    ldr pc, =PendSV
+    ldr pc, addr_PendSV
 _ivt_end:
-    ldr pc, =SysTick
+    ldr pc, addr_SysTick
+
+_ivt_addrs:
+    addr_NMI:          .word NMI
+    addr_HardFault:    .word HardFault
+    addr_MemManage:    .word MemManage
+    addr_BusFault:     .word BusFault
+    addr_UsageFault:   .word UsageFault
+    addr_SVCall:       .word SVCall
+    addr_DebugMonitor: .word DebugMonitor
+    addr_PendSV:       .word PendSV
+    addr_SysTick:      .word SysTick
+_ivt_addrs_end:
+    .word 0xdeadbeef
 
 .section ".text.boot"
 .balign 4
@@ -50,7 +64,7 @@ Reset:
     /* since the reset vector and the IVT */
     /* are contiguous in memory we don't need to reload r0*/
     @ ldr r0, =_ivt
-    ldr r4, =_ivt_end
+    ldr r4, =_ivt_addrs_end
     b 2f
     1:
         ldr r1, [r0]
