@@ -6,7 +6,11 @@ authors = ["Silas Bailey <72632230+smuun@users.noreply.github.com>"]
 
 [dependencies]
 spin = "0.9.4"
+cortex-m-rt = "0.7.2"
 
 [dependencies.lazy_static]
 version = "1.4.0"
 features = ["spin_no_std"]
+
+[build-dependencies]
+cc = "1.0.78"

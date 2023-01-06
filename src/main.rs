@@ -4,6 +4,9 @@
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+use core::arch::asm;
+use core::ptr::write_volatile;
+use raspi::shutdown::kernel_halt;
 use raspi::uart::{getc, uart_init};
 use raspi::{print, println};
 
@@ -17,16 +20,26 @@ Boot complete.  Executing in kernel_main.
 -----------------------------------------
 "
     );
+
+
     #[cfg(test)]
     test_main();
 
+    trigger_exception();
     fun_cli_app();
     shutdown_tasks();
-    //bootloader halts upon return from kernel_main
+    kernel_halt();
 }
 
 fn shutdown_tasks() {
     println!("Shutdown.");
+}
+
+fn trigger_exception() {
+    // let icsr = 0xe000ed04 as *mut u32;
+    unsafe {
+        asm!("trap");
+    }
 }
 
 fn fun_cli_app() {

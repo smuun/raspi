@@ -1,5 +1,5 @@
 use core::arch::asm;
-#[allow(dead_code)]
+
 /// Trigger a system shutdown.
 pub fn kernel_halt() -> ! {
     //TODO add hardware support
@@ -15,12 +15,36 @@ pub enum QemuExitCode {
 /// Use QEMU angel mode (-semihosting must be enabled)
 /// to exit.  Use for testing.
 pub fn qemu_angel_exit(code: QemuExitCode) {
+    fool_rustc();
     match code {
         QemuExitCode::Ok => unsafe {
-            asm!("b _qemu_halt_normal");
+            asm!(
+                "
+                mov r1, #0x20000
+                add r1, r1, #0x00026
+                mov r0, #0x18
+                svc 0x00123456
+                "
+            );
         },
         QemuExitCode::Fail => unsafe {
-            asm!("b _qemu_halt_fail");
+            asm!(
+                "
+                mov r1, #0x20000
+                add r1, r1, #0x00027
+                mov r0, #0x18
+                svc 0x00123456
+                "
+            );
         },
+    }
+}
+
+// for some reason this is necessary not to optimize away the entire
+// setup.s????
+pub fn fool_rustc() {
+    unsafe {
+        asm!("ldr r0, =_reset");
+        asm!("ldr r0, =_ivt");
     }
 }

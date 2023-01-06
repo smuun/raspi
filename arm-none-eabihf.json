@@ -12,12 +12,12 @@
     "linker": "arm-none-eabi-gcc",
     "pre-link-args": {
         "gcc": [
-            "-Tsrc/linker.ld",
+            "-Tlinker.ld",
             "-Wall",
             "-nostdlib",
             "-nostartfiles",
             "-ffreestanding",
-            "-march=armv6"
+            "-mcpu=arm1176jzf-s"
         ]
     },
     "panic-strategy": "abort",
