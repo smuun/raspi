@@ -21,7 +21,6 @@ Boot complete.  Executing in kernel_main.
 "
     );
 
-
     #[cfg(test)]
     test_main();
 

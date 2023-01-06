@@ -1,5 +1,5 @@
+use crate::{println, uart::uart_init};
 use core::arch::asm;
-use crate::{uart::uart_init, println};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
