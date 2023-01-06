@@ -1,36 +1,30 @@
 use core::arch::asm;
-
 use crate::{uart::uart_init, println};
 
 #[no_mangle]
-pub unsafe extern "C" fn DefaultExceptionHandler() {
-    // asm!("mov r0, {}", in(reg) z);
-    // asm!("mov pc, r14");
-    // let x = 1; 
-    // let y = 2;
-    // let z = x & y;
-    // asm!("reset");
+pub unsafe extern "C" fn handle_default() {
     loop {}
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn PendSV() {
-    asm!("mov r1, 0x42");
-    loop {}
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn HardFault() {
-    asm!("mov r1, 0x42");
-    loop {}
+pub unsafe extern "C" fn handle_undefined_instruction() {
+    asm!("mov r1, 0x43");
+    let x = 1;
+    let y = x | 1;
+    asm!("mov {r}, {y}", r = out(reg) _, y = in(reg) y);
+    // uart_init();
+    loop {
+        asm!("mov r1, 0x43");
+    }
 }
 
 #[allow(dead_code)]
 extern "C" {
-    fn NMI();
-    fn MemManage();
-    fn BusFault();
-    fn UsageFault();
-    fn SVCall();
-    fn SysTick();
+    fn _reset();
+
+    fn handle_swi();
+    fn handle_prefetch_abrt();
+    fn handle_data_abrt();
+    fn handle_irq();
+    fn handle_fiq();
 }

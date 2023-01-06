@@ -2,96 +2,71 @@
 .balign 4
 
 .section ".text.ivt"
-.globl _reset
 .globl _ivt
 .globl _ivt_end
 
-_reset:
+/* https://github.com/BrianSidebotham/arm-tutorial-rpi/blob/master/part-4/readme.md */
+/* I was INCORRECTLY using armv6-m; it should have been pure armv6 */
 _ivt:
     ldr pc, addr_Reset
-    ldr pc, addr_NMI
-    ldr pc, addr_HardFault
-    ldr pc, addr_MemManage
-    ldr pc, addr_BusFault
-    ldr pc, addr_UsageFault
-    .word 0
-    .word 0
-    .word 0
-    .word 0
-    ldr pc, addr_SVCall
-    ldr pc, addr_DebugMonitor
-    .word 0
-    ldr pc, addr_PendSV
+    ldr pc, addr_undefined_instruction
+    ldr pc, addr_swi
+    ldr pc, addr_prefetch_abrt
+    ldr pc, addr_data_abrt
+    .word 0 @reserved
+    ldr pc, addr_irq
+    ldr pc, addr_fiq
 _ivt_end:
-    ldr pc, addr_SysTick
-
-@ Vector_Table
-@                 LDR pc, Reset_Addr
-@                 LDR pc, Undefined_Addr
-@                 LDR pc, SVC_Addr
-@                 LDR pc, Prefetch_Addr
-@                 LDR pc, Abort_Addr
-@                 NOP                    ;Reserved vector
-@                 LDR pc, IRQ_Addr
-@ FIQ_Handler
+    .word 0xdeadbeef
 _ivt_addrs:
-    addr_Reset:        .word Reset
-    addr_NMI:          .word NMI
-    addr_HardFault:    .word HardFault
-    addr_MemManage:    .word MemManage
-    addr_BusFault:     .word BusFault
-    addr_UsageFault:   .word UsageFault
-    addr_SVCall:       .word SVCall
-    addr_DebugMonitor: .word DebugMonitor
-    addr_PendSV:       .word PendSV
-    addr_SysTick:      .word SysTick
+    addr_Reset:                 .word _reset
+    addr_undefined_instruction: .word _undefined_instruction
+    addr_swi:                   .word _swi
+    addr_prefetch_abrt:         .word _prefetch_abrt
+    addr_data_abrt:             .word _data_abrt
+    addr_irq:                   .word _irq
+    addr_fiq:                   .word _fiq
 _ivt_addrs_end:
     .word 0xdeadbeef
 
 .section ".text.boot"
 .balign 4
 .globl _bootldr
-.globl Reset
+.globl _reset
 
-Reset: 
-    /* enable interrupts and FIQ */
+_reset: 
+    /* enable irq and fiq */
     cpsie i
     cpsie f
-    /* load r0 with the address of reset */
-    ldr r0, =_reset
-    mov r2, #0
-    /* load r1 with the instruction at r0 */
-    /* which should be, "b HardFault or whatever" */
-    ldr r1, [r0]
-    /* increment r0 by 4 bytes = 32 bits = 1 word */
-    /* obviously there is a built-in way to do this */
-    /* but this is very clear */
-    add r0, #4
-    str r1, [r2]
-    add r2, #4
 
-    /* move the rest of the IVT */
+    /* move the IVT */
     /* since the reset vector and the IVT */
     /* are contiguous in memory we don't need to reload r0*/
-    @ ldr r0, =_ivt
+    ldr r0, =_ivt
     ldr r4, =_ivt_addrs_end
     b 2f
     1:
+        @ load r1 with the instruction pointed to by r0
+        @ i.e., the IVT entry; and increment
         ldr r1, [r0]
         add r0, #4
+        @ and store it at r2 (same)
         str r1, [r2]
         add r2, #4
     2:
-    /* loop if not last entry in IVT */
+        @ did our source pointer get to the end of the IVT?
         cmp r0, r4
         blt 1b
+
+    @ done with interrupts
+    @ continue on to prepare stack, etc
     b _bootldr
 
 _bootldr:
-    // Setup the stack.
+    @ sp grows downwards from code start
     mov sp, #0x8000
  
-    // Clear out bss.
+    /* clear out bss */
     ldr r4, =__bss_start
     ldr r9, =__bss_end
     mov r5, #0
@@ -101,14 +76,40 @@ _bootldr:
     b       2f
  
 1:
-    // store multiple at r4.
+    @ stmia: store multiple at
+    @ (fill with zeros)
     stmia r4!, {r5-r8}
  
-    // If we are still below bss_end, loop.
+
 2:
+    @ below bss_end? clear some more
     cmp r4, r9
     blo 1b
- 
-    // Call kernel_main
+
     b kernel_main
 
+/* interrupts start out with an unintialized stack */
+
+_undefined_instruction:
+    mov sp, #0x6000
+    bl handle_undefined_instruction
+
+_swi:
+    mov sp, #0x6000
+    bl handle_swi
+
+_prefetch_abrt:
+    mov sp, #0x6000
+    bl handle_prefetch_abrt
+
+_data_abrt:
+    mov sp, #0x6000
+    bl handle_data_abrt
+
+_irq:
+    mov sp, #0x6000
+    bl handle_irq
+
+_fiq:
+    mov sp, #0x6000
+    bl handle_fiq

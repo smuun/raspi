@@ -6,14 +6,11 @@ SECTIONS
 {
     /* Initial stack pointer value; GPU starts execution here.*/
     . = 0x8000;
-    .vector_table : 
-    {
-        /* Start executing directly in Reset */
-        *(.text.ivt)
-    }
     __text_start = .;
     .text :
     {
+        /* Start executing directly in Reset */
+        *(.text.ivt)
         *(.text.boot)
         *(.text)
     }
@@ -50,12 +47,9 @@ SECTIONS
     __end = .;
 }
 
-PROVIDE(NMI = DefaultExceptionHandler);
-/* PROVIDE(HardFault = DefaultExceptionHandler); */
-PROVIDE(MemManage = DefaultExceptionHandler);
-PROVIDE(BusFault = DefaultExceptionHandler);
-PROVIDE(UsageFault = DefaultExceptionHandler);
-PROVIDE(DebugMonitor = DefaultExceptionHandler);
-PROVIDE(SVCall = DefaultExceptionHandler);
-/* PROVIDE(PendSV = DefaultExceptionHandler); */
-PROVIDE(SysTick = DefaultExceptionHandler);
+PROVIDE(handle_undefined_instruction = handle_default);
+PROVIDE(handle_swi = handle_default);
+PROVIDE(handle_prefetch_abrt = handle_default);
+PROVIDE(handle_data_abrt = handle_default);
+PROVIDE(handle_irq = handle_default);
+PROVIDE(handle_fiq = handle_default);

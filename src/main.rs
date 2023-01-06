@@ -25,7 +25,7 @@ Boot complete.  Executing in kernel_main.
     #[cfg(test)]
     test_main();
 
-    trigger_pendsv();
+    trigger_exception();
     fun_cli_app();
     shutdown_tasks();
     kernel_halt();
@@ -35,10 +35,10 @@ fn shutdown_tasks() {
     println!("Shutdown.");
 }
 
-fn trigger_pendsv() {
-    let icsr = 0xe000ed04 as *mut u32;
+fn trigger_exception() {
+    // let icsr = 0xe000ed04 as *mut u32;
     unsafe {
-        write_volatile(icsr, 1 << 28);
+        asm!("trap");
     }
 }
 
