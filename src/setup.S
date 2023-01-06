@@ -38,8 +38,8 @@ _reset:
     @ sp grows downwards from code start
     mov sp, #0x8000
     /* enable irq and fiq */
-    cpsie i
-    cpsie f
+    @ cpsie i
+    @ cpsie f
 
     /* move the IVT */
     /* since the reset vector and the IVT */
@@ -91,33 +91,46 @@ _bootldr:
 /* interrupts start out with an unintialized stack */
 /* TODO preserve registers! */
 _undefined_instruction:
-    mov sp, #0x6000
+    mov sp, #0x2000
     push {r14}
     bl handle_undefined_instruction
     pop {r14}
-    subs pc, r14, #4
+    movs pc, r14
 
 _swi:
-    mov sp, #0x6000
+    mov sp, #0x2000
+    push {r14}
     bl handle_swi
-    subs pc, lr, #4
+    pop {r14}
+    movs pc, r14
 
 _prefetch_abrt:
-    mov sp, #0x6000
+    mov sp, #0x2000
+    push {r14}
     bl handle_prefetch_abrt
-    subs pc, lr, #4
+    pop {r14}
+    subs pc, r14, #4
 
 _data_abrt:
-    mov sp, #0x6000
+    mov sp, #0x2000
+    push {r14}
     bl handle_data_abrt
-    subs pc, lr, #4
+    pop {r14}
+    @ if fixing the reason for the abort
+    @ return and reexecute
+    @ subs pc, lr, #8
+    subs pc, r14, #4
 
 _irq:
-    mov sp, #0x6000
+    mov sp, #0x2000
+    push {r14}
     bl handle_irq
-    subs pc, lr, #4
+    pop {r14}
+    subs pc, r14, #4
 
 _fiq:
-    mov sp, #0x6000
+    mov sp, #0x2000
+    push {r14}
     bl handle_fiq
-    subs pc, lr, #4
+    pop {r14}
+    subs pc, r14, #4

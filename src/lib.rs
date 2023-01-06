@@ -6,6 +6,7 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(core_intrinsics, lang_items)]
 
+use core::arch::asm;
 use core::panic::PanicInfo;
 use core::ptr::read_volatile;
 use core::ptr::write_volatile;
@@ -61,6 +62,12 @@ pub fn test_runner(tests: &[&dyn Testable]) {
         test.run();
     }
     qemu_angel_exit(QemuExitCode::Ok)
+}
+
+pub unsafe fn read_sp() -> u32 {
+    let mut x: u32 = 0;
+    asm!("mov {}, sp", inout(reg) x);
+    x
 }
 
 //Testing lib
