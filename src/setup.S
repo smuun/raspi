@@ -6,13 +6,12 @@ _reset:
     b Reset
 
 .section ".text.ivt.exceptions"
-.balign 4
 .globl _ivt
 .globl _ivt_end
 
 _ivt:
     ldr pc, addr_NMI
-    ldr pc, addr_HardFault
+    ldr pc, =addr_HardFault
     ldr pc, addr_MemManage
     ldr pc, addr_BusFault
     ldr pc, addr_UsageFault

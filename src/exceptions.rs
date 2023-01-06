@@ -46,9 +46,12 @@
     // loop{};
 // }
 
+use core::arch::asm;
+
 #[no_mangle]
 pub unsafe extern "C" fn DefaultExceptionHandler() {
-    crate::shutdown::kernel_halt();
+    asm!("ldr r0, =0x123");
+    loop{}
 }
 
 #[allow(dead_code)]
