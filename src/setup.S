@@ -109,7 +109,8 @@ _prefetch_abrt:
     push {r14}
     bl handle_prefetch_abrt
     pop {r14}
-    subs pc, r14, #4
+    @ subs pc, r14, #4
+    movs pc, r14
 
 _data_abrt:
     mov sp, #0x2000
@@ -119,7 +120,7 @@ _data_abrt:
     @ if fixing the reason for the abort
     @ return and reexecute
     @ subs pc, lr, #8
-    subs pc, r14, #4
+    movs pc, r14
 
 _irq:
     mov sp, #0x2000

@@ -23,8 +23,8 @@ pub unsafe extern "C" fn handle_swi() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_prefetch_abrt() {
     uart_init();
-    println!("prefetch abort: unhandled");
-    loop {}
+    println!("prefetch abort: breakpoint? continuing.");
+    // loop {}
 }
 
 #[no_mangle]

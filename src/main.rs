@@ -37,7 +37,7 @@ fn trigger_exception() {
     // let icsr = 0xe000ed04 as *mut u32;
     println!("in main sp = {:#x}", unsafe { raspi::read_sp() });
     unsafe {
-        asm!("trap");
+        asm!("bkpt 1");
     }
 }
 
