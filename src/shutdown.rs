@@ -1,5 +1,5 @@
 use core::arch::asm;
-#[allow(dead_code)]
+
 /// Trigger a system shutdown.
 pub fn kernel_halt() -> ! {
     //TODO add hardware support
@@ -44,6 +44,7 @@ pub fn qemu_angel_exit(code: QemuExitCode) {
 // setup.s????
 pub fn fool_rustc() {
     unsafe {
-        asm!("ldr r0, =_start");
+        asm!("ldr r0, =_reset");
+        asm!("ldr r0, =_ivt");
     }
 }

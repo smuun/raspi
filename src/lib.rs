@@ -79,10 +79,4 @@ Boot complete. Executing in kernel_main (TESTING)
 }
 
 #[cfg(test)]
-mod tests {
-    #[allow(dead_code)]
-    use super::*;
-
-    #[test_case]
-    fn trivial() {}
-}
+mod tests { }

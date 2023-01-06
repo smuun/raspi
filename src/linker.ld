@@ -1,16 +1,16 @@
-/* ENTRY(Reset); */
-EXTERN(RESET_VECTOR)
-EXTERN(EXCEPTIONS)
+ENTRY(_reset);
+EXTERN(_reset);
+EXTERN(_ivt);
  
 SECTIONS
 {
     /* Initial stack pointer value; GPU starts execution here.*/
     . = 0x8000;
-    __reset = .;
     .vector_table : 
     {
         /* Start executing directly in Reset */
-        *(.ivt.reset)
+        *(.text.ivt.reset)
+        *(.text.ivt.exceptions)
     }
     __text_start = .;
     .text :

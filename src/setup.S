@@ -1,18 +1,49 @@
+.section ".text.ivt.reset"
+.globl _reset
+.func _reset
+_reset:
+    b Reset
+
+.section ".ivt.exceptions"
+.globl _ivt
+_ivt:
+    b NMI
+    b HardFault
+    b MemManage
+    b BusFault
+    b UsageFault
+    b 0
+    b 0
+    b 0
+    b 0
+    b SVCall
+    b 0
+    b 0
+    b PendSV
+    b SysTick
 .section ".text.boot"
+.globl _bootldr
+.globl Reset
 
-.globl _start
-.globl _qemu_halt_normal
-.globl _qemu_halt_fail
+Reset: 
+    /* move the reset vector to address 0 */
+    ldr r0, =_reset
+    mov r2, #0
+    ldr r1, [r0, #4]
+    str r1, [r2, #4]
 
-// OBVIOUSLY THE IVT NEEDS TO BE HERE
-// Entry point for the kernel.
-// r15 -> should begin execution at 0x8000.
-// r0 -> 0x00000000
-// r1 -> 0x00000C42 - machine id
-// r2 -> 0x00000100 - start of ATAGS
-// preserve these registers as argument for kernel_main
+    /* move the rest of the IVT */
+    ldr r0, =_ivt
+    b 2f
+    1:
+        ldr r1, [r0, #4]
+        str r1, [r2, #4]
+    2:
+        cmp r2, #0x14
+        blt 1b
+    b _bootldr
 
-_start:
+_bootldr:
     // Setup the stack.
     mov sp, #0x8000
  
@@ -35,7 +66,5 @@ _start:
     blo 1b
  
     // Call kernel_main
-    ldr r3, =kernel_main
-    @ blx r3
     b kernel_main
- 
+
