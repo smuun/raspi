@@ -11,7 +11,7 @@ pub unsafe extern "C" fn handle_default() {
 pub unsafe extern "C" fn handle_undefined_instruction() {
     uart_init();
     println!("in exception handler sp = {:#x}", read_sp());
-    println!("warning: skipping undefined instruction");
+    panic!("ABORTING: undefined instruction");
 }
 
 #[no_mangle]
@@ -30,8 +30,7 @@ pub unsafe extern "C" fn handle_prefetch_abrt() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_data_abrt() {
     uart_init();
-    println!("prefetch abort: unhandled");
-    loop {}
+    panic!("ABORTING: unhandled data abort");
 }
 
 #[allow(dead_code)]

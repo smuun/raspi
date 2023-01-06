@@ -7,11 +7,10 @@
 #![feature(core_intrinsics, lang_items)]
 
 use core::arch::asm;
-use core::panic::PanicInfo;
 use core::ptr::read_volatile;
 use core::ptr::write_volatile;
 pub mod uart;
-#[allow(unused_imports)]
+#[cfg(test)]
 use crate::uart::uart_init;
 pub mod shutdown;
 use shutdown::{qemu_angel_exit, QemuExitCode};
@@ -23,12 +22,6 @@ mod exceptions;
 
 //Utility functions
 
-#[panic_handler]
-pub fn panic(info: &PanicInfo) -> ! {
-    println!("{}", info);
-    qemu_angel_exit(QemuExitCode::Fail);
-    loop {}
-}
 
 // spin while the bit at mask is set
 pub fn spin_while(ptr: *const u32, mask: u32) {
@@ -86,4 +79,24 @@ Boot complete. Executing in kernel_main (TESTING)
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::read_sp;
+
+    #[test_case]
+    fn sp_is_initialized_and_approx_0x8000() {
+        let sp = unsafe { read_sp() };
+        assert!(sp != 0);
+        assert!(sp > 0x7000);
+        assert!(sp <= 0x8000);
+    }
+}
+
+#[cfg(test)]
+use core::panic::PanicInfo;
+
+#[cfg(test)]
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    qemu_angel_exit(QemuExitCode::Fail);
+    loop {}
+}

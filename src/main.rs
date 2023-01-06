@@ -4,10 +4,11 @@
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-use core::arch::asm;
 use raspi::shutdown::kernel_halt;
 use raspi::uart::{getc, uart_init};
 use raspi::{print, println};
+use core::panic::PanicInfo;
+use raspi::shutdown::{QemuExitCode, qemu_angel_exit};
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -33,12 +34,17 @@ fn shutdown_tasks() {
     println!("Shutdown.");
 }
 
+#[panic_handler]
+pub fn panic(info: &PanicInfo) -> ! {
+    println!("{}", info);
+    qemu_angel_exit(QemuExitCode::Fail);
+    loop {}
+}
+
 fn trigger_exception() {
     // let icsr = 0xe000ed04 as *mut u32;
+    println!("triggering exception");
     println!("in main sp = {:#x}", unsafe { raspi::read_sp() });
-    unsafe {
-        asm!("bkpt 1");
-    }
 }
 
 fn fun_cli_app() {

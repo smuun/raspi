@@ -5,7 +5,8 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::arch::asm;
-use raspi::println;
+use core::panic::PanicInfo;
+use raspi::{println, Testable};
 use raspi::shutdown::{qemu_angel_exit, QemuExitCode};
 use raspi::uart::uart_init;
 
@@ -23,19 +24,33 @@ pub unsafe extern "C" fn HardFault() {
 }
 
 #[test_case]
-fn catch_trap() {
-    println!("Executing trap (should be caught and exit)...");
+fn trap_instruction_causes_panic() {
     unsafe {
         asm!("trap");
     }
 }
 
-pub fn test_runner(tests: &[&dyn Fn()]) {
+#[test_case]
+fn invalid_write_causes_panic() {
+    println!("invalid write:    in main sp = {:#x}", unsafe { raspi::read_sp() });
+    unsafe {
+        *(0xdeadbeef as *mut u64) = 42;
+    }
+}
+
+pub fn test_runner(tests: &[&dyn Testable]) {
     println!("Running {} tests", tests.len());
     for test in tests {
-        test();
+        test.run();
         println!("[test did not panic]");
-        qemu_angel_exit(QemuExitCode::Fail);
+        qemu_angel_exit(QemuExitCode::Ok);
     }
     qemu_angel_exit(QemuExitCode::Ok);
+}
+
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    println!("[ok]");
+    qemu_angel_exit(QemuExitCode::Ok);
+    loop {}
 }
