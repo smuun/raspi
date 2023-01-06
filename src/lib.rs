@@ -79,4 +79,4 @@ Boot complete. Executing in kernel_main (TESTING)
 }
 
 #[cfg(test)]
-mod tests { }
+mod tests {}

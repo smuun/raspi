@@ -26,7 +26,6 @@ Boot complete.  Executing in kernel_main.
     #[cfg(test)]
     test_main();
 
-
     fun_cli_app();
     shutdown_tasks();
     //bootloader halts upon return from kernel_main
