@@ -1,34 +1,29 @@
 use crate::*;
-use core::fmt;
+use core::{fmt, ptr::replace};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
 // raspi1 has peripheral base address 0x20000000
-const UART: u32 = 0x20201000;
-const UART_DR: *mut u8 = (UART + 0x0) as *mut u8;
-const UART_FR: *mut u32 = (UART + 0x18) as *mut u32;
-const UART_CR: *mut u32 = (UART + 0x30) as *mut u32;
-const UART_LCRH: *mut u32 = (UART + 0x2c) as *mut u32;
+const UART_BASE: u32 = 0x20201000;
+const UART_DR: *mut u8 = (UART_BASE + 0x0) as *mut u8;
+const UART_FR: *mut u32 = (UART_BASE + 0x18) as *mut u32;
+const UART_CR: *mut u32 = (UART_BASE + 0x30) as *mut u32;
+const UART_LCRH: *mut u32 = (UART_BASE + 0x2c) as *mut u32;
 
 // TODO this singleton pattern from the embedded rust book
-// type SerialPort = ();
-// struct Peripherals {
-//     serial: Option<SerialPort>,
-// }
-// impl Peripherals {
-//     fn take_serial(&mut self) -> SerialPort {
-//
-//         let p = replace(&mut self.serial, None);
-//         p.unwrap()
-//     }
-// }
-// static mut PERIPHERALS: Peripherals = Peripherals {
-//     serial: Some(SerialPort),
-//
-//     so: there is only one static mut;
-//     when you take_serial you replace PERIPHS.serial with None
-//
-// };
+struct Uart;
+struct Peripherals {
+    uart: Option<Uart>,
+}
+impl Peripherals {
+    unsafe fn take_uart(&mut self) -> Uart {
+        let p = replace(&mut self.uart, None);
+        p.unwrap()
+    }
+}
+static mut PERIPHERALS: Peripherals = Peripherals {
+    uart: Some(Uart),
+};
 
 /// Write a config value to the UART setup registers.
 /// Set the config register at address 'register_base' to:
