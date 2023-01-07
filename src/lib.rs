@@ -86,6 +86,44 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     qemu_angel_exit(QemuExitCode::Ok)
 }
 
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => (
+        $crate::println!(
+            "[LOG]  [{} at {}:{}]  {}",
+            core::module_path!(),
+            core::file!(),
+            core::line!(),
+            format_args!($($arg)*)
+        )
+    );
+}
+
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)*) => (
+        $crate::println!(
+            "[WRN]  [{} at {}:{}]  {}",
+            core::module_path!(),
+            core::file!(),
+            core::line!(),
+            format_args!($($arg)*)
+        )
+    );
+}
+
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)*) => (
+        $crate::println!(
+            "[ERR]  [{} at {}:{}]  {}",
+            core::module_path!(),
+            core::file!(),
+            core::line!(),
+            format_args!($($arg)*)
+        )
+    );
+}
 // Testing lib
 #[no_mangle]
 #[cfg(test)]

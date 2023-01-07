@@ -6,19 +6,19 @@
 use core::panic::PanicInfo;
 
 use raspi::{
-    print, println, readc,
+    error, log, print, println, readc,
     shutdown::{kernel_halt, qemu_angel_exit, QemuExitCode},
+    warn,
 };
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
-    println!(
-        "
------------------------------------------
-Boot complete.  Executing in kernel_main.
------------------------------------------
-"
-    );
+    log!("log level");
+    warn!("warn level");
+    error!("error level");
+    println!();
+    println!();
+    log!("executing in kernel_main");
     #[cfg(test)]
     test_main();
     fun_cli_app();

@@ -1,5 +1,7 @@
 use core::arch::asm;
 
+use crate::log;
+
 /// Trigger a system shutdown.
 pub fn kernel_halt() -> ! {
     // TODO add hardware support
@@ -22,10 +24,12 @@ pub fn qemu_angel_exit(code: QemuExitCode) {
 
     match code {
         QemuExitCode::Ok => unsafe {
+            log!("qemu exit OK");
             // r[0-3] -> a[1-4]
             asm!("svc 0x00123456", in("r0") EXIT, in("r1") OK);
         },
         QemuExitCode::Fail => unsafe {
+            log!("qemu exit fail");
             asm!("svc 0x00123456", in("r0") EXIT, in("r1") FAIL);
         },
     }
