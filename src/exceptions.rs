@@ -1,35 +1,31 @@
-use crate::{println, read_sp, uart::uart_init};
 use core::panic;
+
+use crate::{println, read_sp};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
-    uart_init();
     panic!("unhandled exception: unknown");
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_undefined_instruction() {
-    uart_init();
     println!("in exception handler sp = {:#x}", read_sp());
     panic!("ABORTING: undefined instruction");
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_swi() {
-    uart_init();
     println!("in swi handler sp = {:#x}", read_sp());
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_prefetch_abrt() {
-    uart_init();
     println!("prefetch abort: breakpoint? continuing.");
     // loop {}
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_data_abrt() {
-    uart_init();
     panic!("ABORTING: unhandled data abort");
 }
 

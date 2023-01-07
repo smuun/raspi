@@ -1,0 +1,21 @@
+unstable_features = true
+max_width = 80
+newline_style = "Unix"
+
+wrap_comments = true
+comment_width = 80
+
+use_field_init_shorthand = true
+imports_granularity = "Crate"
+normalize_comments = true
+normalize_doc_attributes = true
+blank_lines_lower_bound = 0
+blank_lines_upper_bound = 1
+error_on_line_overflow = true
+error_on_unformatted = true
+format_code_in_doc_comments = true
+format_macro_matchers = true
+hex_literal_case = "lower"
+reorder_impl_items = true
+reorder_imports = true
+group_imports = "StdExternalCrate"
