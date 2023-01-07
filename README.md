@@ -1,4 +1,4 @@
-# Blog OS / WIP
+# BlogOS
 
 Loosely following https://os.phil-opp.com/.  Adapted for the armv6 CPU in the
 raspberry pi 1 model B+.
