@@ -2,7 +2,7 @@ use core::arch::asm;
 
 /// Trigger a system shutdown.
 pub fn kernel_halt() -> ! {
-    //TODO add hardware support
+    // TODO add hardware support
     qemu_angel_exit(QemuExitCode::Ok);
     loop {}
 }

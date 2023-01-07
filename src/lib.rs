@@ -6,22 +6,49 @@
 #![reexport_test_harness_main = "test_main"]
 #![feature(core_intrinsics, lang_items)]
 
-use core::arch::asm;
-use core::ptr::read_volatile;
-use core::ptr::write_volatile;
+use core::{
+    arch::asm,
+    ptr::{read_volatile, write_volatile},
+};
+
 pub mod uart;
+
 #[cfg(test)]
 use crate::uart::uart_init;
+
 pub mod shutdown;
 use shutdown::{qemu_angel_exit, QemuExitCode};
+use uart::Uart;
 
 #[macro_use]
-
 mod exceptions;
-//Run the setup assembly unconditionally.
 
-//Utility functions
+// Peripherals
+pub struct Peripherals {
+    uart: Option<Uart>,
+}
 
+pub static mut PERIPHERALS: Peripherals = Peripherals {
+    uart: Some(Uart {}),
+};
+
+// Utility functions
+/// Write a config value to  a 32bit register
+/// Set the config register at address 'register_base' to:
+/// its current state, except that every bit in 'set' will
+/// be set to its value in Value.
+/// set & values & current config must be a valid uart config
+/// panics if the write operation fails
+pub fn configure(register_base: *mut u32, values: u32, set: u32) {
+    unsafe {
+        let mut word: u32 = read_volatile(register_base);
+        // if a 'set' bit is high, change the current bit to
+        // the corresponding Value
+        word &= values & set;
+        write_volatile(register_base, word);
+        assert_eq!(read_volatile(register_base), word);
+    }
+}
 
 // spin while the bit at mask is set
 pub fn spin_while(ptr: *const u32, mask: u32) {
@@ -32,8 +59,13 @@ pub fn spin_until(ptr: *const u32, mask: u32) {
     unsafe { while ((read_volatile(ptr)) & mask) != mask {} }
 }
 
-//Testing, generally
+pub unsafe fn read_sp() -> u32 {
+    let mut x: u32 = 0;
+    asm!("mov {}, sp", inout(reg) x);
+    x
+}
 
+// Testing, generally
 pub trait Testable {
     fn run(&self) -> ();
 }
@@ -57,13 +89,7 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     qemu_angel_exit(QemuExitCode::Ok)
 }
 
-pub unsafe fn read_sp() -> u32 {
-    let mut x: u32 = 0;
-    asm!("mov {}, sp", inout(reg) x);
-    x
-}
-
-//Testing lib
+// Testing lib
 #[no_mangle]
 #[cfg(test)]
 pub extern "C" fn kernel_main() {
@@ -81,7 +107,6 @@ Boot complete. Executing in kernel_main (TESTING)
 #[cfg(test)]
 mod tests {
     use crate::read_sp;
-
     #[test_case]
     fn sp_is_initialized_and_approx_0x8000() {
         let sp = unsafe { read_sp() };
@@ -93,7 +118,6 @@ mod tests {
 
 #[cfg(test)]
 use core::panic::PanicInfo;
-
 #[cfg(test)]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {

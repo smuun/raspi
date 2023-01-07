@@ -89,7 +89,6 @@ _bootldr:
     b kernel_main
 
 /* interrupts start out with an unintialized stack */
-/* TODO preserve registers! */
 _undefined_instruction:
     mov sp, #0x2000
     push {r14}
