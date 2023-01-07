@@ -8,12 +8,10 @@ use core::{arch::asm, panic::PanicInfo};
 use raspi::{
     println,
     shutdown::{qemu_angel_exit, QemuExitCode},
-    uart::uart_init,
     Testable,
 };
 #[no_mangle]
 pub extern "C" fn kernel_main() {
-    uart_init();
     test_main();
 }
 #[test_case]

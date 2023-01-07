@@ -13,9 +13,6 @@ use core::{
 
 pub mod uart;
 
-#[cfg(test)]
-use crate::uart::uart_init;
-
 pub mod shutdown;
 use shutdown::{qemu_angel_exit, QemuExitCode};
 use uart::Uart;
@@ -93,7 +90,6 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 #[no_mangle]
 #[cfg(test)]
 pub extern "C" fn kernel_main() {
-    uart_init();
     println!(
         "
 -------------------------------------------------
