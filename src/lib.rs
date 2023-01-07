@@ -20,6 +20,14 @@ use uart::Uart;
 #[macro_use]
 mod exceptions;
 
+// Config
+pub enum LogLevel {
+    All,
+    Warn,
+    Error,
+}
+pub const LOGLEVEL: LogLevel = LogLevel::All;
+
 // Peripherals
 pub struct Peripherals {
     uart: Option<Uart>,
@@ -86,42 +94,57 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     qemu_angel_exit(QemuExitCode::Ok)
 }
 
+
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => (
-        $crate::println!(
-            "[LOG]  [{} at {}:{}]  {}",
-            core::module_path!(),
-            core::file!(),
-            core::line!(),
-            format_args!($($arg)*)
-        )
+        match $crate::LOGLEVEL {
+            $crate::LogLevel::All => {
+                $crate::println!(
+                    "[LOG]  [{} at {}:{}]  {}",
+                    core::module_path!(),
+                    core::file!(),
+                    core::line!(),
+                    format_args!($($arg)*)
+                )
+            },
+            _ => {}
+        }
     );
 }
 
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => (
-        $crate::println!(
-            "[WRN]  [{} at {}:{}]  {}",
-            core::module_path!(),
-            core::file!(),
-            core::line!(),
-            format_args!($($arg)*)
-        )
+        match $crate::LOGLEVEL {
+            $crate::LogLevel::All | $crate::LogLevel::Warn => {
+                $crate::println!(
+                    "[WRN]  [{} at {}:{}]  {}",
+                    core::module_path!(),
+                    core::file!(),
+                    core::line!(),
+                    format_args!($($arg)*)
+                )
+            },
+            _ => {}
+        }
     );
 }
 
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => (
-        $crate::println!(
-            "[ERR]  [{} at {}:{}]  {}",
-            core::module_path!(),
-            core::file!(),
-            core::line!(),
-            format_args!($($arg)*)
-        )
+        match $crate::LOGLEVEL {
+            _ => {
+                $crate::println!(
+                    "[ERR]  [{} at {}:{}]  {}",
+                    core::module_path!(),
+                    core::file!(),
+                    core::line!(),
+                    format_args!($($arg)*)
+                )
+            }
+        }
     );
 }
 // Testing lib
