@@ -11,6 +11,7 @@ use core::{
     ptr::{read_volatile, write_volatile},
 };
 
+pub mod timer;
 pub mod uart;
 
 pub mod shutdown;
@@ -38,6 +39,7 @@ pub static mut PERIPHERALS: Peripherals = Peripherals {
 };
 
 // Utility functions
+
 /// Write a config value to  a 32bit register
 /// Set the config register at address 'register_base' to:
 /// its current state, except that every bit in 'set' will
@@ -52,6 +54,24 @@ pub fn configure(register_base: *mut u32, values: u32, set: u32) {
         word &= values & set;
         write_volatile(register_base, word);
         assert_eq!(read_volatile(register_base), word);
+    }
+}
+
+/// Read the register at address `register_base` and compare.  Return true if
+/// every bit in `set` matches the value provided in `value`.  `register_base`
+/// must be valid for volatile read.
+/// 
+/// # Example
+/// I want the lowest bit set:  
+/// `0b1011 & 0b0001 = 0b0001 ==  0b0001 & 0b0001`
+/// or unset:  
+/// `0b1011 & 0b0000 = 0b0000 ==  0b0001 & 0b0000`
+/// but not  
+/// `0b1011 & 0b0001 = 0b0001 !=  0b0001 & 0b0000`
+pub fn poll(register_base: *mut u32, values: u32, set: u32) -> bool {
+    unsafe {
+        let word: u32 = read_volatile(register_base);
+        word & set == values & set
     }
 }
 
@@ -93,7 +113,6 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     }
     qemu_angel_exit(QemuExitCode::Ok)
 }
-
 
 #[macro_export]
 macro_rules! log {

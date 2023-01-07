@@ -1,6 +1,7 @@
 use core::panic;
 
 use crate::{println, read_sp};
+use crate::{log, warn, error};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
@@ -9,18 +10,18 @@ pub unsafe extern "C" fn handle_default() {
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_undefined_instruction() {
-    println!("in exception handler sp = {:#x}", read_sp());
+    log!("in exception handler sp = {:#x}", read_sp());
     panic!("ABORTING: undefined instruction");
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_swi() {
-    println!("in swi handler sp = {:#x}", read_sp());
+    log!("in swi handler sp = {:#x}", read_sp());
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_prefetch_abrt() {
-    println!("prefetch abort: breakpoint? continuing.");
+    log!("prefetch abort: breakpoint? ignoring.");
     // loop {}
 }
 
@@ -28,11 +29,16 @@ pub unsafe extern "C" fn handle_prefetch_abrt() {
 pub unsafe extern "C" fn handle_data_abrt() {
     panic!("ABORTING: unhandled data abort");
 }
+#[no_mangle]
+pub unsafe extern "C" fn handle_irq() {
+    log!("handling IRQ");
+    loop {}
+
+}
 
 #[allow(dead_code)]
 extern "C" {
     fn _reset();
     // TODO implement these?
-    fn handle_irq();
     fn handle_fiq();
 }

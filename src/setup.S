@@ -36,10 +36,12 @@ _ivt_addrs_end:
 
 _reset: 
     @ sp grows downwards from code start
+    @ TODO also initialize the stack pointers
+    @ for other modes; see arm arch ref man page A3-20
     mov sp, #0x8000
-    /* disable irq and fiq */
-    cpsid i
-    cpsid f
+    /* enable irq */
+    cpsie i
+    cpsie f
 
     /* move the IVT */
     /* since the reset vector and the IVT */

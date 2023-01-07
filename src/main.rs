@@ -19,9 +19,16 @@ pub extern "C" fn kernel_main() {
     println!();
     println!();
     log!("executing in kernel_main");
+
     #[cfg(test)]
     test_main();
+
+    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
+    log!("enabling timer IRQ...");
+    raspi::timer::enable_timer_interrupts();
+    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
     fun_cli_app();
+    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
     shutdown_tasks();
     kernel_halt();
 }
@@ -55,7 +62,7 @@ fn shutdown_tasks() {
 #[panic_handler]
 pub fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
-    qemu_angel_exit(QemuExitCode::Fail);
+    // qemu_angel_exit(QemuExitCode::Fail);
     loop {}
 }
 
