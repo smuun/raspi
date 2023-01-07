@@ -1,4 +1,4 @@
-# Blog OS / WIP
+# BlogOS
 
 Loosely following https://os.phil-opp.com/.  Adapted for the armv6 CPU in the
 raspberry pi 1 model B+.
@@ -15,13 +15,13 @@ raspberry pi 1 model B+.
   and write characters). This is instead of VGA text mode, which doesn't exist on
   ARM (I think).
 - [X] Testing.
+- [X] Refactor the uart code for singleton example
+- [X] Use `readc!` instead of getc
 
 ## Currently working on
 - [ ] Exceptions
 
 ## TODO (issues)
-- [ ] Refactor the uart code to use the singleton example
-- [ ] Refactor the getc code so it acts more like std?
 - [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock
 
 # Rust target
