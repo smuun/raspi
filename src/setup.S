@@ -43,6 +43,11 @@ _reset:
     cpsie i
     cpsie f
 
+    mrs     r0, cpsr
+    bic     r0, r0, #0x80
+    msr     cpsr_c, r0
+    cpsie   i
+
     /* move the IVT */
     /* since the reset vector and the IVT */
     /* are contiguous in memory we don't need to reload r0*/

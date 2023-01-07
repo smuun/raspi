@@ -27,6 +27,7 @@ pub extern "C" fn kernel_main() {
     log!("enabling timer IRQ...");
     raspi::timer::enable_timer_interrupts();
     log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
+    loop{}
     fun_cli_app();
     log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
     shutdown_tasks();

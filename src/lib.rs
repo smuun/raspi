@@ -47,13 +47,24 @@ pub static mut PERIPHERALS: Peripherals = Peripherals {
 /// set & values & current config must be a valid uart config
 /// panics if the write operation fails
 pub fn configure(register_base: *mut u32, values: u32, set: u32) {
+    // log!("configuring register at {}", register_base as u32);
     unsafe {
         let mut word: u32 = read_volatile(register_base);
         // if a 'set' bit is high, change the current bit to
         // the corresponding Value
-        word &= values & set;
+
+        // first, zero out all the bits in 'set'
+        // i.e., invert set: then we don't care about all the high bits
+        // and we want the low bits to be zero
+        // AND this with the current value: then all the low bits are zero
+        // and the high bits are equal to current value
+        word = word & !set;
+
+        // now: we have the current value, except that all the bits we
+        // care about are zeroed.  OR it with high values that we care about:
+        word = word | (values & set);
         write_volatile(register_base, word);
-        assert_eq!(read_volatile(register_base), word);
+        // assert_eq!(read_volatile(register_base) & set, values & set);
     }
 }
 
