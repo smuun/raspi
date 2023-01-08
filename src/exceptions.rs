@@ -1,7 +1,6 @@
 use core::panic;
 
-use crate::{println, read_sp};
-use crate::{log, warn, error};
+use crate::{error, log, println, read_sp, warn};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
@@ -33,7 +32,6 @@ pub unsafe extern "C" fn handle_data_abrt() {
 pub unsafe extern "C" fn handle_irq() {
     log!("handling IRQ");
     loop {}
-
 }
 
 #[allow(dead_code)]

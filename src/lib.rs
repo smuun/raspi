@@ -71,13 +71,13 @@ pub fn configure(register_base: *mut u32, values: u32, set: u32) {
 /// Read the register at address `register_base` and compare.  Return true if
 /// every bit in `set` matches the value provided in `value`.  `register_base`
 /// must be valid for volatile read.
-/// 
+///
 /// # Example
-/// I want the lowest bit set:  
+/// I want the lowest bit set
 /// `0b1011 & 0b0001 = 0b0001 ==  0b0001 & 0b0001`
-/// or unset:  
+/// or unset:
 /// `0b1011 & 0b0000 = 0b0000 ==  0b0001 & 0b0000`
-/// but not  
+/// but not
 /// `0b1011 & 0b0001 = 0b0001 !=  0b0001 & 0b0000`
 pub fn poll(register_base: *mut u32, values: u32, set: u32) -> bool {
     unsafe {
