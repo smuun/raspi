@@ -17,12 +17,21 @@ raspberry pi 1 model B+.
 - [X] Testing.
 - [X] Refactor the uart code for singleton example
 - [X] Use `readc!` instead of getc
+- [X] Exceptions
+
 
 ## Currently working on
-- [ ] Exceptions
+- [ ] ?
 
 ## TODO (issues)
 - [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock
+- [ ] Timer. Two known working examples: `reference/arm-tutorial-rpi/part-4/armc-013`
+    and `reference/piaplus/blinker05`.  My implementation from the datasheet was
+    basically identical but didn't trigger interrupts on QEMU.  Spent forever
+    browsing source files for the two references and then finally tested them on
+    qemu -- turns out they don't work either (tried changing their interrupt
+    handlers to loop (and check with gdb), didn't work; svc exit qemu, didn't work).
+    Next steps: do the LED blink and try on real rpi.
 
 # Rust target
 - [Rust users](https://users.rust-lang.org/t/how-to-compile-freestanding-binary-for-armv6/50980/7)
