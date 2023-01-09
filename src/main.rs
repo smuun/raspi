@@ -3,13 +3,11 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-use core::{panic::PanicInfo};
+#[cfg(test)]
+use core::arch::asm;
+use core::panic::PanicInfo;
 
-use raspi::{
-    error, log, print, println, readc,
-    shutdown::{kernel_halt},
-    warn,
-};
+use raspi::{error, log, print, println, readc, shutdown::kernel_halt, warn};
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -76,19 +74,19 @@ mod tests {
     }
     #[test_case]
     fn trigger_all_exceptions() {
-        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", raspi::read_sp());
         log!("trap");
         unsafe {
             asm!("trap");
         }
 
-        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", raspi::read_sp());
         log!("swi");
         unsafe {
             asm!("swi 1");
         }
 
-        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", raspi::read_sp());
         log!("invalid read");
         unsafe {
             asm!(
@@ -98,6 +96,6 @@ mod tests {
           "
             );
         }
-        log!("back in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
+        log!("back in kernel sp = 0x{:x}", raspi::read_sp());
     }
 }

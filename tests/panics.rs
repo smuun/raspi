@@ -22,9 +22,7 @@ fn trap_instruction_causes_panic() {
 }
 #[test_case]
 fn invalid_write_causes_panic() {
-    println!("invalid write:    in main sp = {:#x}", unsafe {
-        raspi::read_sp()
-    });
+    println!("invalid write:    in main sp = {:#x}", raspi::read_sp());
     unsafe {
         *(0xdeadbeef as *mut u64) = 42;
     }

@@ -196,7 +196,7 @@ mod tests {
     use crate::read_sp;
     #[test_case]
     fn sp_is_initialized_and_nonzero() {
-        let sp = unsafe { read_sp() };
+        let sp = read_sp();
         assert!(sp != 0);
     }
 }

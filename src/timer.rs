@@ -6,7 +6,7 @@
 // Let's start with normal interrupts
 // the ARM also supports fast interrupts (FIQ)
 
-use core::{arch::asm};
+use core::arch::asm;
 
 use crate::{configure, poll};
 
