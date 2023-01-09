@@ -97,7 +97,7 @@ pub fn spin_until(ptr: *const u32, mask: u32) {
 
 pub fn read_sp() -> u32 {
     let mut x: u32 = 0;
-    unsafe {asm!("mov {}, sp", inout(reg) x)};
+    unsafe { asm!("mov {}, sp", inout(reg) x) };
     x
 }
 

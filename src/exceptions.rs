@@ -1,6 +1,6 @@
 use core::panic;
 
-use crate::{error, log, println, read_sp, warn};
+use crate::{error, log, read_sp};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {

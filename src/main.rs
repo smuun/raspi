@@ -3,14 +3,11 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-use core::{
-    panic::PanicInfo,
-    arch::asm,
-};
+use core::{panic::PanicInfo};
 
 use raspi::{
     error, log, print, println, readc,
-    shutdown::{kernel_halt, qemu_angel_exit, QemuExitCode},
+    shutdown::{kernel_halt},
     warn,
 };
 
@@ -25,7 +22,6 @@ pub extern "C" fn kernel_main() {
 
     #[cfg(test)]
     test_main();
-
 
     fun_cli_app();
     shutdown_tasks();
@@ -72,29 +68,36 @@ mod tests {
     #[test_case]
     fn stack_pointer_is_reset_on_undefined_exception_return() {
         let init_sp = raspi::read_sp();
-        unsafe {asm!("trap");}
+        unsafe {
+            asm!("trap");
+        }
         let final_sp = raspi::read_sp();
         assert_eq!(init_sp, final_sp);
-
     }
     #[test_case]
     fn trigger_all_exceptions() {
-        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
         log!("trap");
-        unsafe { asm!("trap"); }
+        unsafe {
+            asm!("trap");
+        }
 
-        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
         log!("swi");
-        unsafe { asm!("swi 1"); }
+        unsafe {
+            asm!("swi 1");
+        }
 
-        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
         log!("invalid read");
         unsafe {
-            asm!("
+            asm!(
+                "
             mov r1, #0x7fffffff
             ldr r0, [r1]
-          ");
+          "
+            );
         }
-        log!("back in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("back in kernel sp = 0x{:x}", unsafe { raspi::read_sp() });
     }
 }
