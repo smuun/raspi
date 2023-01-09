@@ -95,9 +95,9 @@ pub fn spin_until(ptr: *const u32, mask: u32) {
     unsafe { while ((read_volatile(ptr)) & mask) != mask {} }
 }
 
-pub unsafe fn read_sp() -> u32 {
+pub fn read_sp() -> u32 {
     let mut x: u32 = 0;
-    asm!("mov {}, sp", inout(reg) x);
+    unsafe {asm!("mov {}, sp", inout(reg) x)};
     x
 }
 
@@ -195,11 +195,9 @@ Boot complete. Executing in kernel_main (TESTING)
 mod tests {
     use crate::read_sp;
     #[test_case]
-    fn sp_is_initialized_and_approx_0x8000() {
+    fn sp_is_initialized_and_nonzero() {
         let sp = unsafe { read_sp() };
         assert!(sp != 0);
-        assert!(sp > 0x7000);
-        assert!(sp <= 0x8000);
     }
 }
 

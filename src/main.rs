@@ -3,7 +3,10 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
-use core::panic::PanicInfo;
+use core::{
+    panic::PanicInfo,
+    arch::asm,
+};
 
 use raspi::{
     error, log, print, println, readc,
@@ -23,12 +26,8 @@ pub extern "C" fn kernel_main() {
     #[cfg(test)]
     test_main();
 
-    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
-    log!("enabling timer IRQ...");
-    raspi::timer::enable_timer_interrupts();
-    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
+
     fun_cli_app();
-    log!("timer IRQ set? {}", raspi::timer::poll_timer_irq());
     shutdown_tasks();
     kernel_halt();
 }
@@ -71,7 +70,31 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
     #[test_case]
-    fn trivial() {
-        assert!(1 == 1);
+    fn stack_pointer_is_reset_on_undefined_exception_return() {
+        let init_sp = raspi::read_sp();
+        unsafe {asm!("trap");}
+        let final_sp = raspi::read_sp();
+        assert_eq!(init_sp, final_sp);
+
+    }
+    #[test_case]
+    fn trigger_all_exceptions() {
+        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("trap");
+        unsafe { asm!("trap"); }
+
+        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("swi");
+        unsafe { asm!("swi 1"); }
+
+        log!("in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
+        log!("invalid read");
+        unsafe {
+            asm!("
+            mov r1, #0x7fffffff
+            ldr r0, [r1]
+          ");
+        }
+        log!("back in kernel sp = 0x{:x}", unsafe {raspi::read_sp() });
     }
 }

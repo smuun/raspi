@@ -10,17 +10,18 @@ pub unsafe extern "C" fn handle_default() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_undefined_instruction() {
     log!("in exception handler sp = {:#x}", read_sp());
-    panic!("ABORTING: undefined instruction");
+    error!("ignoring undefined instruction");
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_swi() {
     log!("in swi handler sp = {:#x}", read_sp());
+    log!("ignoring swi");
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_prefetch_abrt() {
-    log!("prefetch abort: breakpoint? ignoring.");
+    log!("ignoring prefetch abort: breakpoint?");
     // loop {}
 }
 
@@ -36,7 +37,6 @@ pub unsafe extern "C" fn handle_irq() {
 
 #[allow(dead_code)]
 extern "C" {
-    fn _reset();
     // TODO implement these?
     fn handle_fiq();
 }
