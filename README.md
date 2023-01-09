@@ -7,10 +7,8 @@ raspberry pi 1 model B+.
 - [X] Freestanding executable running on QEMU.  See cargo config and target json
   for details (cross-compilation, custom linker.ld, etc).  Pieced together from
   the internet and the arm reference manual.
-- [X] Bootloader.  The bootloader crate doesn't work on arm, so instead of that
-  I'm using a (slightly adapted) bootloader example from the osdev reference.
-  It basically just defines a stack, zeroes out bss, and hands off execution to
-  kernel_main.
+- [X] Bootloader.  See `setup.S` -- no blog-os bootloader crate for ARM, plus it
+  was kind of interesting to have to figure it out.
 - [X] Basic input and output over the raspi1's UART (configure the UART and read
   and write characters). This is instead of VGA text mode, which doesn't exist on
   ARM (I think).
@@ -48,6 +46,10 @@ Resources:
 - [Whirlwind tour](https://www.coranac.com/tonc/text/asm.htm).
 
 # Notes
+The ARMv6 processor in the pi B+ is an **A-profile processor**.  There are tons of
+references online to it being M-profile, but it is not. This is important because:
+there is no systick exception, the IVT stuff is significantly different, and so are the execution modes.
+
 [RPi boot sequence \(kind of interesting\)](https://raspberrypi.stackexchange.com/questions/10442/what-is-the-boot-sequence/10595#10595).
 
 Some guy doing MINIX on rpi 3:
