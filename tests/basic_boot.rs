@@ -20,6 +20,7 @@ fn test_println() {
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     println!("[ok]");
+    println!();
     qemu_angel_exit(QemuExitCode::Ok);
     loop {}
 }

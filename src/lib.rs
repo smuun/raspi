@@ -111,9 +111,10 @@ where
     T: Fn(),
 {
     fn run(&self) {
-        print!("{}...\t", core::any::type_name::<T>());
+        println!("{}...\t", core::any::type_name::<T>());
         self();
         println!("[ok]");
+        println!();
     }
 }
 
@@ -181,13 +182,7 @@ macro_rules! error {
 #[no_mangle]
 #[cfg(test)]
 pub extern "C" fn kernel_main() {
-    println!(
-        "
--------------------------------------------------
-Boot complete. Executing in kernel_main (TESTING)
--------------------------------------------------
-"
-    );
+    log!("boot complete (testing)");
     test_main();
 }
 
