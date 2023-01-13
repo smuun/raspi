@@ -4,13 +4,14 @@
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-// #[cfg(test)]
-use core::{arch::asm, panic::PanicInfo};
+#[cfg(test)]
+use core::arch::asm;
+use core::panic::PanicInfo;
 
 use raspi::{
     log, print, println, readc,
     shutdown::kernel_halt,
-    sys_timer::{timer_irq_active, init_timer},
+    sys_timer::{init_timer, timer_irq_active},
 };
 
 #[no_mangle]
@@ -21,10 +22,8 @@ pub extern "C" fn kernel_main() {
     #[cfg(test)]
     test_main();
 
-    log!("timer irq active: {}", timer_irq_active());
     init_timer();
     log!("irq enabled");
-    log!("spinning");
     log!("timer irq active: {}", timer_irq_active());
 
     fun_cli_app();

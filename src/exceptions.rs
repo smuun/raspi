@@ -1,6 +1,12 @@
 use core::panic;
 
-use crate::{error, log, read_sp, sys_timer::{disable_timer_interrupts, set_timer, TimerID, clear_timer_interrupts, enable_timer_interrupts}};
+use crate::{
+    error, log, read_sp,
+    sys_timer::{
+        clear_timer_interrupts, disable_timer_interrupts, set_timer,
+        timer_irq_active, TimerID,
+    },
+};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
@@ -31,6 +37,7 @@ pub unsafe extern "C" fn handle_data_abrt() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_irq() {
     log!("handling IRQ");
+    log!("timer irq active: {}", timer_irq_active());
     sys_tick();
 }
 
@@ -41,9 +48,10 @@ fn sys_tick() {
     clear_timer_interrupts(TimerID::One);
     // add some time to the counter
     // tick
-    set_timer(TimerID::One, u32::MAX / 2 );
+    set_timer(TimerID::One, u32::MAX / 2);
     log!("tick");
-    // return 
+    log!("timer irq active: {}", timer_irq_active());
+    // return
 }
 
 #[allow(dead_code)]

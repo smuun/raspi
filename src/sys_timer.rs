@@ -43,7 +43,7 @@ pub fn timer_irq_active() -> bool {
 }
 
 pub enum TimerID {
-    One
+    One,
 }
 
 pub fn set_timer(_id: TimerID, value: u32) {
