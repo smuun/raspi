@@ -5,13 +5,12 @@
 #![reexport_test_harness_main = "test_main"]
 
 // #[cfg(test)]
-use core::panic::PanicInfo;
-
-use core::arch::asm;
+use core::{arch::asm, panic::PanicInfo};
 
 use raspi::{
-    log, print, println, readc, shutdown::kernel_halt,
-    sys_timer::{enable_timer_interrupts, timer_irq_active},
+    log, print, println, readc,
+    shutdown::kernel_halt,
+    sys_timer::{timer_irq_active, init_timer},
 };
 
 #[no_mangle]
@@ -23,7 +22,7 @@ pub extern "C" fn kernel_main() {
     test_main();
 
     log!("timer irq active: {}", timer_irq_active());
-    enable_timer_interrupts();
+    init_timer();
     log!("irq enabled");
     log!("spinning");
     log!("timer irq active: {}", timer_irq_active());
@@ -32,7 +31,6 @@ pub extern "C" fn kernel_main() {
     shutdown_tasks();
     kernel_halt();
 }
-
 
 fn fun_cli_app() {
     // this fails at 1095 characters? Interesting.
@@ -65,9 +63,6 @@ pub fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
     loop {}
 }
-
-
-
 
 #[cfg(test)]
 mod tests {

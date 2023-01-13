@@ -128,6 +128,16 @@ impl fmt::Write for Uart {
     }
 }
 
+/// This is for use in the log macros in case they are being called from an
+/// exception handler. Since the exception handler can be invoked while the UART
+/// is locked, we have to force unlock before logging from the handler.  This
+/// doesn't seem to break anything
+pub fn force_uart_unlock() {
+    unsafe {
+        UART.force_unlock();
+    }
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;

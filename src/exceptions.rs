@@ -1,6 +1,6 @@
 use core::panic;
 
-use crate::{error, log, read_sp};
+use crate::{error, log, read_sp, sys_timer::{disable_timer_interrupts, set_timer, TimerID, clear_timer_interrupts, enable_timer_interrupts}};
 
 #[no_mangle]
 pub unsafe extern "C" fn handle_default() {
@@ -22,7 +22,6 @@ pub unsafe extern "C" fn handle_swi() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_prefetch_abrt() {
     log!("ignoring prefetch abort: breakpoint?");
-    // loop {}
 }
 
 #[no_mangle]
@@ -32,7 +31,19 @@ pub unsafe extern "C" fn handle_data_abrt() {
 #[no_mangle]
 pub unsafe extern "C" fn handle_irq() {
     log!("handling IRQ");
-    loop {}
+    sys_tick();
+}
+
+fn sys_tick() {
+    // disable the interrupt
+    disable_timer_interrupts();
+    // clear the pending interrupt
+    clear_timer_interrupts(TimerID::One);
+    // add some time to the counter
+    // tick
+    set_timer(TimerID::One, u32::MAX / 2 );
+    log!("tick");
+    // return 
 }
 
 #[allow(dead_code)]
