@@ -143,8 +143,8 @@ _reset:
     // call the bootloader in svc mode
     msr cpsr_c, #0b10011
 
-    // disable irq
-    cpsid i
+    // enable irq
+    cpsie i
     // disable fiq
     cpsid f
 
@@ -171,7 +171,7 @@ _bootldr:
 2:
     // below bss_end? clear some more
     cmp r4, r9
-    blo 1b
+    blt 1b
 
     // call the kernel in sys mode
     msr cpsr_c, #0b11111

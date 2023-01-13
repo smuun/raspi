@@ -11,7 +11,8 @@ use core::{
     ptr::{read_volatile, write_volatile},
 };
 
-pub mod timer;
+// use this instead of the arm timer
+pub mod sys_timer;
 pub mod uart;
 
 pub mod shutdown;
