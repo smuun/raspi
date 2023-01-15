@@ -18,12 +18,14 @@ raspberry pi 1 model B+.
 - [X] Refactor the uart code for singleton example
 - [X] Use `readc!` instead of getc
 - [X] Exceptions
+- [X] macro for the \_irq stuff
+- [X] tick tock
+
 
 
 ## Currently working on
-- [ ] macro for the \_irq stuff
-- [ ] Repeated timer interrupts.  For some reason they are not getting reset
-  correctly.
+- Memory!
+- [ ] virtual addresses.  start googling...
 
 ## TODO (issues)
 - [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock
