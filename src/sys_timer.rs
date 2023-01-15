@@ -1,13 +1,13 @@
 // Use the system timer
 use core::ptr::read_volatile;
 
-use crate::{configure, poll};
+use crate::{configure, exceptions::TIMER_INC, poll};
 
 /// **important** software addess for `0x7e...` is `0x20...`
 const IR_BASE: u32 = 0x2000b000;
 const IRQEN_1: *mut u32 = (IR_BASE + 0x210) as *mut u32;
 const IRQDIS_1: *mut u32 = (IR_BASE + 0x21c) as *mut u32;
-const IRQ_1_PEND: *mut u32 = (IR_BASE + 0x204) as *mut u32;
+pub const IRQ_1_PEND: *mut u32 = (IR_BASE + 0x204) as *mut u32;
 
 // periphs page 172
 const TIMER_BASE: u32 = 0x20003000;
@@ -29,11 +29,13 @@ pub fn init_timer() {
     ] {
         configure(reg, 0x0, u32::MAX);
     }
-    set_timer(TimerID::One, 2000000);
+    set_timer(TimerID::One, TIMER_INC);
     enable_timer_interrupts();
 }
 
 pub fn enable_timer_interrupts() {
+    // un-disable timer IRQs
+    configure(IRQDIS_1, 0, 1 << 1);
     // enable timer IRQs
     configure(IRQEN_1, 1 << 1, 1 << 1);
 }
@@ -57,9 +59,13 @@ pub fn set_timer(_id: TimerID, value: u32) {
 
 pub fn clear_timer_interrupts(_id: TimerID) {
     // assuming it's timer 1: clear the interrupt
-    configure(TIMER_CS, 0x0, 1 << 1);
+    // page 173 broadcom: WRITE A ONE TO CLEAR
+    configure(TIMER_CS, 1 << 1, 1 << 1);
 }
 
 pub fn disable_timer_interrupts() {
+    // un-enable IRQs
+    configure(IRQEN_1, 0, 1 << 1);
+    // disable IRQS
     configure(IRQDIS_1, 1 << 1, 1 << 1);
 }

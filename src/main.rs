@@ -9,9 +9,7 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 use raspi::{
-    log, print, println, readc,
-    shutdown::kernel_halt,
-    sys_timer::{init_timer, timer_irq_active},
+    log, print, println, readc, shutdown::kernel_halt, sys_timer::init_timer,
 };
 
 #[no_mangle]
@@ -23,9 +21,7 @@ pub extern "C" fn kernel_main() {
     test_main();
 
     init_timer();
-    log!("irq enabled");
-    log!("timer irq active: {}", timer_irq_active());
-
+    log!("timer enabled");
     fun_cli_app();
     shutdown_tasks();
     kernel_halt();
