@@ -29,7 +29,7 @@ pub fn init_timer() {
     ] {
         configure(reg, 0x0, u32::MAX);
     }
-    set_timer(TimerID::One, 20000);
+    set_timer(TimerID::One, 2000000);
     enable_timer_interrupts();
 }
 

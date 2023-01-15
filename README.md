@@ -21,7 +21,9 @@ raspberry pi 1 model B+.
 
 
 ## Currently working on
-- [ ] ?
+- [ ] macro for the \_irq stuff
+- [ ] Repeated timer interrupts.  For some reason they are not getting reset
+  correctly.
 
 ## TODO (issues)
 - [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock

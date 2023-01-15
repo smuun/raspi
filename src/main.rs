@@ -32,14 +32,8 @@ pub extern "C" fn kernel_main() {
 }
 
 fn fun_cli_app() {
-    // this fails at 1095 characters? Interesting.
-    println!("Enter a character to print 10x.");
-    let c = readc!() as u8;
-    for i in 0..10 {
-        let num = 0x030 + i as u8;
-        println!("{} number {}", c as char, num as char);
-    }
-    println!("Done.  Entering scratchpad mode. Type q to shutdown.");
+    // this fails at 1095 characters or something? interesting...
+    println!("Scratchpad mode. Type q to shutdown.");
     loop {
         let c = readc!() as char;
         if c == 'q' {

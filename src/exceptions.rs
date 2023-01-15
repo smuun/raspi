@@ -48,7 +48,7 @@ fn sys_tick() {
     clear_timer_interrupts(TimerID::One);
     // add some time to the counter
     // tick
-    set_timer(TimerID::One, u32::MAX / 2);
+    set_timer(TimerID::One, 2000000);
     log!("tick");
     log!("timer irq active: {}", timer_irq_active());
     // return
