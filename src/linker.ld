@@ -1,4 +1,5 @@
 ENTRY(_reset);
+
 EXTERN(_reset);
 EXTERN(_ivt);
  
@@ -48,8 +49,8 @@ SECTIONS
 }
 
 /* PROVIDE(handle_undefined_instruction = handle_default); */
-PROVIDE(handle_swi = handle_default);
-PROVIDE(handle_prefetch_abrt = handle_default);
-PROVIDE(handle_data_abrt = handle_default);
-PROVIDE(handle_irq = handle_default);
+/* PROVIDE(handle_swi = handle_default); */
+/* PROVIDE(handle_prefetch_abrt = handle_default); */
+/* PROVIDE(handle_data_abrt = handle_default); */
+/* PROVIDE(handle_irq = handle_default); */
 PROVIDE(handle_fiq = handle_default);

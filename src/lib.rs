@@ -11,7 +11,8 @@ use core::{
     ptr::{read_volatile, write_volatile},
 };
 
-pub mod timer;
+// use this instead of the arm timer
+pub mod sys_timer;
 pub mod uart;
 
 pub mod shutdown;
@@ -131,6 +132,9 @@ macro_rules! log {
     ($($arg:tt)*) => (
         match $crate::LOGLEVEL {
             $crate::LogLevel::All => {
+                if core::module_path!().ends_with("exceptions") {
+                    $crate::uart::force_uart_unlock();
+                }
                 $crate::println!(
                     "[LOG]  [{} at {}:{}]  {}",
                     core::module_path!(),
@@ -149,6 +153,9 @@ macro_rules! warn {
     ($($arg:tt)*) => (
         match $crate::LOGLEVEL {
             $crate::LogLevel::All | $crate::LogLevel::Warn => {
+                if core::module_path!().ends_with("exceptions") {
+                    $crate::uart::force_uart_unlock();
+                }
                 $crate::println!(
                     "[WRN]  [{} at {}:{}]  {}",
                     core::module_path!(),
@@ -167,6 +174,9 @@ macro_rules! error {
     ($($arg:tt)*) => (
         match $crate::LOGLEVEL {
             _ => {
+                if core::module_path!().ends_with("exceptions") {
+                    $crate::uart::force_uart_unlock();
+                }
                 $crate::println!(
                     "[ERR]  [{} at {}:{}]  {}",
                     core::module_path!(),

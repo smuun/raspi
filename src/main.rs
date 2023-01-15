@@ -3,11 +3,14 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(raspi::test_runner)]
 #![reexport_test_harness_main = "test_main"]
+
 #[cfg(test)]
 use core::arch::asm;
 use core::panic::PanicInfo;
 
-use raspi::{log, print, println, readc, shutdown::kernel_halt};
+use raspi::{
+    log, print, println, readc, shutdown::kernel_halt, sys_timer::init_timer,
+};
 
 #[no_mangle]
 pub extern "C" fn kernel_main() {
@@ -17,20 +20,16 @@ pub extern "C" fn kernel_main() {
     #[cfg(test)]
     test_main();
 
+    init_timer();
+    log!("timer enabled");
     fun_cli_app();
     shutdown_tasks();
     kernel_halt();
 }
 
 fn fun_cli_app() {
-    // this fails at 1095 characters? Interesting.
-    println!("Enter a character to print 10x.");
-    let c = readc!() as u8;
-    for i in 0..10 {
-        let num = 0x030 + i as u8;
-        println!("{} number {}", c as char, num as char);
-    }
-    println!("Done.  Entering scratchpad mode. Type q to shutdown.");
+    // this fails at 1095 characters or something? interesting...
+    println!("Scratchpad mode. Type q to shutdown.");
     loop {
         let c = readc!() as char;
         if c == 'q' {
@@ -80,17 +79,5 @@ mod tests {
         unsafe {
             asm!("swi 1");
         }
-
-        // // disabling this because it should panic
-        // log!("in kernel sp = 0x{:x}", raspi::read_sp());
-        // log!("performing invalid read");
-        // unsafe {
-        //     asm!(
-        //         "
-        //     mov r1, #0x7fffffff
-        //     ldr r0, [r1]
-        //   "
-        //     );
-        // }
     }
 }

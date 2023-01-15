@@ -143,8 +143,8 @@ _reset:
     // call the bootloader in svc mode
     msr cpsr_c, #0b10011
 
-    // disable irq
-    cpsid i
+    // enable irq
+    cpsie i
     // disable fiq
     cpsid f
 
@@ -171,7 +171,7 @@ _bootldr:
 2:
     // below bss_end? clear some more
     cmp r4, r9
-    blo 1b
+    blt 1b
 
     // call the kernel in sys mode
     msr cpsr_c, #0b11111
@@ -181,43 +181,41 @@ _bootldr:
 
     b kernel_main
 
-/* interrupts start out with an unintialized stack */
-_undefined_instruction:
+/* interrupt handlers */
+
+/* sp is banked in the interrupt handlers (see setup code)
+ * and registers 0-12 and lr must be saved by the handler
+ * the instruction on returning from the handler, depends
+ * on the handler (see arm arch ref)
+ */
+.macro CALL_HANDLER HANDLER
     push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_undefined_instruction
+    bl \HANDLER
     pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
+.endm
+
+_undefined_instruction:
+    CALL_HANDLER handle_undefined_instruction
     movs pc, r14
 
 _swi:
-    push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_swi
-    pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
+    CALL_HANDLER handle_swi
     movs pc, r14
 
 _prefetch_abrt:
-    push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_prefetch_abrt
-    pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    // subs pc, r14, #4
-    movs pc, r14
+    CALL_HANDLER handle_prefetch_abrt
+    // don't reexecute the aborted instruction
+    subs pc, r14, #4
 
 _data_abrt:
-    push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_data_abrt
-    pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    // if fixing the reason for the abort
-    // return and reexecute
-    // subs pc, lr, #8
-    movs pc, r14
+    CALL_HANDLER handle_data_abrt
+    // don't reexecute the aborted instruction
+    subs pc, r14, #4
 
 _irq:
-    push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_irq
-    pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
+    CALL_HANDLER handle_irq
     subs pc, r14, #4
 
 _fiq:
-    push {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
-    bl handle_fiq
-    pop {r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r14}
+    CALL_HANDLER handle_fiq
     subs pc, r14, #4
