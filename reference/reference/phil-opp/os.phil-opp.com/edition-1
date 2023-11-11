@@ -1,0 +1,197 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="css/edition-1/poole.css" rel="stylesheet">
+    <link href="css/edition-1/main.css" rel="stylesheet">
+    <link href="css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="js/edition-1/main.js"></script>
+
+    <title>Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+
+
+
+<h1 style="visibility: hidden; height: 0px; margin: 0px; padding: 0px;">Writing an OS in Rust (First Edition)</h1>
+
+<div class="front-page-introduction">
+    <p>
+        This blog series creates a small operating system in the
+        <a href="https://www.rust-lang.org/">Rust programming language</a>. Each post is a small tutorial and includes all
+        needed code, so you can follow along if you like. The source code is also available in the corresponding
+        <a href="https://github.com/phil-opp/blog_os">Github repository</a>.
+    </p>
+    <p>Latest post:
+        
+        <strong><a href="double-faults/index.html">Double Faults</a></strong>
+    </p>
+</div>
+
+<div class="warning">
+    <b>No longer updated!</b> You are viewing the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="edition-2/index.html">here</a>.
+</div>
+
+<div id="bare-bones" class="post-category bare-bones">Bare Bones</div>
+<div class="posts bare-bones">
+    
+    <div>
+        <h2 class="post-title"><a href="multiboot-kernel/index.html">A minimal Multiboot Kernel</a></h2>
+        <div class="post-summary">
+            <p>This post explains how to create a minimal x86 operating system kernel using the Multiboot standard. In fact, it will just boot and print <code>OK</code> to the screen. In subsequent blog posts we will extend it using the <a href="https://www.rust-lang.org/">Rust</a> programming language.</p>
+
+            <a class="read-more" href="multiboot-kernel/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="entering-longmode/index.html">Entering Long Mode</a></h2>
+        <div class="post-summary">
+            <p>In the <a href="multiboot-kernel/index.html">previous post</a> we created a minimal multiboot kernel. It just prints <code>OK</code> and hangs. The goal is to extend it and call 64-bit <a href="https://www.rust-lang.org/">Rust</a> code. But the CPU is currently in <a href="https://en.wikipedia.org/wiki/Protected_mode">protected mode</a> and allows only 32-bit instructions and up to 4GiB memory. So we need to set up <em>Paging</em> and switch to the 64-bit <a href="https://en.wikipedia.org/wiki/Long_mode">long mode</a> first.</p>
+
+            <a class="read-more" href="entering-longmode/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="set-up-rust/index.html">Set Up Rust</a></h2>
+        <div class="post-summary">
+            <p>In the previous posts we created a <a href="multiboot-kernel/index.html">minimal Multiboot kernel</a> and <a href="entering-longmode/index.html">switched to Long Mode</a>. Now we can finally switch to <a href="https://www.rust-lang.org/">Rust</a> code. Rust is a high-level language without runtime. It allows us to not link the standard library and write bare metal code. Unfortunately the setup is not quite hassle-free yet.</p>
+
+            <a class="read-more" href="set-up-rust/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="printing-to-screen/index.html">Printing to Screen</a></h2>
+        <div class="post-summary">
+            <p>In the <a href="set-up-rust/index.html">previous post</a> we switched from assembly to <a href="https://www.rust-lang.org/">Rust</a>, a systems programming language that provides great safety. But so far we are using unsafe features like <a href="https://doc.rust-lang.org/book/raw-pointers.html">raw pointers</a> whenever we want to print to screen. In this post we will create a Rust module that provides a safe and easy-to-use interface for the VGA text buffer. It will support Rust’s <a href="https://doc.rust-lang.org/std/fmt/#related-macros">formatting macros</a>, too.</p>
+
+            <a class="read-more" href="printing-to-screen/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+</div>
+
+<div id="memory-management" class="post-category memory-management">Memory Management</div>
+<div class="posts memory-management">
+    
+    <div>
+        <h2 class="post-title"><a href="allocating-frames/index.html">Allocating Frames</a></h2>
+        <div class="post-summary">
+            <p>In this post we create an allocator that provides free physical frames for a future paging module. To get the required information about available and used memory we use the Multiboot information structure. Additionally, we improve the <code>panic</code> handler to print the corresponding message and source line.</p>
+
+            <a class="read-more" href="allocating-frames/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="page-tables/index.html">Page Tables</a></h2>
+        <div class="post-summary">
+            <p>In this post we will create a paging module, which allows us to access and modify the 4-level page table. We will explore recursive page table mapping and use some Rust features to make it safe. Finally we will create functions to translate virtual addresses and to map and unmap pages.</p>
+
+            <a class="read-more" href="page-tables/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="remap-the-kernel/index.html">Remap the Kernel</a></h2>
+        <div class="post-summary">
+            <p>In this post we will create a new page table to map the kernel sections correctly. Therefore we will extend the paging module to support modifications of <em>inactive</em> page tables as well. Then we will switch to the new table and secure our kernel stack by creating a guard page.</p>
+
+            <a class="read-more" href="remap-the-kernel/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="kernel-heap/index.html">Kernel Heap</a></h2>
+        <div class="post-summary">
+            <p>In the previous posts we created a <a href="allocating-frames/index.html">frame allocator</a> and a <a href="page-tables/index.html">page table module</a>. Now we are ready to create a kernel heap and a memory allocator. Thus, we will unlock <code>Box</code>, <code>Vec</code>, <code>BTreeMap</code>, and the rest of the <a href="https://doc.rust-lang.org/nightly/alloc/index.html">alloc</a> crate.</p>
+
+            <a class="read-more" href="kernel-heap/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+</div>
+
+<div id="interrupts" class="post-category exceptions">Exceptions</div>
+<div class="posts exceptions">
+    
+    <div>
+        <h2 class="post-title"><a href="handling-exceptions/index.html">Handling Exceptions</a></h2>
+        <div class="post-summary">
+            <p>In this post, we start exploring CPU exceptions. Exceptions occur in various erroneous situations, for example when accessing an invalid memory address or when dividing by zero. To catch them, we have to set up an <em>interrupt descriptor table</em> that provides handler functions. At the end of this post, our kernel will be able to catch <a href="https://wiki.osdev.org/Exceptions#Breakpoint">breakpoint exceptions</a> and to resume normal execution afterwards.</p>
+
+            <a class="read-more" href="handling-exceptions/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+    
+    <div>
+        <h2 class="post-title"><a href="double-faults/index.html">Double Faults</a></h2>
+        <div class="post-summary">
+            <p>In this post we explore double faults in detail. We also set up an <em>Interrupt Stack Table</em> to catch double faults on a separate kernel stack. This way, we can completely prevent triple faults, even on kernel stack overflow.</p>
+
+            <a class="read-more" href="double-faults/index.html"><em>read&nbsp;more&nbsp;»</em></a></div>
+    </div>
+
+</div>
+
+<hr>
+
+<h2>Extra Content</h2>
+<ul>
+    
+        
+        <li><a href="https://os.phil-opp.com/edition-1/extra/naked-exceptions/">Handling Exceptions using naked Functions</a></li>
+    
+    
+        <li><a href="talks/index.html">Talks</a></li>
+    
+        <li><a href="cross-compile-binutils/index.html">Cross Compile Binutils</a></li>
+    
+        <li><a href="cross-compile-libcore/index.html">Cross Compiling: libcore</a></li>
+    
+        <li><a href="set-up-gdb/index.html">Set Up GDB</a></li>
+    
+</ul>
+
+<aside id="recent-updates">
+    <h2>Recent Updates</h2>
+    <ul>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1177">[Translation][Korean] post-07 (edition-2)</a> <time datetime="2022-12-15T10:01:07">Dec&nbsp;15</time></li>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1175">[Translation][Korean] post-06 (edition-2)</a> <time datetime="2022-12-13T13:13:40">Dec&nbsp;13</time></li>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1131">[Chinese] Translate posts 5-8 and improve translation of posts 1-4</a> <time datetime="2022-11-25T10:27:42">Nov&nbsp;25</time></li>
+</ul>
+</aside>
+
+</main>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

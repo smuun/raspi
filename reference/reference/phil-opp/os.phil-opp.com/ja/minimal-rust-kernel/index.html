@@ -1,0 +1,541 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事では、Rustで最小限の64bitカーネルを作ります。前の記事で作ったフリースタンディングなRustバイナリを下敷きにして、何かを画面に出力する、ブータブルディスクイメージを作ります。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Rustでつくる最小のカーネル | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#the-boot-process">起動 (Boot) のプロセス</a>
+            <ol>
+                <li>
+                    <a href="index.html#biosnoqi-dong">BIOSの起動</a>
+                </li><li>
+                    <a href="index.html#uefi">UEFI</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#zui-xiao-nokaneru">最小のカーネル</a>
+            <ol>
+                <li>
+                    <a href="index.html#installing-rust-nightly">RustのNightly版をインストールする</a>
+                </li><li>
+                    <a href="index.html#tagetutonoshi-yang">ターゲットの仕様</a>
+                </li><li>
+                    <a href="index.html#kaneruwobirudosuru">カーネルをビルドする</a>
+                </li><li>
+                    <a href="index.html#hua-mian-nichu-li-suru">画面に出力する</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#kaneruwoshi-xing-suru">カーネルを実行する</a>
+            <ol>
+                <li>
+                    <a href="index.html#butoimeziwozuo-ru">ブートイメージを作る</a>
+                </li><li>
+                    <a href="index.html#qemudeqi-dong-suru">QEMUで起動する</a>
+                </li><li>
+                    <a href="index.html#shi-ji-nomasin">実際のマシン</a>
+                </li><li>
+                    <a href="index.html#cargo-runwoshi-u">cargo runを使う</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Rustでつくる最小のカーネル</h1>
+    <time datetime="2018-02-10" class="post-date">
+        Feb 10, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../minimal-rust-kernel/index.html">A Minimal Rust Kernel</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/woodyZootopia">@woodyZootopia</a> 及び <a href="https://github.com/JohnTitor">@JohnTitor</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事では、Rustで最小限の64bitカーネルを作ります。前の記事で作った<a href="../freestanding-rust-binary/index.html">フリースタンディングなRustバイナリ</a>を下敷きにして、何かを画面に出力する、ブータブルディスクイメージを作ります。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-02"><code>post-02</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#the-boot-process">起動 (Boot) のプロセス</a>
+                <ul>
+                    <li>
+                        <a href="index.html#biosnoqi-dong">BIOSの起動</a>
+                    </li><li>
+                        <a href="index.html#uefi">UEFI</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#zui-xiao-nokaneru">最小のカーネル</a>
+                <ul>
+                    <li>
+                        <a href="index.html#installing-rust-nightly">RustのNightly版をインストールする</a>
+                    </li><li>
+                        <a href="index.html#tagetutonoshi-yang">ターゲットの仕様</a>
+                    </li><li>
+                        <a href="index.html#kaneruwobirudosuru">カーネルをビルドする</a>
+                    </li><li>
+                        <a href="index.html#hua-mian-nichu-li-suru">画面に出力する</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#kaneruwoshi-xing-suru">カーネルを実行する</a>
+                <ul>
+                    <li>
+                        <a href="index.html#butoimeziwozuo-ru">ブートイメージを作る</a>
+                    </li><li>
+                        <a href="index.html#qemudeqi-dong-suru">QEMUで起動する</a>
+                    </li><li>
+                        <a href="index.html#shi-ji-nomasin">実際のマシン</a>
+                    </li><li>
+                        <a href="index.html#cargo-runwoshi-u">cargo runを使う</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="the-boot-process"><a class="zola-anchor" href="index.html#the-boot-process" aria-label="Anchor link for: the-boot-process">🔗</a><ruby>起動<rp> (</rp><rt>Boot</rt><rp>) </rp></ruby>のプロセス</h2>
+<p>コンピュータを起動すると、マザーボードの <a href="https://ja.wikipedia.org/wiki/Read_only_memory">ROM</a> に保存されたファームウェアのコードを実行し始めます。このコードは、<a href="https://ja.wikipedia.org/wiki/Power_On_Self_Test"><ruby>起動時の自己テスト<rp> (</rp><rt>power-on self test</rt><rp>) </rp></ruby></a>を実行し、使用可能なRAMを検出し、CPUとハードウェアを<ruby>事前初期化<rp> (</rp><rt>pre-initialize</rt><rp>) </rp></ruby>します。その後、<ruby>ブータブル<rp> (</rp><rt>bootable</rt><rp>) </rp></ruby>ディスクを探し、オペレーティングシステムのカーネルを<ruby>起動<rp> (</rp><rt>boot</rt><rp>) </rp></ruby>します。</p>
+<p>x86には2つのファームウェアの標準規格があります：“Basic Input/Output System” (<strong><a href="https://ja.wikipedia.org/wiki/Basic_Input/Output_System">BIOS</a></strong>) と、より新しい “Unified Extensible Firmware Interface” (<strong><a href="https://ja.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">UEFI</a></strong>) です。BIOS規格は古く時代遅れですが、シンプルでありすべてのx86のマシンで1980年代からよくサポートされています。対して、UEFIはより現代的でずっと多くの機能を持っていますが、セットアップが複雑です（少なくとも私はそう思います）。</p>
+<p>今の所、このブログではBIOSしかサポートしていませんが、UEFIのサポートも計画中です。お手伝いいただける場合は、<a href="https://github.com/phil-opp/blog_os/issues/349">GitHubのissue</a>をご覧ください。</p>
+<h3 id="biosnoqi-dong"><a class="zola-anchor" href="index.html#biosnoqi-dong" aria-label="Anchor link for: biosnoqi-dong">🔗</a>BIOSの起動</h3>
+<p>ほぼすべてのx86システムがBIOSによる起動をサポートしています。これは近年のUEFIベースのマシンも例外ではなく、それらはエミュレートされたBIOSを使います。前世紀のすべてのマシンにも同じブートロジックが使えるなんて素晴らしいですね。しかし、この広い互換性は、BIOSによる起動の最大の欠点でもあるのです。というのもこれは、1980年代の化石のようなブートローダーを動かすために、CPUが<a href="https://ja.wikipedia.org/wiki/%E3%83%AA%E3%82%A2%E3%83%AB%E3%83%A2%E3%83%BC%E3%83%89"><ruby>リアルモード<rp> (</rp><rt>real mode</rt><rp>) </rp></ruby></a>と呼ばれる16bit互換モードにされてしまうということを意味しているからです。</p>
+<p>まあ順を追って見ていくこととしましょう。</p>
+<p>コンピュータは起動時にマザーボードにある特殊なフラッシュメモリからBIOSを読み込みます。BIOSは自己テストとハードウェアの初期化ルーチンを実行し、ブータブルディスクを探します。ディスクが見つかると、 <strong><ruby>ブートローダー<rp> (</rp><rt>bootloader</rt><rp>) </rp></ruby></strong> と呼ばれる、その先頭512バイトに保存された実行可能コードへと操作権が移ります。多くのブートローダーのサイズは512バイトより大きいため、通常は512バイトに収まる小さな最初のステージと、その最初のステージによって読み込まれる第2ステージに分けられています。</p>
+<p>ブートローダーはディスク内のカーネルイメージの場所を特定し、メモリに読み込まなければなりません。また、CPUを16bitの<a href="https://ja.wikipedia.org/wiki/%E3%83%AA%E3%82%A2%E3%83%AB%E3%83%A2%E3%83%BC%E3%83%89">リアルモード</a>から32bitの<a href="https://ja.wikipedia.org/wiki/%E3%83%97%E3%83%AD%E3%83%86%E3%82%AF%E3%83%88%E3%83%A2%E3%83%BC%E3%83%89"><ruby>プロテクトモード<rp> (</rp><rt>protected mode</rt><rp>) </rp></ruby></a>へ、そして64bitの<a href="https://en.wikipedia.org/wiki/Long_mode"><ruby>ロングモード<rp> (</rp><rt>long mode</rt><rp>) </rp></ruby></a>――64bitレジスタとすべてのメインメモリが利用可能になります――へと変更しなければなりません。3つ目の仕事は、特定の情報（例えばメモリーマップなどです）をBIOSから聞き出し、OSのカーネルに渡すことです。</p>
+<p>ブートローダーを書くのにはアセンブリ言語を必要とするうえ、「何も考えずにプロセッサーのこのレジスタにこの値を書き込んでください」のような勉強の役に立たない作業がたくさんあるので、ちょっと面倒くさいです。ですのでこの記事ではブートローダーの制作については飛ばして、代わりに<a href="https://github.com/rust-osdev/bootimage">bootimage</a>という、自動でカーネルの前にブートローダを置いてくれるツールを使いましょう。</p>
+<p>自前のブートローダーを作ることに興味がある人もご期待下さい、これに関する記事も計画中です！</p>
+<h4 id="multibootbiao-zhun-gui-ge"><a class="zola-anchor" href="index.html#multibootbiao-zhun-gui-ge" aria-label="Anchor link for: multibootbiao-zhun-gui-ge">🔗</a>Multiboot標準規格</h4>
+<p>すべてのオペレーティングシステムが、自身にのみ対応しているブートローダーを実装するということを避けるために、1995年に<a href="https://ja.wikipedia.org/wiki/%E3%83%95%E3%83%AA%E3%83%BC%E3%82%BD%E3%83%95%E3%83%88%E3%82%A6%E3%82%A7%E3%82%A2%E8%B2%A1%E5%9B%A3">フリーソフトウェア財団</a>が<a href="https://wiki.osdev.org/Multiboot">Multiboot</a>というブートローダーの公開標準規格を策定しています。この標準規格では、ブートローダーとオペレーティングシステムのインターフェースが定義されており、Multibootに準拠したブートローダーであれば、同じくそれに準拠したすべてのオペレーティングシステムが読み込めるようになっています。そのリファレンス実装として、Linuxシステムで一番人気のブートローダーである<a href="https://ja.wikipedia.org/wiki/GNU_GRUB">GNU GRUB</a>があります。</p>
+<p>カーネルをMultibootに準拠させるには、カーネルファイルの先頭にいわゆる<a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#OS-image-format">Multiboot header</a>を挿入するだけで済みます。このおかげで、OSをGRUBで起動するのはとても簡単です。しかし、GRUBとMultiboot標準規格にはいくつか問題もあります：</p>
+<ul>
+<li>これらは32bitプロテクトモードしかサポートしていません。そのため、64bitロングモードに変更するためのCPUの設定は依然行う必要があります。</li>
+<li>これらは、カーネルではなくブートローダーがシンプルになるように設計されています。例えば、カーネルは<a href="https://wiki.osdev.org/Multiboot#Multiboot_2">通常とは異なるデフォルトページサイズ</a>でリンクされる必要があり、そうしないとGRUBはMultiboot headerを見つけることができません。他にも、カーネルに渡される<a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format"><ruby>ブート情報<rp> (</rp><rt>boot information</rt><rp>) </rp></ruby></a>は、クリーンな抽象化を与えてくれず、アーキテクチャ依存の構造を多く含んでいます。</li>
+<li>GRUBもMultiboot標準規格もドキュメントが充実していません。</li>
+<li>カーネルファイルからブータブルディスクイメージを作るには、ホストシステムにGRUBがインストールされている必要があります。これにより、MacとWindows上での開発は比較的難しくなっています。</li>
+</ul>
+<p>これらの欠点を考慮し、私達はGRUBとMultiboot標準規格を使わないことに決めました。しかし、あなたのカーネルをGRUBシステム上で読み込めるように、私達の<a href="https://github.com/rust-osdev/bootimage">bootimage</a>ツールにMultibootのサポートを追加することも計画しています。Multiboot準拠なカーネルを書きたい場合は、このブログシリーズの<a href="../../edition-1">第1版</a>をご覧ください。</p>
+<h3 id="uefi"><a class="zola-anchor" href="index.html#uefi" aria-label="Anchor link for: uefi">🔗</a>UEFI</h3>
+<p>（今の所UEFIのサポートは提供していませんが、ぜひともしたいと思っています！お手伝いいただける場合は、 <a href="https://github.com/phil-opp/blog_os/issues/349">GitHub issue</a>で教えてください。）</p>
+<h2 id="zui-xiao-nokaneru"><a class="zola-anchor" href="index.html#zui-xiao-nokaneru" aria-label="Anchor link for: zui-xiao-nokaneru">🔗</a>最小のカーネル</h2>
+<p>どのようにコンピュータが起動するのかについてざっくりと理解できたので、自前で最小のカーネルを書いてみましょう。目標は、起動したら画面に“Hello, World!“と出力するようなディスクイメージを作ることです。というわけで、前の記事の<a href="../freestanding-rust-binary/index.html"><ruby>独立した<rp> (</rp><rt>freestanding</rt><rp>) </rp></ruby>Rustバイナリ</a>をもとにして作っていきます。</p>
+<p>覚えていますか、この独立したバイナリは<code>cargo</code>を使ってビルドしましたが、オペレーティングシステムに依って異なるエントリポイント名とコンパイルフラグが必要なのでした。これは<code>cargo</code>は標準では <strong>ホストシステム</strong>（あなたの使っているシステム）向けにビルドするためです。例えばWindows上で走るカーネルというのはあまり意味がなく、私達の望む動作ではありません。代わりに、明確に定義された <strong>ターゲットシステム</strong> 向けにコンパイルできると理想的です。</p>
+<h3 id="installing-rust-nightly"><a class="zola-anchor" href="index.html#installing-rust-nightly" aria-label="Anchor link for: installing-rust-nightly">🔗</a>RustのNightly版をインストールする</h3>
+<p>Rustには<strong>stable</strong>、<strong>beta</strong>、<strong>nightly</strong>の3つのリリースチャンネルがあります。Rust Bookはこれらの3つのチャンネルの違いをとても良く説明しているので、一度<a href="https://doc.rust-jp.rs/book-ja/appendix-07-nightly-rust.html">確認してみてください</a>。オペレーティングシステムをビルドするには、nightlyチャンネルでしか利用できないいくつかの実験的機能を使う必要があるので、Rustのnightly版をインストールすることになります。</p>
+<p>Rustの実行環境を管理するのには、<a href="https://www.rustup.rs/">rustup</a>を強くおすすめします。nightly、beta、stable版のコンパイラをそれぞれインストールすることができますし、アップデートするのも簡単です。現在のディレクトリにnightlyコンパイラを使うようにするには、<code>rustup override set nightly</code>と実行してください。もしくは、<code>rust-toolchain</code>というファイルに<code>nightly</code>と記入してプロジェクトのルートディレクトリに置くことでも指定できます。Nightly版を使っていることは、<code>rustc --version</code>と実行することで確かめられます。表示されるバージョン名の末尾に<code>-nightly</code>とあるはずです。</p>
+<p>nightlyコンパイラでは、いわゆる<strong>feature flag</strong>をファイルの先頭につけることで、いろいろな実験的機能を使うことを選択できます。例えば、<code>#![feature(asm)]</code>を<code>main.rs</code>の先頭につけることで、インラインアセンブリのための実験的な<a href="https://doc.rust-lang.org/stable/reference/inline-assembly.html"><code>asm!</code>マクロ</a>を有効化することができます。ただし、これらの実験的機能は全くもって<ruby>不安定<rp> (</rp><rt>unstable</rt><rp>) </rp></ruby>であり、将来のRustバージョンにおいては事前の警告なく変更されたり取り除かれたりする可能性があることに注意してください。このため、絶対に必要なときにのみこれらを使うことにします。</p>
+<h3 id="tagetutonoshi-yang"><a class="zola-anchor" href="index.html#tagetutonoshi-yang" aria-label="Anchor link for: tagetutonoshi-yang">🔗</a>ターゲットの仕様</h3>
+<p>Cargoは<code>--target</code>パラメータを使ってさまざまなターゲットをサポートします。ターゲットはいわゆる<a href="https://clang.llvm.org/docs/CrossCompilation.html#target-triple">target <ruby>triple<rp> (</rp><rt>3つ組</rt><rp>) </rp></ruby></a>によって表されます。これはCPUアーキテクチャ、製造元、オペレーティングシステム、そして<a href="https://stackoverflow.com/a/2456882">ABI</a>を表します。例えば、<code>x86_64-unknown-linux-gnu</code>というtarget tripleは、<code>x86_64</code>のCPU、製造元不明、GNU ABIのLinuxオペレーティングシステム向けのシステムを表します。Rustは<a href="https://forge.rust-lang.org/release/platform-support.html">多くのtarget triple</a>をサポートしており、その中にはAndroidのための<code>arm-linux-androideabi</code>や<a href="https://www.hellorust.com/setup/wasm-target/">WebAssemblyのための<code>wasm32-unknown-unknown</code></a>などがあります。</p>
+<p>しかしながら、私達のターゲットシステムには、いくつか特殊な設定パラメータが必要になります（例えば、その下ではOSが走っていない、など）。なので、<a href="https://forge.rust-lang.org/release/platform-support.html">既存のtarget triple</a>はどれも当てはまりません。ありがたいことに、RustではJSONファイルを使って<a href="https://doc.rust-lang.org/nightly/rustc/targets/custom.html">独自のターゲット</a>を定義できます。例えば、<code>x86_64-unknown-linux-gnu</code>というターゲットを表すJSONファイルはこんな感じです。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;linux&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;pre-link-args&quot;</span><span>: [</span><span style="color:#d69d85;">&quot;-m64&quot;</span><span>],
+</span><span>    </span><span style="color:#d69d85;">&quot;morestack&quot;</span><span>: </span><span style="color:#569cd6;">false
+</span><span>}
+</span></code></pre>
+<p>ほとんどのフィールドはLLVMがそのプラットフォーム向けのコードを生成するために必要なものです。例えば、<a href="https://llvm.org/docs/LangRef.html#data-layout"><code>data-layout</code></a>フィールドは種々の整数、浮動小数点数、ポインタ型の大きさを定義しています。次に、<code>target-pointer-width</code>のような、条件付きコンパイルに用いられるフィールドがあります。第3の種類のフィールドはクレートがどのようにビルドされるべきかを定義します。例えば、<code>pre-link-args</code>フィールドは<a href="https://ja.wikipedia.org/wiki/%E3%83%AA%E3%83%B3%E3%82%B1%E3%83%BC%E3%82%B8%E3%82%A8%E3%83%87%E3%82%A3%E3%82%BF"><ruby>リンカ<rp> (</rp><rt>linker</rt><rp>) </rp></ruby></a>に渡される引数を指定しています。</p>
+<p>私達のカーネルも<code>x86_64</code>のシステムをターゲットとするので、私達のターゲット仕様も上のものと非常によく似たものになるでしょう。<code>x86_64-blog_os.json</code>というファイル（お好きな名前を選んでください）を作り、共通する要素を埋めるところから始めましょう。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true
+</span><span>}
+</span></code></pre>
+<p><ruby>ベアメタル<rp> (</rp><rt>bare metal</rt><rp>) </rp></ruby>環境で実行するので、<code>llvm-target</code>のOSを変え、<code>os</code>フィールドを<code>none</code>にしたことに注目してください。</p>
+<p>以下の、ビルドに関係する項目を追加します。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span></code></pre>
+<p>私達のカーネルをリンクするのに、プラットフォーム標準の（Linuxターゲットをサポートしていないかもしれない）リンカではなく、Rustに付属しているクロスプラットフォームの<a href="https://lld.llvm.org/">LLD</a>リンカを使用します。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span></code></pre>
+<p>この設定は、ターゲットがパニック時の<a href="https://www.bogotobogo.com/cplusplus/stackunwinding.php">stack unwinding</a>をサポートしていないので、プログラムは代わりに直接<ruby>中断<rp> (</rp><rt>abort</rt><rp>) </rp></ruby>しなければならないということを指定しています。これは、Cargo.tomlに<code>panic = &quot;abort&quot;</code>という設定を書くのに等しいですから、後者の設定を消しても構いません（このターゲット設定は、Cargo.tomlの設定と異なり、このあと行う<code>core</code>ライブラリの再コンパイルにも適用されます。ですので、Cargo.tomlに設定する方が好みだったとしても、この設定を追加するようにしてください）。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span></code></pre>
+<p>カーネルを書いている以上、ある時点で<ruby>割り込み<rp> (</rp><rt>interrupt</rt><rp>) </rp></ruby>を処理しなければならなくなるでしょう。これを安全に行うために、 <strong>“red zone”</strong> と呼ばれる、ある種のスタックポインタ最適化を無効化する必要があります。こうしないと、スタックの<ruby>破損<rp> (</rp><rt>corruption</rt><rp>) </rp></ruby>を引き起こしてしまう恐れがあるためです。より詳しくは、<a href="../../red-zone/index.html">red zoneの無効化</a>という別記事をご覧ください。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;</span><span>,
+</span></code></pre>
+<p><code>features</code>フィールドは、ターゲットの<ruby>機能<rp> (</rp><rt>features</rt><rp>) </rp></ruby>を有効化/無効化します。マイナスを前につけることで<code>mmx</code>と<code>sse</code>という機能を無効化し、プラスを前につけることで<code>soft-float</code>という機能を有効化しています。それぞれのフラグの間にスペースは入れてはならず、もしそうするとLLVMが機能文字列の解釈に失敗してしまうことに注意してください。</p>
+<p><code>mmx</code>と<code>sse</code>という機能は、<a href="https://ja.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a>命令をサポートするかを決定します。この命令は、しばしばプログラムを著しく速くしてくれます。しかし、大きなSIMDレジスタをOSカーネルで使うことは性能上の問題に繋がります。 その理由は、カーネルは、割り込まれたプログラムを再開する前に、すべてのレジスタを元に戻さないといけないためです。これは、カーネルがSIMDの状態のすべてを、システムコールやハードウェア割り込みがあるたびにメインメモリに保存しないといけないということを意味します。SIMDの状態情報はとても巨大（512〜1600 bytes）で、割り込みは非常に頻繁に起こるかもしれないので、保存・復元の操作がこのように追加されるのは性能にかなりの悪影響を及ぼします。これを避けるために、（カーネルの上で走っているアプリケーションではなく！）カーネル上でSIMDを無効化するのです。</p>
+<p>SIMDを無効化することによる問題に、<code>x86_64</code>における浮動小数点演算は標準ではSIMDレジスタを必要とするということがあります。この問題を解決するため、<code>soft-float</code>機能を追加します。これは、すべての浮動小数点演算を通常の整数に基づいたソフトウェア上の関数を使ってエミュレートするというものです。</p>
+<p>より詳しくは、<a href="../../disable-simd/index.html">SIMDを無効化する</a>ことに関する私達の記事を読んでください。</p>
+<h4 id="matomeruto"><a class="zola-anchor" href="index.html#matomeruto" aria-label="Anchor link for: matomeruto">🔗</a>まとめると</h4>
+<p>私達のターゲット仕様ファイルは今このようになっているはずです。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<h3 id="kaneruwobirudosuru"><a class="zola-anchor" href="index.html#kaneruwobirudosuru" aria-label="Anchor link for: kaneruwobirudosuru">🔗</a>カーネルをビルドする</h3>
+<p>私達の新しいターゲットのコンパイルにはLinuxの慣習に倣います（理由は知りません、LLVMのデフォルトであるというだけではないでしょうか）。つまり、<a href="../freestanding-rust-binary/index.html">前の記事</a>で説明したように<code>_start</code>という名前のエントリポイントが要るということです。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std] </span><span style="color:#608b4e;">// don&#39;t link the Rust standard library
+</span><span>#![no_main] </span><span style="color:#608b4e;">// disable all Rust-level entry points
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// this function is the entry point, since the linker looks for a function
+</span><span>    </span><span style="color:#608b4e;">// named `_start` by default
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>ホストOSが何であるかにかかわらず、エントリポイントは<code>_start</code>という名前でなければならないことに注意してください。</p>
+<p>これで、私達の新しいターゲットのためのカーネルを、JSONファイル名を<code>--target</code>として渡すことでビルドできるようになりました。</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>
+</span><span>error[E0463]: can&#39;t find crate for `core`
+</span></code></pre>
+<p>失敗しましたね！エラーはRustコンパイラが<a href="https://doc.rust-lang.org/nightly/core/index.html"><code>core</code>ライブラリ</a>を見つけられなくなったと言っています。このライブラリは、<code>Result</code> や <code>Option</code>、イテレータのような基本的なRustの型を持っており、暗黙のうちにすべての<code>no_std</code>なクレートにリンクされています。</p>
+<p>問題は、coreライブラリはRustコンパイラと一緒に<ruby>コンパイル済み<rp> (</rp><rt>precompiled</rt><rp>) </rp></ruby>ライブラリとして配布されているということです。そのため、これは、私達独自のターゲットではなく、サポートされているhost triple（例えば <code>x86_64-unknown-linux-gnu</code>）でのみ使えるのです。他のターゲットのためにコードをコンパイルしたいときには、<code>core</code>をそれらのターゲットに向けて再コンパイルする必要があります。</p>
+<h4 id="build-stdopusiyon"><a class="zola-anchor" href="index.html#build-stdopusiyon" aria-label="Anchor link for: build-stdopusiyon">🔗</a><code>build-std</code>オプション</h4>
+<p>ここでcargoの<a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std"><code>build-std</code>機能</a>の出番です。これを使うと<code>core</code>やその他の標準ライブラリクレートについて、Rustインストール時に一緒についてくるコンパイル済みバージョンを使う代わりに、必要に応じて再コンパイルすることができます。これはとても新しくまだ完成していないので、<ruby>不安定<rp> (</rp><rt>unstable</rt><rp>) </rp></ruby>機能とされており、<a href="index.html#installing-rust-nightly">nightly Rustコンパイラ</a>でのみ利用可能です。</p>
+<p>この機能を使うためには、<a href="https://doc.rust-lang.org/cargo/reference/config.html">cargoの設定</a>ファイルを<code>.cargo/config.toml</code>に作り、次の内容を書きましょう。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>これはcargoに<code>core</code>と<code>compiler_builtins</code>ライブラリを再コンパイルするよう命令します。後者が必要なのは<code>core</code>がこれに依存しているためです。 これらのライブラリを再コンパイルするためには、cargoがRustのソースコードにアクセスできる必要があります。これは<code>rustup component add rust-src</code>でインストールできます。</p>
+<div class="note">
+<p><strong>注意:</strong> <code>unstable.build-std</code>設定キーを使うには、少なくとも2020-07-15以降のRust nightlyが必要です。</p>
+</div>
+<p><code>unstable.build-std</code>設定キーをセットし、<code>rust-src</code>コンポーネントをインストールしたら、ビルドコマンドをもう一度実行しましょう。</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>   Compiling core v0.0.0 (/…/rust/src/libcore)
+</span><span>   Compiling rustc-std-workspace-core v1.99.0 (/…/rust/src/tools/rustc-std-workspace-core)
+</span><span>   Compiling compiler_builtins v0.1.32
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.29 secs
+</span></code></pre>
+<p>今回は、<code>cargo build</code>が<code>core</code>、<code>rustc-std-workspace-core</code> (<code>compiler_builtins</code>の依存です)、そして <code>compiler_builtins</code>を私達のカスタムターゲット向けに再コンパイルしているということがわかります。</p>
+<h4 id="memoriguan-xi-nozu-miip-miguan-shu-intrinsics"><a class="zola-anchor" href="index.html#memoriguan-xi-nozu-miip-miguan-shu-intrinsics" aria-label="Anchor link for: memoriguan-xi-nozu-miip-miguan-shu-intrinsics">🔗</a>メモリ関係の<ruby>組み込み関数<rp> (</rp><rt>intrinsics</rt><rp>) </rp></ruby></h4>
+<p>Rustコンパイラは、すべてのシステムにおいて、特定の組み込み関数が利用可能であるということを前提にしています。それらの関数の多くは、私達がちょうど再コンパイルした<code>compiler_builtins</code>クレートによって提供されています。しかしながら、通常システムのCライブラリによって提供されているので標準では有効化されていない、メモリ関係の関数がいくつかあります。それらの関数には、メモリブロック内のすべてのバイトを与えられた値にセットする<code>memset</code>、メモリーブロックを他のブロックへとコピーする<code>memcpy</code>、2つのメモリーブロックを比較する<code>memcmp</code>などがあります。これらの関数はどれも、現在の段階で我々のカーネルをコンパイルするのに必要というわけではありませんが、コードを追加していくとすぐに必要になるでしょう（たとえば、構造体をコピーする、など）。</p>
+<p>オペレーティングシステムのCライブラリにリンクすることはできませんので、これらの関数をコンパイラに与えてやる別の方法が必要になります。このための方法として考えられるものの一つが、自前で<code>memset</code>を実装し、（コンパイル中の自動リネームを防ぐため）<code>#[no_mangle]</code>アトリビュートをこれらに適用することでしょう。しかし、こうすると、これらの関数の実装のちょっとしたミスが未定義動作に繋がりうるため危険です。たとえば、<code>for</code>ループを使って<code>memcpy</code>を実装すると無限再帰を起こしてしまうかもしれません。なぜなら、<code>for</code>ループは暗黙のうちに<a href="https://doc.rust-lang.org/stable/core/iter/trait.IntoIterator.html#tymethod.into_iter"><code>IntoIterator::into_iter</code></a>トレイトメソッドを呼び出しており、これが<code>memcpy</code>を再び呼び出しているかもしれないためです。なので、代わりに既存のよくテストされた実装を再利用するのが良いでしょう。</p>
+<p>ありがたいことに、<code>compiler_builtins</code>クレートにはこれらの必要な関数すべての実装が含まれており、標準ではCライブラリの実装と競合しないように無効化されているだけなのです。これはcargoの<a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std-features"><code>build-std-features</code></a>フラグを<code>[&quot;compiler-builtins-mem&quot;]</code>に設定することで有効化できます。<code>build-std</code>フラグと同じように、このフラグはコマンドラインで<code>-Z</code>フラグとして渡すこともできれば、<code>.cargo/config.toml</code>ファイルの<code>unstable</code>テーブルで設定することもできます。ビルド時は常にこのフラグをセットしたいので、設定ファイルを使う方が良いでしょう：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std-features </span><span>= [</span><span style="color:#d69d85;">&quot;compiler-builtins-mem&quot;</span><span>]
+</span></code></pre>
+<p>（<code>compiler-builtins-mem</code>機能のサポートが追加されたのは<a href="https://github.com/rust-lang/rust/pull/77284">つい最近</a>なので、<code>2019-09-30</code>以降のRust nightlyが必要です。）</p>
+<p>このとき、裏で<code>compiler_builtins</code>クレートの<a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/Cargo.toml#L51-L52"><code>mem</code>機能</a>が有効化されています。これにより、このクレートの<a href="https://os.phil-opp.com/ja/minimal-rust-kernel/(https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/src/mem.rs#L12-L69)"><code>memcpy</code>などの実装</a>に<code>#[no_mangle]</code>アトリビュートが適用され、リンカがこれらを利用できるようになっています。</p>
+<p>この変更をもって、私達のカーネルはコンパイラに必要とされているすべての関数の有効な実装を手に入れたので、コードがもっと複雑になっても変わらずコンパイルできるでしょう。</p>
+<h4 id="biao-zhun-notagetutowosetutosuru"><a class="zola-anchor" href="index.html#biao-zhun-notagetutowosetutosuru" aria-label="Anchor link for: biao-zhun-notagetutowosetutosuru">🔗</a>標準のターゲットをセットする</h4>
+<p><code>cargo build</code>を呼び出すたびに<code>--target</code>パラメータを渡すのを避けるために、デフォルトのターゲットを書き換えることができます。これをするには、以下を<code>.cargo/config.toml</code>の<a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo設定</a>ファイルに付け加えます:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">build</span><span>]
+</span><span style="color:#569cd6;">target </span><span>= </span><span style="color:#d69d85;">&quot;x86_64-blog_os.json&quot;
+</span></code></pre>
+<p>これは、明示的に<code>--target</code>引数が渡されていないときは、<code>x86_64-blog_os.json</code>ターゲットを使うように<code>cargo</code>に命令します。つまり、私達はカーネルをシンプルな<code>cargo build</code>コマンドでビルドできるということです。cargoの設定のオプションについてより詳しく知るには、<a href="https://doc.rust-lang.org/cargo/reference/config.html">公式のドキュメント</a>を読んでください。</p>
+<p>これにより、シンプルな<code>cargo build</code>コマンドで、ベアメタルのターゲットに私達のカーネルをビルドできるようになりました。しかし、ブートローダーによって呼び出される私達の<code>_start</code>エントリポイントはまだ空っぽです。そろそろここから何かを画面に出力してみましょう。</p>
+<h3 id="hua-mian-nichu-li-suru"><a class="zola-anchor" href="index.html#hua-mian-nichu-li-suru" aria-label="Anchor link for: hua-mian-nichu-li-suru">🔗</a>画面に出力する</h3>
+<p>現在の段階で画面に文字を出力する最も簡単な方法は<a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGAテキストバッファ</a>です。これは画面に出力されている内容を保持しているVGAハードウェアにマップされた特殊なメモリです。通常、これは25行からなり、それぞれの行は80文字セルからなります。それぞれの文字セルは、背景色と前景色付きのASCII文字を表示します。画面出力はこのように見えるでしょう：</p>
+<p><img src="https://upload.wikimedia.org/wikipedia/commons/f/f8/Codepage-437.png" alt="screen output for common ASCII characters" /></p>
+<p>次の記事では、VGAバッファの正確なレイアウトについて議論し、このためのちょっとしたドライバも書きます。“Hello World!“を出力するためには、バッファがアドレス<code>0xb8000</code>にあり、それぞれの文字セルはASCIIのバイトと色のバイトからなることを知っている必要があります。</p>
+<p>実装はこんな感じになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HELLO</span><span>: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">u8</span><span>] = </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&quot;Hello World!&quot;</span><span>;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> vga_buffer = </span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut u8</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, </span><span style="color:#569cd6;">&amp;</span><span>byte) </span><span style="color:#569cd6;">in </span><span style="color:#b4cea8;">HELLO</span><span>.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2</span><span>) = byte;
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2 </span><span>+ </span><span style="color:#b5cea8;">1</span><span>) = </span><span style="color:#b5cea8;">0xb</span><span>;
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>まず、<code>0xb8000</code>という整数を<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#%E7%94%9F%E3%83%9D%E3%82%A4%E3%83%B3%E3%82%BF%E3%82%92%E5%8F%82%E7%85%A7%E5%A4%96%E3%81%97%E3%81%99%E3%82%8B">生ポインタ</a>にキャストします。次に<a href="https://doc.rust-jp.rs/book-ja/ch10-03-lifetime-syntax.html#%E9%9D%99%E7%9A%84%E3%83%A9%E3%82%A4%E3%83%95%E3%82%BF%E3%82%A4%E3%83%A0"><ruby>静的<rp> (</rp><rt>static</rt><rp>) </rp></ruby></a>な<code>HELLO</code>という<a href="https://doc.rust-lang.org/reference/tokens.html#byte-string-literals">バイト列</a>変数の要素に対し<a href="https://doc.rust-jp.rs/book-ja/ch13-02-iterators.html">イテレート</a>します。<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a>メソッドを使うことで、<code>for</code> ループの実行回数を表す変数 <code>i</code> も取得します。ループの内部では、<a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.offset"><code>offset</code></a>メソッドを使って文字列のバイトと対応する色のバイト（<code>0xb</code>は明るいシアン色）を書き込んでいます。</p>
+<p>すべてのメモリへの書き込み処理のコードを、<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html"><ruby><code>unsafe</code><rp> (</rp><rt>安全でない</rt><rp>) </rp></ruby></a>ブロックが囲んでいることに注意してください。この理由は、私達の作った生ポインタが正しいものであることをRustコンパイラが証明できないためです。生ポインタはどんな場所でも指しうるので、データの破損につながるかもしれません。これらの操作を<code>unsafe</code>ブロックに入れることで、私達はこれが正しいことを確信しているとコンパイラに伝えているのです。ただし、<code>unsafe</code>ブロックはRustの安全性チェックを消すわけではなく、<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#unsafe%E3%81%AE%E5%BC%B7%E5%A4%A7%E3%81%AA%E5%8A%9Bsuperpower">追加で5つのことができるようになる</a>だけということに注意してください。</p>
+<div class="note">
+<p><strong>訳注:</strong>  翻訳時点(2020-10-20)では、リンク先のThe Rust book日本語版には「追加でできるようになること」は4つしか書かれていません。</p>
+</div>
+<p>強調しておきたいのですが、 <strong>このような機能はRustでプログラミングするときに使いたいものではありません！</strong> unsafeブロック内で生ポインタを扱うと非常にしくじりやすいです。たとえば、注意不足でバッファの終端のさらに奥に書き込みを行ってしまったりするかもしれません。</p>
+<p>ですので、<code>unsafe</code>の使用は最小限にしたいです。これをするために、Rustでは安全な<ruby>abstraction<rp> (</rp><rt>抽象化されたもの</rt><rp>) </rp></ruby>を作ることができます。たとえば、VGAバッファ型を作り、この中にすべてのunsafeな操作をカプセル化し、外側からの誤った操作が<strong>不可能</strong>であることを保証できるでしょう。こうすれば、<code>unsafe</code>の量を最小限にでき、<a href="https://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E3%83%AA%E5%AE%89%E5%85%A8%E6%80%A7">メモリ安全性</a>を侵していないことを確かにできます。そのような安全なVGAバッファの abstraction を次の記事で作ります。</p>
+<h2 id="kaneruwoshi-xing-suru"><a class="zola-anchor" href="index.html#kaneruwoshi-xing-suru" aria-label="Anchor link for: kaneruwoshi-xing-suru">🔗</a>カーネルを実行する</h2>
+<p>では、目で見て分かる処理を行う実行可能ファイルを手に入れたので、実行してみましょう。まず、コンパイルした私達のカーネルを、ブートローダーとリンクすることによってブータブルディスクイメージにする必要があります。そして、そのディスクイメージを、<a href="https://www.qemu.org/">QEMU</a>バーチャルマシン内や、USBメモリを使って実際のハードウェア上で実行できます。</p>
+<h3 id="butoimeziwozuo-ru"><a class="zola-anchor" href="index.html#butoimeziwozuo-ru" aria-label="Anchor link for: butoimeziwozuo-ru">🔗</a>ブートイメージを作る</h3>
+<p>コンパイルされた私達のカーネルをブータブルディスクイメージに変えるには、ブートローダーとリンクする必要があります。<a href="index.html#the-boot-process">起動のプロセスのセクション</a>で学んだように、ブートローダーはCPUを初期化しカーネルをロードする役割があります。</p>
+<p>自前のブートローダーを書くと、それだけで1つのプロジェクトになってしまうので、代わりに<a href="https://crates.io/crates/bootloader"><code>bootloader</code></a>クレートを使いましょう。このクレートは、Cに依存せず、Rustとインラインアセンブリだけで基本的なBIOSブートローダーを実装しています。私達のカーネルを起動するためにこれを依存関係に追加する必要があります：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= </span><span style="color:#d69d85;">&quot;0.9.23&quot;
+</span></code></pre>
+<p>bootloaderを依存として加えることだけでブータブルディスクイメージが実際に作れるわけではなく、私達のカーネルをコンパイル後にブートローダーにリンクする必要があります。問題は、cargoが<a href="https://github.com/rust-lang/cargo/issues/545"><ruby>ビルド後<rp> (</rp><rt>post-build</rt><rp>) </rp></ruby>にスクリプトを走らせる機能</a>を持っていないことです。</p>
+<p>この問題を解決するため、私達は<code>bootimage</code>というツールを作りました。これは、まずカーネルとブートローダーをコンパイルし、そしてこれらをリンクしてブータブルディスクイメージを作ります。このツールをインストールするには、以下のコマンドをターミナルで実行してください：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install bootimage
+</span></code></pre>
+<p><code>bootimage</code>を実行しブートローダをビルドするには、<code>llvm-tools-preview</code>というrustupコンポーネントをインストールする必要があります。これは<code>rustup component add llvm-tools-preview</code>と実行することでできます。</p>
+<p><code>bootimage</code>をインストールし、<code>llvm-tools-preview</code>を追加したら、以下のように実行することでブータブルディスクイメージを作れます：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo bootimage
+</span></code></pre>
+<p>このツールが私達のカーネルを<code>cargo build</code>を使って再コンパイルしていることがわかります。そのため、あなたの行った変更を自動で検知してくれます。その後、bootloaderをビルドします。これには少し時間がかかるかもしれません。他の依存クレートと同じように、ビルドは一度しか行われず、その都度キャッシュされるので、以降のビルドはもっと早くなります。最終的に、<code>bootimage</code>はbootloaderとあなたのカーネルを合体させ、ブータブルディスクイメージにします。</p>
+<p>このコマンドを実行したら、<code>target/x86_64-blog_os/debug</code>ディレクトリ内に<code>bootimage-blog_os.bin</code>という名前のブータブルディスクイメージがあるはずです。これをバーチャルマシン内で起動してもいいですし、実際のハードウェア上で起動するためにUSBメモリにコピーしてもいいでしょう（ただし、これはCDイメージではありません。CDイメージは異なるフォーマットを持つので、これをCDに焼いてもうまくいきません）。</p>
+<h4 id="douiushi-zu-minano"><a class="zola-anchor" href="index.html#douiushi-zu-minano" aria-label="Anchor link for: douiushi-zu-minano">🔗</a>どういう仕組みなの？</h4>
+<p><code>bootimage</code>ツールは、裏で以下のステップを行っています：</p>
+<ul>
+<li>私達のカーネルを<a href="https://ja.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a>ファイルにコンパイルする。</li>
+<li>依存であるbootloaderをスタンドアロンの実行ファイルとしてコンパイルする。</li>
+<li>カーネルのELFファイルのバイト列をブートローダーにリンクする。</li>
+</ul>
+<p>起動時、ブートローダーは追加されたELFファイルを読み、解釈します。次にプログラム部を<ruby>ページテーブル<rp> (</rp><rt>page table</rt><rp>) </rp></ruby>の<ruby>仮想アドレス<rp> (</rp><rt>virtual address</rt><rp>) </rp></ruby>にマップし、<code>.bss</code>部をゼロにし、スタックをセットアップします。最後に、エントリポイントのアドレス（私達の<code>_start</code>関数）を読み、そこにジャンプします。</p>
+<h3 id="qemudeqi-dong-suru"><a class="zola-anchor" href="index.html#qemudeqi-dong-suru" aria-label="Anchor link for: qemudeqi-dong-suru">🔗</a>QEMUで起動する</h3>
+<p>これで、ディスクイメージを仮想マシンで起動できます。<a href="https://www.qemu.org/">QEMU</a>を使ってこれを起動するには、以下のコマンドを実行してください：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin
+</span><span>warning: TCG doesn&#39;t support requested feature: CPUID.01H:ECX.vmx [bit 5]
+</span></code></pre>
+<p>これにより、以下のような見た目の別のウィンドウが開きます：</p>
+<p><img src="qemu.png" alt="QEMU showing “Hello World!”" /></p>
+<p>私達の書いた“Hello World!“が画面に見えますね。</p>
+<h3 id="shi-ji-nomasin"><a class="zola-anchor" href="index.html#shi-ji-nomasin" aria-label="Anchor link for: shi-ji-nomasin">🔗</a>実際のマシン</h3>
+<p>USBメモリにこれを書き込んで実際のマシン上で起動することも可能です：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; dd if=target/x86_64-blog_os/debug/bootimage-blog_os.bin of=/dev/sdX &amp;&amp; sync
+</span></code></pre>
+<p><code>sdX</code>はあなたのUSBメモリのデバイス名です。そのデバイス上のすべてのデータが上書きされてしまうので、 <strong>正しいデバイス名を選んでいるのかよく確認してください</strong> 。</p>
+<p>イメージをUSBメモリに書き込んだあとは、そこから起動することによって実際のハードウェア上で走らせることができます。特殊なブートメニューを使ったり、BIOS設定で起動時の優先順位を変え、USBメモリから起動することを選択する必要があるでしょう。ただし、<code>bootloader</code>クレートはUEFIをサポートしていないので、UEFIマシン上ではうまく動作しないということに注意してください。</p>
+<h3 id="cargo-runwoshi-u"><a class="zola-anchor" href="index.html#cargo-runwoshi-u" aria-label="Anchor link for: cargo-runwoshi-u">🔗</a><code>cargo run</code>を使う</h3>
+<p>QEMU上でより簡単に私達のカーネルを走らせるために、cargoの<code>runner</code>設定が使えます。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;none&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">runner </span><span>= </span><span style="color:#d69d85;">&quot;bootimage runner&quot;
+</span></code></pre>
+<p><code>target.'cfg(target_os = &quot;none&quot;)'</code>テーブルは、<code>&quot;os&quot;</code>フィールドが<code>&quot;none&quot;</code>であるようなすべてのターゲットに適用されます。私達の<code>x86_64-blog_os.json</code>ターゲットもその1つです。<code>runner</code>キーは<code>cargo run</code>のときに呼ばれるコマンドを指定しています。このコマンドは、ビルドが成功した後に、実行可能ファイルのパスを第一引数として実行されます。詳しくは、<a href="https://doc.rust-lang.org/cargo/reference/config.html">cargoのドキュメント</a>を読んでください。</p>
+<p><code>bootimage runner</code>コマンドは、<code>runner</code>キーとして実行するために設計されています。このコマンドは、与えられた実行ファイルをプロジェクトの依存するbootloaderとリンクして、QEMUを立ち上げます。より詳しく知りたいときや、設定オプションについては<a href="https://github.com/rust-osdev/bootimage"><code>bootimage</code>のReadme</a>を読んでください。</p>
+<p>これで、<code>cargo run</code>を使ってカーネルをコンパイルしQEMU内で起動することができます。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>次の記事では、VGAテキストバッファをより詳しく学び、そのための安全なインターフェースを書きます。また、<code>println</code>マクロのサポートも行います。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../freestanding-rust-binary/index.html">&laquo; フリースタンディングな Rust バイナリ</a>
+        
+        
+            <a class="next" href="../vga-text-mode/index.html">VGAテキストモード &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="A Minimal Rust Kernel (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../minimal-rust-kernel/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/minimal-rust-kernel/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fr" class=""><a href="../../fr/minimal-rust-kernel/index.html">
+                        French
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/minimal-rust-kernel/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ru" class=""><a href="../../ru/minimal-rust-kernel/index.html">
+                        Russian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/minimal-rust-kernel/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

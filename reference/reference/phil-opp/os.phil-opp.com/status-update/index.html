@@ -1,0 +1,134 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Status Updates | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+
+<h1>Status Updates</h1>
+
+
+<p>These posts give a regular overview of the most important changes to the blog and the tools and libraries behind the scenes.</p>
+
+
+<div class="status-update-list"><ul>
+      <li><b><a href="https://rust-osdev.com/this-month/2022-11/">This Month in Rust OSDev (November 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-10/">This Month in Rust OSDev (October 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-09/">This Month in Rust OSDev (September 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-08/">This Month in Rust OSDev (August 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-07/">This Month in Rust OSDev (July 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-06/">This Month in Rust OSDev (June 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-05/">This Month in Rust OSDev (May 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-04/">This Month in Rust OSDev (April 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-03/">This Month in Rust OSDev (March 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-02/">This Month in Rust OSDev (February 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-01/">This Month in Rust OSDev (January 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-12/">This Month in Rust OSDev (December 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-11/">This Month in Rust OSDev (November 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-10/">This Month in Rust OSDev (October 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-09/">This Month in Rust OSDev (September 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-08/">This Month in Rust OSDev (August 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-07/">This Month in Rust OSDev (July 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-06/">This Month in Rust OSDev (June 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-05/">This Month in Rust OSDev (May 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-04/">This Month in Rust OSDev (April 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-03/">This Month in Rust OSDev (March 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-02/">This Month in Rust OSDev (February 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2021-01/">This Month in Rust OSDev (January 2021)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-12/">This Month in Rust OSDev (December 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-11/">This Month in Rust OSDev (November 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-10/">This Month in Rust OSDev (October 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-09/">This Month in Rust OSDev (September 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-08/">This Month in Rust OSDev (August 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-07/">This Month in Rust OSDev (July 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-06/">This Month in Rust OSDev (June 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-05/">This Month in Rust OSDev (May 2020)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2020-04/">This Month in Rust OSDev (April 2020)</a> </b></li>
+
+    
+        <li><b><a href="2020-04-01/index.html">Updates in March 2020</a></b></li>
+    
+        <li><b><a href="2020-03-02/index.html">Updates in February 2020</a></b></li>
+    
+        <li><b><a href="2020-02-01/index.html">Updates in January 2020</a></b></li>
+    
+        <li><b><a href="2020-01-07/index.html">Updates in December 2019</a></b></li>
+    
+        <li><b><a href="2019-12-02/index.html">Updates in October and November 2019</a></b></li>
+    
+        <li><b><a href="2019-10-06/index.html">Updates in September 2019</a></b></li>
+    
+        <li><b><a href="2019-09-09/index.html">Updates in August 2019</a></b></li>
+    
+        <li><b><a href="2019-08-02/index.html">Updates in July 2019</a></b></li>
+    
+        <li><b><a href="2019-07-06/index.html">Updates in June 2019</a></b></li>
+    
+        <li><b><a href="2019-06-03/index.html">Updates in May 2019</a></b></li>
+    
+        <li><b><a href="2019-05-01/index.html">Updates in April 2019</a></b></li>
+    
+</ul></div>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

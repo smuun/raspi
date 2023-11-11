@@ -1,0 +1,768 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="VGAテキストモードは画面にテキストを出力するシンプルな方法です。この記事では、すべてのunsafeな要素を別のモジュールにカプセル化することで、それを安全かつシンプルに扱えるようにするインターフェースを作ります。また、Rustのフォーマッティングマクロのサポートも実装します。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>VGAテキストモード | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#vgatekisutobatuhua">VGAテキストバッファ</a>
+            
+        </li><li>
+            <a href="index.html#rustnomoziyuru">Rustのモジュール</a>
+            <ol>
+                <li>
+                    <a href="index.html#se">色</a>
+                </li><li>
+                    <a href="index.html#tekisutobatuhua">テキストバッファ</a>
+                </li><li>
+                    <a href="index.html#chu-li-suru">出力する</a>
+                </li><li>
+                    <a href="index.html#volatile">Volatile</a>
+                </li><li>
+                    <a href="index.html#huomatutomakuro">フォーマットマクロ</a>
+                </li><li>
+                    <a href="index.html#gai-xing">改行</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#da-yu-de-global-naintahuesu">大域的 (global) なインターフェース</a>
+            <ol>
+                <li>
+                    <a href="index.html#dai-keta-lazy-jing-de-bian-shu">怠けた (Lazy) 静的変数</a>
+                </li><li>
+                    <a href="index.html#supinrotuku">スピンロック</a>
+                </li><li>
+                    <a href="index.html#an-quan-xing">安全性</a>
+                </li><li>
+                    <a href="index.html#printlnmakuro">printlnマクロ</a>
+                </li><li>
+                    <a href="index.html#printlnwoshi-tutehello-world">printlnを使ってHello World</a>
+                </li><li>
+                    <a href="index.html#panitukumetuseziwochu-li-suru">パニックメッセージを出力する</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>VGAテキストモード</h1>
+    <time datetime="2018-02-26" class="post-date">
+        Feb 26, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../vga-text-mode/index.html">VGA Text Mode</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/woodyZootopia">@woodyZootopia</a> 及び <a href="https://github.com/JohnTitor">@JohnTitor</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p><a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGAテキストモード</a>は画面にテキストを出力するシンプルな方法です。この記事では、すべてのunsafeな要素を別のモジュールにカプセル化することで、それを安全かつシンプルに扱えるようにするインターフェースを作ります。また、Rustの<a href="https://doc.rust-lang.org/std/fmt/#related-macros">フォーマッティングマクロ</a>のサポートも実装します。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-03"><code>post-03</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#vgatekisutobatuhua">VGAテキストバッファ</a>
+                
+            </li><li>
+                <a href="index.html#rustnomoziyuru">Rustのモジュール</a>
+                <ul>
+                    <li>
+                        <a href="index.html#se">色</a>
+                    </li><li>
+                        <a href="index.html#tekisutobatuhua">テキストバッファ</a>
+                    </li><li>
+                        <a href="index.html#chu-li-suru">出力する</a>
+                    </li><li>
+                        <a href="index.html#volatile">Volatile</a>
+                    </li><li>
+                        <a href="index.html#huomatutomakuro">フォーマットマクロ</a>
+                    </li><li>
+                        <a href="index.html#gai-xing">改行</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#da-yu-de-global-naintahuesu">大域的 (global) なインターフェース</a>
+                <ul>
+                    <li>
+                        <a href="index.html#dai-keta-lazy-jing-de-bian-shu">怠けた (Lazy) 静的変数</a>
+                    </li><li>
+                        <a href="index.html#supinrotuku">スピンロック</a>
+                    </li><li>
+                        <a href="index.html#an-quan-xing">安全性</a>
+                    </li><li>
+                        <a href="index.html#printlnmakuro">printlnマクロ</a>
+                    </li><li>
+                        <a href="index.html#printlnwoshi-tutehello-world">printlnを使ってHello World</a>
+                    </li><li>
+                        <a href="index.html#panitukumetuseziwochu-li-suru">パニックメッセージを出力する</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="vgatekisutobatuhua"><a class="zola-anchor" href="index.html#vgatekisutobatuhua" aria-label="Anchor link for: vgatekisutobatuhua">🔗</a>VGAテキストバッファ</h2>
+<p>VGAテキストモードにおいて、文字を画面に出力するには、VGAハードウェアのテキストバッファにそれを書き込まないといけません。VGAテキストバッファは、普通25行と80列からなる2次元配列で、画面に直接書き出されます。それぞれの配列の要素は画面上の一つの文字を以下の形式で表現しています：</p>
+<table><thead><tr><th>ビット</th><th>値</th></tr></thead><tbody>
+<tr><td>0-7</td><td>ASCII コードポイント</td></tr>
+<tr><td>8-11</td><td>フォアグラウンド（前景）色</td></tr>
+<tr><td>12-14</td><td>バックグラウンド（背景）色</td></tr>
+<tr><td>15</td><td>点滅</td></tr>
+</tbody></table>
+<p>最初の1バイトは、出力されるべき文字を<a href="https://ja.wikipedia.org/wiki/ASCII">ASCIIエンコーディング</a>で表します。正確に言うと、完全にASCIIではなく、<a href="https://ja.wikipedia.org/wiki/%E3%82%B3%E3%83%BC%E3%83%89%E3%83%9A%E3%83%BC%E3%82%B8437">コードページ437</a>という、いくつか文字が追加され、軽微な修正のなされたものです。簡単のため、この記事ではASCII文字と呼ぶことにします。</p>
+<p>2つ目のバイトはその文字がどのように出力されるのかを定義します。最初の4ビットが前景色（訳注：文字自体の色）を、次の3ビットが背景色を、最後のビットがその文字が点滅するのかを決めます。以下の色を使うことができます：</p>
+<table><thead><tr><th>数字</th><th>色</th><th>数字 + Bright Bit</th><th><ruby>Bright<rp> (</rp><rt>明るい</rt><rp>) </rp></ruby> 色</th></tr></thead><tbody>
+<tr><td>0x0</td><td>黒</td><td>0x8</td><td>暗いグレー</td></tr>
+<tr><td>0x1</td><td>青</td><td>0x9</td><td>明るい青</td></tr>
+<tr><td>0x2</td><td>緑</td><td>0xa</td><td>明るい緑</td></tr>
+<tr><td>0x3</td><td>シアン</td><td>0xb</td><td>明るいシアン</td></tr>
+<tr><td>0x4</td><td>赤</td><td>0xc</td><td>明るい赤</td></tr>
+<tr><td>0x5</td><td>マゼンタ</td><td>0xd</td><td>ピンク</td></tr>
+<tr><td>0x6</td><td>茶色</td><td>0xe</td><td>黄色</td></tr>
+<tr><td>0x7</td><td>明るいグレー</td><td>0xf</td><td>白</td></tr>
+</tbody></table>
+<p>4ビット目は <strong>bright bit</strong> で、これは（1になっているとき）たとえば青を明るい青に変えます。背景色については、このビットは点滅ビットとして再利用されています。</p>
+<p>VGAテキストバッファはアドレス<code>0xb8000</code>に<a href="https://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E3%83%AA%E3%83%9E%E3%83%83%E3%83%97%E3%83%89I/O"><ruby>memory-mapped<rp> (</rp><rt>メモリマップされた</rt><rp>) </rp></ruby> I/O</a>を通じてアクセスできます。これは、このアドレスへの読み書きをしても、RAMではなく直接VGAハードウェアのテキストバッファにアクセスするということを意味します。つまり、このアドレスに対する通常のメモリ操作を通じて、テキストバッファを読み書きできるのです。</p>
+<p>メモリマップされたハードウェアは通常のRAM操作すべてをサポートしてはいないかもしれないということに注意してください。たとえば、デバイスはバイトずつの読み取りしかサポートしておらず、<code>u64</code>が読まれるとゴミデータを返すかもしれません。ありがたいことに、テキストバッファを特別なやり方で取り扱う必要がないよう、テキストバッファは<a href="https://web.stanford.edu/class/cs140/projects/pintos/specs/freevga/vga/vgamem.htm#manip">通常の読み書きをサポートしています</a>。</p>
+<h2 id="rustnomoziyuru"><a class="zola-anchor" href="index.html#rustnomoziyuru" aria-label="Anchor link for: rustnomoziyuru">🔗</a>Rustのモジュール</h2>
+<p>VGAバッファが動く仕組みを学んだので、さっそく画面出力を扱うRustのモジュールを作っていきます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span style="color:#569cd6;">mod </span><span>vga_buffer;
+</span></code></pre>
+<p>このモジュールの中身のために、新しい<code>src/vga_buffer.rs</code>というファイルを作ります。このファイル以下のコードは、（そうならないよう指定されない限り）すべてこの新しいモジュールの中に入ります。</p>
+<h3 id="se"><a class="zola-anchor" href="index.html#se" aria-label="Anchor link for: se">🔗</a>色</h3>
+<p>まず、様々な色をenumを使って表しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[allow(dead_code)]
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>Color {
+</span><span>    Black = </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    Blue = </span><span style="color:#b5cea8;">1</span><span>,
+</span><span>    Green = </span><span style="color:#b5cea8;">2</span><span>,
+</span><span>    Cyan = </span><span style="color:#b5cea8;">3</span><span>,
+</span><span>    Red = </span><span style="color:#b5cea8;">4</span><span>,
+</span><span>    Magenta = </span><span style="color:#b5cea8;">5</span><span>,
+</span><span>    Brown = </span><span style="color:#b5cea8;">6</span><span>,
+</span><span>    LightGray = </span><span style="color:#b5cea8;">7</span><span>,
+</span><span>    DarkGray = </span><span style="color:#b5cea8;">8</span><span>,
+</span><span>    LightBlue = </span><span style="color:#b5cea8;">9</span><span>,
+</span><span>    LightGreen = </span><span style="color:#b5cea8;">10</span><span>,
+</span><span>    LightCyan = </span><span style="color:#b5cea8;">11</span><span>,
+</span><span>    LightRed = </span><span style="color:#b5cea8;">12</span><span>,
+</span><span>    Pink = </span><span style="color:#b5cea8;">13</span><span>,
+</span><span>    Yellow = </span><span style="color:#b5cea8;">14</span><span>,
+</span><span>    White = </span><span style="color:#b5cea8;">15</span><span>,
+</span><span>}
+</span></code></pre>
+<p>ここでは、それぞれの色の数を指定するのに<a href="https://doc.rust-jp.rs/rust-by-example-ja/custom_types/enum/c_like.html">C言語ライクなenum</a>を使っています。<code>repr(u8)</code>属性のため、それぞれのenumのヴァリアントは<code>u8</code>として格納されています。実際には4ビットでも十分なのですが、Rustには<code>u4</code>型はありませんので。</p>
+<p>通常、コンパイラは使われていないヴァリアントそれぞれに対して警告を発します。<code>#[allow(dead_code)]</code>属性を使うことで<code>Color</code> enumに対するそれらの警告を消すことができます。</p>
+<p><a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html"><code>Copy</code></a>、<a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html"><code>Clone</code></a>、<a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Debug.html"><code>Debug</code></a>、<a href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html"><code>PartialEq</code></a>、および <a href="https://doc.rust-lang.org/nightly/core/cmp/trait.Eq.html"><code>Eq</code></a>を<a href="https://doc.rust-jp.rs/rust-by-example-ja/trait/derive.html">derive</a>することによって、この型の<a href="https://doc.rust-jp.rs/book-ja/appendix-03-derivable-traits.html#%E5%80%A4%E3%82%92%E8%A4%87%E8%A3%BD%E3%81%99%E3%82%8Bclone%E3%81%A8copy">コピーセマンティクス</a>を有効化し、この型を出力することと比較することを可能にします。</p>
+<p>前景と背景の色を指定する完全なカラーコードを表現するために、<code>u8</code>の上に<a href="https://doc.rust-jp.rs/rust-by-example-ja/generics/new_types.html">ニュータイプ</a>を作ります。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>ColorCode(</span><span style="color:#569cd6;">u8</span><span>);
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ColorCode {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new(foreground: Color, background: Color) -&gt; ColorCode {
+</span><span>        ColorCode((background </span><span style="color:#569cd6;">as u8</span><span>) &lt;&lt; </span><span style="color:#b5cea8;">4 </span><span style="color:#569cd6;">| </span><span>(foreground </span><span style="color:#569cd6;">as u8</span><span>))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>ColorCode</code>構造体は前景色と背景色を持つので、完全なカラーコードを持ちます。前と同じように、<code>Copy</code>と<code>Debug</code>トレイトをこれにderiveします。<code>ColorCode</code>が<code>u8</code>と全く同じデータ構造を持つようにするために、<a href="https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent"><code>repr(transparent)</code></a>属性（訳注：翻訳当時、リンク先未訳）を使います。</p>
+<h3 id="tekisutobatuhua"><a class="zola-anchor" href="index.html#tekisutobatuhua" aria-label="Anchor link for: tekisutobatuhua">🔗</a>テキストバッファ</h3>
+<p>次に、画面上の文字とテキストバッファをそれぞれ表す構造体を追加していきます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(C)]
+</span><span style="color:#569cd6;">struct </span><span>ScreenChar {
+</span><span>    ascii_character: </span><span style="color:#569cd6;">u8</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">25</span><span>;
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_WIDTH</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">80</span><span>;
+</span><span>
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>Rustにおいて、デフォルトの構造体におけるフィールドの並べ方は未定義なので、<a href="https://doc.rust-jp.rs/rust-nomicon-ja/other-reprs.html#reprc"><code>repr(C)</code></a>属性が必要になります。これは、構造体のフィールドがCの構造体と全く同じように並べられることを保証してくれるので、フィールドの並べ方が正しいと保証してくれるのです。<code>Buffer</code>構造体については、<a href="https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent"><code>repr(transparent)</code></a>をもう一度使うことで、その唯一のフィールドと同じメモリレイアウトを持つようにしています。</p>
+<p>実際に画面に書き出すため、writer型を作ります。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Writer {
+</span><span>    column_position: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>    buffer: </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> Buffer,
+</span><span>}
+</span></code></pre>
+<p>writerは常に最後の行に書き、行が一杯になったとき（もしくは<code>\n</code>を受け取った時）は1行上に送ります。<code>column_position</code>フィールドは、最後の行における現在の位置を持ちます。現在の前景および背景色は<code>color_code</code>によって指定されており、VGAバッファへの参照は<code>buffer</code>に格納されています。ここで、コンパイラにどのくらいの間参照が有効であるのかを教えるために<a href="https://doc.rust-jp.rs/book-ja/ch10-03-lifetime-syntax.html#%E3%83%A9%E3%82%A4%E3%83%95%E3%82%BF%E3%82%A4%E3%83%A0%E6%B3%A8%E9%87%88%E8%A8%98%E6%B3%95">明示的なライフタイム</a>が必要になることに注意してください。<a href="https://doc.rust-jp.rs/book-ja/ch10-03-lifetime-syntax.html#%E9%9D%99%E7%9A%84%E3%83%A9%E3%82%A4%E3%83%95%E3%82%BF%E3%82%A4%E3%83%A0"><code>'static</code></a>ライフタイムは、その参照がプログラムの実行中ずっと有効であることを指定しています（これはVGAバッファについて正しいです）。</p>
+<h3 id="chu-li-suru"><a class="zola-anchor" href="index.html#chu-li-suru" aria-label="Anchor link for: chu-li-suru">🔗</a>出力する</h3>
+<p>では<code>Writer</code>を使ってバッファの文字を変更しましょう。まず一つのASCII文字を書くメソッドを作ります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">if </span><span>self.column_position &gt;= </span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                    self.new_line();
+</span><span>                }
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> row = </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>                </span><span style="color:#569cd6;">let</span><span> col = self.column_position;
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> color_code = self.color_code;
+</span><span>                self.buffer.chars[row][col] = ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code,
+</span><span>                };
+</span><span>                self.column_position += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>（引数の）バイトが<a href="https://ja.wikipedia.org/wiki/%E6%94%B9%E8%A1%8C%E3%82%B3%E3%83%BC%E3%83%89">改行コード</a>のバイトすなわち<code>\n</code>の場合は、writerは何も出力しません。代わりに、あとで実装する<code>new_line</code>メソッドを呼びます。他のバイトは、2つ目のマッチケースにおいて画面に出力されます。</p>
+<p>バイトを出力する時、writerは現在の行がいっぱいかをチェックします。その場合、行を折り返すために先に<code>new_line</code>の呼び出しが必要です。その後で現在の場所のバッファに新しい<code>ScreenChar</code>を書き込みます。最後に、現在の<ruby>列の位置<rp> (</rp><rt>column position</rt><rp>) </rp></ruby>を進めます。</p>
+<p>文字列全体を出力するには、バイト列に変換しひとつひとつ出力すればよいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_string(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> byte </span><span style="color:#569cd6;">in</span><span> s.bytes() {
+</span><span>            </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>                </span><span style="color:#608b4e;">// 出力可能なASCIIバイトか、改行コード
+</span><span>                </span><span style="color:#b5cea8;">0x20</span><span style="color:#569cd6;">..</span><span>=</span><span style="color:#b5cea8;">0x7e </span><span style="color:#569cd6;">| b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.write_byte(byte),
+</span><span>                </span><span style="color:#608b4e;">// 出力可能なASCIIバイトではない
+</span><span>                </span><span style="color:#569cd6;">_ =&gt; </span><span>self.write_byte(</span><span style="color:#b5cea8;">0xfe</span><span>),
+</span><span>            }
+</span><span>
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>VGAテキストバッファはASCIIおよび<a href="https://ja.wikipedia.org/wiki/%E3%82%B3%E3%83%BC%E3%83%89%E3%83%9A%E3%83%BC%E3%82%B8437">コードページ437</a>にある追加のバイトのみをサポートしています。Rustの文字列はデフォルトでは<a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a>なのでVGAテキストバッファにはサポートされていないバイトを含んでいる可能性があります。matchを使って出力可能なASCIIバイト（改行コードか、空白文字から<code>~</code>文字の間のすべての文字）と出力不可能なバイトを分けています。出力不可能なバイトについては、文字<code>■</code>を出力します（これはVGAハードウェアにおいて16進コード<code>0xfe</code>を持っています）。</p>
+<h4 id="yatutemiyou"><a class="zola-anchor" href="index.html#yatutemiyou" aria-label="Anchor link for: yatutemiyou">🔗</a>やってみよう！</h4>
+<p>適当な文字を画面に書き出すために、一時的に使う関数を作ってみましょう。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello &quot;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;Wörld!&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>この関数はまず、VGAバッファの<code>0xb8000</code>を指す新しいwriterを作ります。このための構文はやや奇妙に思われるかもしれません：まず、整数<code>0xb8000</code>を可変な<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#%E7%94%9F%E3%83%9D%E3%82%A4%E3%83%B3%E3%82%BF%E3%82%92%E5%8F%82%E7%85%A7%E5%A4%96%E3%81%97%E3%81%99%E3%82%8B">生ポインタ</a>にキャストします。次にこれを（<code>*</code>を使って）参照外しすることで可変な参照に変え、即座にそれを（<code>&amp;mut</code>を使って）再び借用します。コンパイラはこの生ポインタが有効であることを保証できないので、この変換には<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html"><code>unsafe</code>ブロック</a>が必要となります。</p>
+<p>つぎに、この関数はそれにバイト<code>b'H'</code>を書きます。<code>b</code>というプレフィックスは、ASCII文字を表す<a href="https://doc.rust-lang.org/reference/tokens.html#byte-literals">バイトリテラル</a>を作ります。文字列<code>&quot;ello &quot;</code>と<code>&quot;Wörld!&quot;</code>を書くことで、私達の<code>write_string</code>関数と出力不可能な文字の処理をテストできます。出力を見るためには、<code>print_something</code>関数を<code>_start</code>関数から呼び出さなければなりません：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    vga_buffer::print_something();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>ここで、私達のプロジェクトを実行したら、<code>Hello W■■rld!</code>が画面の左 <strong>下</strong> に黄色で出力されるはずです。</p>
+<p><img src="vga-hello.png" alt="QEMU output with a yellow Hello W■■rld! in the lower left corner" /></p>
+<p><code>ö</code>は2つの<code>■</code>という文字として出力されていることに注目してください。これは、<code>ö</code>は<a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a>において2つのバイトで表され、それらはどちらも出力可能なASCIIの範囲に収まっていないためです。実は、これはUTF-8の基本的な特性です：マルチバイト値のそれぞれのバイトは、絶対に有効なASCIIではないのです。</p>
+<h3 id="volatile"><a class="zola-anchor" href="index.html#volatile" aria-label="Anchor link for: volatile">🔗</a>Volatile</h3>
+<p>メッセージが正しく出力されるのを確認できました。しかし、より強力に最適化をする将来のRustコンパイラでは、これはうまく行かないかもしれません。</p>
+<p>問題なのは、私達は<code>Buffer</code>に書き込むけれども、それから読み取ることはないということです。コンパイラは私達が実際には（通常のRAMの代わりに）VGAバッファメモリにアクセスしていることを知らないので、文字が画面に出力されるという副作用も全く知りません。なので、それらの書き込みは不要で省略可能と判断するかもしれません。この誤った最適化を回避するためには、それらの書き込みを <strong><a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a></strong> であると指定する必要があります。これは、この書き込みには副作用があり、最適化により取り除かれるべきではないとコンパイラに命令します。</p>
+<p>VGAバッファへのvolatileな書き込みをするために、<a href="https://docs.rs/volatile">volatile</a>ライブラリを使います。この <strong>クレート</strong>（Rustではパッケージのことをこう呼びます）は、<code>read</code>と<code>write</code>というメソッドを持つ<code>Volatile</code>というラッパー型を提供します。これらのメソッドは、内部的にcoreライブラリの<a href="https://doc.rust-lang.org/nightly/core/ptr/fn.read_volatile.html">read_volatile</a>と<a href="https://doc.rust-lang.org/nightly/core/ptr/fn.write_volatile.html">write_volatile</a>関数を使い、読み込み・書き込みが最適化により取り除かれないことを保証します。</p>
+<p><code>Cargo.toml</code>の<code>dependencies</code>セクションに<code>volatile</code>クレートを追加することで、このクレートへの依存関係を追加できます。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">volatile </span><span>= </span><span style="color:#d69d85;">&quot;0.2.6&quot;
+</span></code></pre>
+<p><code>0.2.6</code>は<a href="https://semver.org/lang/ja/">セマンティック</a>バージョン番号です。詳しくは、cargoドキュメントの<a href="https://doc.crates.io/specifying-dependencies.html">依存関係の指定</a>を見てください。</p>
+<p>これを使って、VGAバッファへの書き込みをvolatileにしてみましょう。<code>Buffer</code>型を以下のように変更します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>volatile::Volatile;
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[Volatile&lt;ScreenChar&gt;; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p><code>ScreenChar</code>の代わりに、<code>Volatile&lt;ScreenChar&gt;</code>を使っています（<code>Volatile</code>型は<a href="https://doc.rust-lang.org/book/ch10-01-syntax.html">ジェネリック</a>であり（ほぼ）すべての型をラップできます）。これにより、間違って「普通の」書き込みをこれに対して行わないようにできます。これからは、代わりに<code>write</code>メソッドを使わなければいけません。</p>
+<p>つまり、<code>Writer::write_byte</code>メソッドを更新しなければいけません：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>
+</span><span>                self.buffer.chars[row][col].write(ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code,
+</span><span>                });
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p><code>=</code>を使った通常の代入の代わりに<code>write</code>メソッドを使っています。これにより、コンパイラがこの書き込みを最適化して取り除いてしまわないことが保証されます。</p>
+<h3 id="huomatutomakuro"><a class="zola-anchor" href="index.html#huomatutomakuro" aria-label="Anchor link for: huomatutomakuro">🔗</a>フォーマットマクロ</h3>
+<p>Rustの<ruby>フォーマットマクロ<rp> (</rp><rt>formatting macro</rt><rp>) </rp></ruby>もサポートすると良さそうです。そうすると、整数や浮動小数点数といった様々な型を簡単に出力できます。それらをサポートするためには、<a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>core::fmt::Write</code></a>トレイトを実装する必要があります。このトレイトに必要なメソッドは<code>write_str</code>だけです。これは私達の<code>write_string</code>によく似ており、戻り値の型が<code>fmt::Result</code>であるだけです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::fmt;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>fmt::Write </span><span style="color:#569cd6;">for </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_str(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) -&gt; fmt::Result {
+</span><span>        self.write_string(s);
+</span><span>        Ok(())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>Ok(())</code>は、<code>()</code>型を持つ<code>Ok</code>、というだけです。</p>
+<p>Rustの組み込みの<code>write!</code>/<code>writeln!</code>フォーマットマクロが使えるようになりました。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello! &quot;</span><span>);
+</span><span>    write!(writer, </span><span style="color:#d69d85;">&quot;The numbers are </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> and </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.0</span><span>/</span><span style="color:#b5cea8;">3.0</span><span>).unwrap();
+</span><span>}
+</span></code></pre>
+<p>このようにすると、画面の下端に<code>Hello! The numbers are 42 and 0.3333333333333333</code>が見えるはずです。<code>write!</code>の呼び出しは<code>Result</code>を返し、これは放置されると警告を出すので、<a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.unwrap"><code>unwrap</code></a>関数（エラーの際パニックします）をこれに呼び出しています。VGAバッファへの書き込みは絶対に失敗しないので、この場合これは問題ではありません。</p>
+<h3 id="gai-xing"><a class="zola-anchor" href="index.html#gai-xing" aria-label="Anchor link for: gai-xing">🔗</a>改行</h3>
+<p>現在、改行や、行に収まらない文字は無視しています。その代わりに、すべての文字を一行上に持っていき（一番上の行は消去されます）、前の行の最初から始めるようにしたいです。これをするために、<code>Writer</code>の<code>new_line</code>というメソッドの実装を追加します。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> row </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">1</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>{
+</span><span>            </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                </span><span style="color:#569cd6;">let</span><span> character = self.buffer.chars[row][col].read();
+</span><span>                self.buffer.chars[row - </span><span style="color:#b5cea8;">1</span><span>][col].write(character);
+</span><span>            }
+</span><span>        }
+</span><span>        self.clear_row(</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>        self.column_position = </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>すべての画面の文字をイテレートし、それぞれの文字を一行上に動かします。範囲記法 (<code>..</code>) は上端を含まないことに注意してください。また、0行目はシフトしたら画面から除かれるので、この行についても省いています（最初の範囲は<code>1</code>から始まっています）。</p>
+<p>newlineのプログラムを完成させるには、<code>clear_row</code>メソッドを追加すればよいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> blank = ScreenChar {
+</span><span>            ascii_character: </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>,
+</span><span>            color_code: self.color_code,
+</span><span>        };
+</span><span>        </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>            self.buffer.chars[row][col].write(blank);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>このメソッドはすべての文字を空白文字で書き換えることによって行をクリアしてくれます。</p>
+<h2 id="da-yu-de-global-naintahuesu"><a class="zola-anchor" href="index.html#da-yu-de-global-naintahuesu" aria-label="Anchor link for: da-yu-de-global-naintahuesu">🔗</a><ruby>大域的<rp> (</rp><rt>global</rt><rp>) </rp></ruby>なインターフェース</h2>
+<p><code>Writer</code>のインスタンスを動かさずとも他のモジュールからインターフェースとして使える、大域的なwriterを提供するために、<ruby>静的<rp> (</rp><rt>static</rt><rp>) </rp></ruby>な<code>WRITER</code>を作りましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>    column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>    buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>};
+</span></code></pre>
+<p>しかし、これをコンパイルしようとすると、次のエラーが起こります：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0015]: calls in statics are limited to constant functions, tuple structs and tuple variants
+</span><span>（エラー[E0015]: static内における呼び出しは、定数関数、タプル構造体、タプルヴァリアントに限定されています）
+</span><span> --&gt; src/vga_buffer.rs:7:17
+</span><span>  |
+</span><span>7 |     color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+</span><span>
+</span><span>error[E0396]: raw pointers cannot be dereferenced in statics
+</span><span>（エラー[E0396]: 生ポインタはstatic内では参照外しできません）
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer in constant
+</span><span>  |                                                                        （定数内での生ポインタの参照外し）
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span>（エラー[E0017]: static内における参照が参照してよいのは不変変数だけです）
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span><span>  |                                                                        （staticは不変変数を必要とします）
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span>（エラー[E0017]: static内における参照が参照してよいのは不変変数だけです）
+</span><span> --&gt; src/vga_buffer.rs:8:13
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span><span>  |                                                                                 （staticは不変変数を必要とします）
+</span></code></pre>
+<p>何が起こっているかを理解するには、実行時に初期化される通常の変数とは対照的に、静的変数はコンパイル時に初期化されるということを知らないといけません。この初期化表現を評価するRustコンパイラのコンポーネントを“<a href="https://rustc-dev-guide.rust-lang.org/const-eval.html">const evaluator</a>“といいます。この機能はまだ限定的ですが、「<a href="https://github.com/rust-lang/rfcs/pull/2345">定数内でpanicできるようにする</a>」RFCのように、この機能を拡張する作業が現在も進行しています。</p>
+<p><code>ColorCode::new</code>に関する問題は<a href="https://doc.rust-lang.org/reference/const_eval.html#const-functions"><code>const</code>関数</a>を使って解決できるかもしれませんが、ここでの根本的な問題は、Rustのconst evaluatorがコンパイル時に生ポインタを参照へと変えることができないということです。いつかうまく行くようになるのかもしれませんが、その時までは、別の方法を行わなければなりません。</p>
+<h3 id="dai-keta-lazy-jing-de-bian-shu"><a class="zola-anchor" href="index.html#dai-keta-lazy-jing-de-bian-shu" aria-label="Anchor link for: dai-keta-lazy-jing-de-bian-shu">🔗</a><ruby>怠けた<rp> (</rp><rt>Lazy</rt><rp>) </rp></ruby>静的変数</h3>
+<p>定数でない関数で一度だけ静的変数を初期化したい、というのはRustにおいてよくある問題です。嬉しいことに、<a href="https://docs.rs/lazy_static/1.0.1/lazy_static/">lazy_static</a>というクレートにすでに良い解決方法が存在します。このクレートは、初期化が後回しにされる<code>static</code>を定義する<code>lazy_static!</code>マクロを提供します。その値をコンパイル時に計算する代わりに、この<code>static</code>は最初にアクセスされたときに初めて初期化します。したがって、初期化は実行時に起こるので、どんなに複雑な初期化プログラムも可能ということです。</p>
+<div class="note">
+<p><strong>訳注:</strong>  lazyは、普通「遅延（評価）」などと訳されます。「怠けているので、アクセスされるギリギリまで評価されない」という英語のイメージを伝えたかったので上のように訳してみました。</p>
+</div>
+<p>私達のプロジェクトに<code>lazy_static</code>クレートを追加しましょう：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies.lazy_static</span><span>]
+</span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;1.0&quot;
+</span><span style="color:#569cd6;">features </span><span>= [</span><span style="color:#d69d85;">&quot;spin_no_std&quot;</span><span>]
+</span></code></pre>
+<p>標準ライブラリをリンクしないので、<code>spin_no_std</code>機能が必要です。</p>
+<p><code>lazy_static</code>を使えば、静的な<code>WRITER</code>が問題なく定義できます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>しかし、この<code>WRITER</code>は<ruby>不変<rp> (</rp><rt>immutable</rt><rp>) </rp></ruby>なので、全く使い物になりません。なぜならこれは、この<code>WRITER</code>に何も書き込めないということを意味するからです（私達のすべての書き込みメソッドは<code>&amp;mut self</code>を取るからです）。ひとつの解決策には、<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#%E5%8F%AF%E5%A4%89%E3%81%A7%E9%9D%99%E7%9A%84%E3%81%AA%E5%A4%89%E6%95%B0%E3%81%AB%E3%82%A2%E3%82%AF%E3%82%BB%E3%82%B9%E3%81%97%E3%81%9F%E3%82%8A%E5%A4%89%E6%9B%B4%E3%81%99%E3%82%8B"><ruby>可変<rp> (</rp><rt>mutable</rt><rp>) </rp></ruby>で静的な変数</a>を使うということがあります。しかし、そうすると、あらゆる読み書きが容易にデータ競合やその他の良くないことを引き起こしてしまうので、それらがすべてunsafeになってしまいます。<code>static mut</code>を使うことも、<a href="https://internals.rust-lang.org/t/pre-rfc-remove-static-mut/1437">それを削除しようという提案</a>すらあることを考えると、できる限り避けたいです。しかし他に方法はあるのでしょうか？不変静的変数を<a href="https://doc.rust-jp.rs/book-ja/ch15-05-interior-mutability.html#refcellt%E3%81%A7%E5%AE%9F%E8%A1%8C%E6%99%82%E3%81%AB%E5%80%9F%E7%94%A8%E3%82%92%E8%BF%BD%E3%81%84%E3%81%8B%E3%81%91%E3%82%8B">RefCell</a>や、果ては<a href="https://doc.rust-lang.org/nightly/core/cell/struct.UnsafeCell.html">UnsafeCell</a>のような、<a href="https://doc.rust-jp.rs/book-ja/ch15-05-interior-mutability.html"><ruby>内部可変性<rp> (</rp><rt>interior mutability</rt><rp>) </rp></ruby></a>を提供するcell型と一緒に使うという事も考えられます。しかし、それらの型は（ちゃんとした理由があって）<a href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html">Sync</a>ではないので、静的変数で使うことはできません。</p>
+<h3 id="supinrotuku"><a class="zola-anchor" href="index.html#supinrotuku" aria-label="Anchor link for: supinrotuku">🔗</a>スピンロック</h3>
+<p>同期された内部可変性を得るためには、標準ライブラリを使えるなら<a href="https://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html">Mutex</a>を使うことができます。これは、リソースがすでにロックされていた場合、スレッドをブロックすることにより相互排他性を提供します。しかし、私達の初歩的なカーネルにはブロックの機能はもちろんのこと、スレッドの概念すらないので、これも使うことはできません。しかし、コンピュータサイエンスの世界には、OSを必要としない非常に単純なmutexが存在するのです：それが<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%83%94%E3%83%B3%E3%83%AD%E3%83%83%E3%82%AF"><ruby>スピンロック<rp> (</rp><rt>spinlock</rt><rp>) </rp></ruby></a>です。スピンロックを使うと、ブロックする代わりに、スレッドは単純にリソースを何度も何度もロックしようとすることで、mutexが開放されるまでの間CPU時間を使い尽くします。</p>
+<p>スピンロックによるmutexを使うには、<a href="https://crates.io/crates/spin">spinクレート</a>への依存を追加すればよいです：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">spin </span><span>= </span><span style="color:#d69d85;">&quot;0.5.2&quot;
+</span></code></pre>
+<p>すると、スピンを使ったMutexを使うことができ、静的な<code>WRITER</code>に安全な<a href="https://doc.rust-jp.rs/book-ja/ch15-05-interior-mutability.html">内部可変性</a>を追加できます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">...
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Mutex&lt;Writer&gt; = Mutex::new(Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p><code>print_something</code>関数を消して、<code>_start</code>関数から直接出力しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_str(</span><span style="color:#d69d85;">&quot;Hello again&quot;</span><span>).unwrap();
+</span><span>    write!(vga_buffer::WRITER.lock(), </span><span style="color:#d69d85;">&quot;, some numbers: </span><span style="color:#b4cea8;">{} {}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.337</span><span>).unwrap();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p><code>fmt::Write</code>トレイトの関数を使うためには、このトレイトをインポートする必要があります。</p>
+<h3 id="an-quan-xing"><a class="zola-anchor" href="index.html#an-quan-xing" aria-label="Anchor link for: an-quan-xing">🔗</a>安全性</h3>
+<p>コードにはunsafeブロックが一つ（<code>0xb8000</code>を指す参照<code>Buffer</code>を作るために必要なもの）しかないことに注目してください。その後は、すべての命令が<ruby>安全<rp> (</rp><rt>safe</rt><rp>) </rp></ruby>です。Rustは配列アクセスにはデフォルトで境界チェックを行うので、間違ってバッファの外に書き込んでしまうことはありえません。よって、必要とされる条件を型システムにすべて組み込んだので、安全なインターフェースを外部に提供できます。</p>
+<h3 id="printlnmakuro"><a class="zola-anchor" href="index.html#printlnmakuro" aria-label="Anchor link for: printlnmakuro">🔗</a>printlnマクロ</h3>
+<p>大域的なwriterを手に入れたので、プログラムのどこでも使える<code>println</code>マクロを追加できます。Rustの<a href="https://doc.rust-lang.org/nightly/book/ch19-06-macros.html#declarative-macros-with-macro_rules-for-general-metaprogramming">マクロの構文</a>はすこしややこしいので、一からマクロを書くことはしません。代わりに、標準ライブラリで<a href="https://doc.rust-lang.org/nightly/std/macro.println!.html"><code>println!</code>マクロ</a>のソースを見てみます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>マクロは1つ以上のルールを使って定義されます（<code>match</code>アームと似ていますね）。<code>println</code>には2つのルールがあります：1つ目は引数なし呼び出し（例えば <code>println!()</code>）のためのもので、これは<code>print!(&quot;\n&quot;)</code>に展開され、よってただ改行を出力するだけになります。2つ目のルールはパラメータ付きの呼び出し（例えば<code>println!(&quot;Hello&quot;)</code>や <code>println!(&quot;Number: {}&quot;, 4)</code>）のためのものです。これも<code>print!</code>マクロの呼び出しへと展開され、すべての引数に加え、改行<code>\n</code>を最後に追加して渡します。</p>
+<p><code>#[macro_export]</code>属性はマクロを（その定義されたモジュールだけではなく）クレート全体および外部クレートで使えるようにします。また、これはマクロをクレートルートに置くため、<code>std::macros::println</code>の代わりに<code>use std::println</code>を使ってマクロをインポートしないといけないということを意味します。</p>
+<p><a href="https://doc.rust-lang.org/nightly/std/macro.print!.html"><code>print!</code>マクロ</a>は以下のように定義されています：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::io::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>このマクロは<code>io</code>モジュール内の<a href="https://github.com/rust-lang/rust/blob/29f5c699b11a6a148f097f82eaa05202f8799bbc/src/libstd/io/stdio.rs#L698"><code>_print</code>関数</a>の呼び出しへと展開しています。<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/macros.html#the-variable-crate"><code>$crate</code>という変数</a>は、他のクレートで使われた際、<code>std</code>へと展開することによって、マクロが<code>std</code>クレートの外側で使われたとしてもうまく動くようにしてくれます。</p>
+<p><a href="https://doc.rust-lang.org/nightly/std/macro.format_args.html"><code>format_args</code>マクロ</a>が与えられた引数から<a href="https://doc.rust-lang.org/nightly/core/fmt/struct.Arguments.html">fmt::Arguments</a>型を作り、これが<code>_print</code>へと渡されています。libstdの[<code>_print</code>関数]は<code>print_to</code>を呼び出すのですが、これは様々な<code>Stdout</code>デバイスをサポートいているためかなり煩雑です。ここではただVGAバッファに出力したいだけなので、そのような煩雑な実装は必要ありません。</p>
+<p>VGAバッファに出力するには、<code>println!</code>マクロと<code>print!</code>マクロをコピーし、独自の<code>_print</code>関数を使うように修正してやればいいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::vga_buffer::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>元の<code>println</code>の定義と異なり、<code>print!</code>マクロの呼び出しにも<code>$crate</code>をつけるようにしています。これにより、<code>println</code>だけを使いたいと思ったら<code>print!</code>マクロもインポートしなくていいようになります。</p>
+<p>標準ライブラリのように、<code>#[macro_export]</code>属性を両方のマクロに与え、クレートのどこでも使えるようにします。このようにすると、マクロはクレートの名前空間のルートに置かれるので、<code>use crate::vga_buffer::println</code>としてインポートするとうまく行かないことに注意してください。代わりに、 <code>use crate::println</code>としなければいけません。</p>
+<p><code>_print</code>関数は静的な<code>WRITER</code>をロックし、その<code>write_fmt</code>メソッドを呼び出します。このメソッドは<code>Write</code>トレイトのものなので、このトレイトもインポートしないといけません。最後に追加した<code>unwrap()</code>は、画面出力がうまく行かなかったときパニックします。しかし、<code>write_str</code>は常に<code>Ok</code>を返すようにしているので、これは起きないはずです。</p>
+<p>マクロは<code>_print</code>をモジュールの外側から呼び出せる必要があるので、この関数は<ruby>公開<rp> (</rp><rt>public</rt><rp>) </rp></ruby>されていなければなりません。しかし、これは<ruby>非公開<rp> (</rp><rt>private</rt><rp>) </rp></ruby>の実装の詳細であると考え、<a href="https://doc.rust-lang.org/nightly/rustdoc/write-documentation/the-doc-attribute.html#hidden"><code>doc(hidden)</code>属性</a>をつけることで、生成されたドキュメントから隠すようにします。</p>
+<h3 id="printlnwoshi-tutehello-world"><a class="zola-anchor" href="index.html#printlnwoshi-tutehello-world" aria-label="Anchor link for: printlnwoshi-tutehello-world">🔗</a><code>println</code>を使ってHello World</h3>
+<p>こうすることで、<code>_start</code>関数で<code>println</code>を使えるようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>マクロはすでに名前空間のルートにいるので、main関数内でマクロをインポートしなくても良いということに注意してください。</p>
+<p>期待通り、画面に Hello World! と出ています：</p>
+<p><img src="vga-hello-world.png" alt="QEMU printing “Hello World!”" /></p>
+<h3 id="panitukumetuseziwochu-li-suru"><a class="zola-anchor" href="index.html#panitukumetuseziwochu-li-suru" aria-label="Anchor link for: panitukumetuseziwochu-li-suru">🔗</a>パニックメッセージを出力する</h3>
+<p><code>println</code>マクロを手に入れたので、これを私達のパニック関数で使って、パニックメッセージとパニックの場所を出力させることができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in main.rs
+</span><span>
+</span><span style="color:#608b4e;">/// この関数はパニック時に呼ばれる。
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p><code>panic!(&quot;Some panic message&quot;);</code>という文を<code>_start</code>関数に書くと、次の出力を得ます：</p>
+<p><img src="vga-panic.png" alt="QEMU printing “panicked at ‘Some panic message’, src/main.rs:28:5" /></p>
+<p>つまり、パニックが起こったということだけでなく、パニックメッセージとそれがコードのどこで起こったかまで知ることができます。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>この記事では、VGAテキストバッファの構造と、どのようにすれば<code>0xb8000</code>番地におけるメモリマッピングを通じてそれに書き込みを行えるかを学びました。このメモリマップされたバッファへの書き込みというunsafeな操作をカプセル化し、安全で便利なインターフェースを外部に提供するRustモジュールを作りました。</p>
+<p>また、cargoのおかげでサードパーティのライブラリへの依存関係を簡単に追加できることも分かりました。<code>lazy_static</code>と<code>spin</code>という2つの依存先は、OS開発においてとても便利であり、今後の記事においても使っていきます。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>次の記事ではRustに組み込まれている単体テストフレームワークをセットアップする方法を説明します。その後、この記事のVGAバッファモジュールに対する基本的な単体テストを作ります。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../minimal-rust-kernel/index.html">&laquo; Rustでつくる最小のカーネル</a>
+        
+        
+            <a class="next" href="../testing/index.html">テスト &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22VGA%20Text%20Mode%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="VGA Text Mode (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22VGA%20Text%20Mode%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../vga-text-mode/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/vga-text-mode/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/vga-text-mode/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/vga-text-mode/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

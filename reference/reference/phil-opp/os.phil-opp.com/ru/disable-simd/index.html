@@ -1,0 +1,131 @@
+<!doctype html>
+
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Инструкции Single Instruction Multiple Data (SIMD) способны выполнять операцию (например, сложение) одновременно над несколькими словами данных, что м…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Отключение SIMD | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Отключение SIMD</h1>
+    <p>Инструкции <a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a> способны выполнять операцию (например, сложение) одновременно над несколькими словами данных, что может значительно ускорить работу программ. Архитектура <code>x86_64</code> поддерживает различные стандарты SIMD:</p>
+<span id="continue-reading"></span>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/MMX_(instruction_set)">MMX</a>: Набор инструкций <em>Multi Media Extension</em> был представлен в 1997 году и определяет восемь 64-битных регистров, называемых <code>mm0</code> - <code>mm7</code>. Эти регистры являются псевдонимами регистров <a href="https://en.wikipedia.org/wiki/X87">x87 блока с плавающей запятой</a>.</li>
+<li><a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a>: Набор инструкций <em>Streaming SIMD Extensions</em> был представлен в 1999 году. Вместо повторного использования регистров с плавающей запятой он добавляет совершенно новый набор регистров. Шестнадцать новых регистров называются <code>xmm0</code> - <code>xmm15</code> и имеют размер 128 бит каждый.</li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a>: <em>Advanced Vector Extensions</em> - это расширения, которые еще больше увеличивают размер мультимедийных регистров. Новые регистры называются <code>ymm0</code> - <code>ymm15</code> и имеют размер 256 бит каждый. Они расширяют регистры <code>xmm</code>, поэтому, например, <code>xmm0</code> - это нижняя половина <code>ymm0</code>.</li>
+</ul>
+<p>Используя такие стандарты SIMD, программы часто могут значительно ускориться. Хорошие компиляторы способны автоматически преобразовывать обычные циклы в такой SIMD-код с помощью процесса, называемого <a href="https://en.wikipedia.org/wiki/Automatic_vectorization">автовекторизацией</a>.</p>
+<p>Однако большие регистры SIMD приводят к проблемам в ядрах ОС. Причина в том, что ядро должно создавать резервные копии всех регистров, которые оно использует, в память при каждом аппаратном прерывании, потому что они должны иметь свои первоначальные значения, когда прерванная программа продолжает работу. Поэтому, если ядро использует SIMD-регистры, ему приходится резервировать гораздо больше данных (512-1600 байт), что заметно снижает производительность. Чтобы избежать этого снижения производительности, мы хотим отключить функции <code>sse</code> и <code>mmx</code> (функция <code>avx</code> отключена по умолчанию).</p>
+<p>Мы можем сделать это через поле <code>features</code> в нашей целевой спецификации. Чтобы отключить функции <code>mmx</code> и <code>sse</code>, мы добавим их с минусом:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse&quot;
+</span></code></pre>
+<h2 id="chisla-s-plavaiushchei-tochkoi">Числа с плавающей точкой</h2>
+<p>К сожалению для нас, архитектура <code>x86_64</code> использует регистры SSE для операций с числами с плавающей точкой. Таким образом, каждое использование чисел с плавающей точкой с отключенным SSE вызовёт ошибку в LLVM. Проблема в том, что библиотека <code>core</code> уже использует числа с плавающей точкой (например, в ней реализованы трейты для <code>f32</code> и <code>f64</code>), поэтому недостаточно избегать чисел с плавающей точкой в нашем ядре.</p>
+<p>К счастью, LLVM поддерживает функцию <code>soft-float</code>, эмулирующую все операции с числавами с плавающей точкой через программные функции, основанные на обычных целых числах. Это позволяет использовать плавающие числа в нашем ядре без SSE, просто это будет немного медленнее.</p>
+<p>Чтобы включить функцию <code>soft-float</code> для нашего ядра, мы добавим ее в строку <code>features</code> в спецификации цели с префиксом плюс:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span></code></pre>
+
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22%D0%9E%D1%82%D0%BA%D0%BB%D1%8E%D1%87%D0%B5%D0%BD%D0%B8%D0%B5%20SIMD%20%28Extra%20Post%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Отключение SIMD (Extra Post)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ru"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22%D0%9E%D1%82%D0%BA%D0%BB%D1%8E%D1%87%D0%B5%D0%BD%D0%B8%D0%B5%20SIMD%20%28Extra%20Post%29%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

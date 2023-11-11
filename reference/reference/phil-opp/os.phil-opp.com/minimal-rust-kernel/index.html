@@ -1,0 +1,520 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="In this post, we create a minimal 64-bit Rust kernel for the x86 architecture. We build upon the freestanding Rust binary from the previous post to cr…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>A Minimal Rust Kernel | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#the-boot-process">The Boot Process</a>
+            <ol>
+                <li>
+                    <a href="index.html#bios-boot">BIOS Boot</a>
+                </li><li>
+                    <a href="index.html#uefi">UEFI</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#a-minimal-kernel">A Minimal Kernel</a>
+            <ol>
+                <li>
+                    <a href="index.html#installing-rust-nightly">Installing Rust Nightly</a>
+                </li><li>
+                    <a href="index.html#target-specification">Target Specification</a>
+                </li><li>
+                    <a href="index.html#building-our-kernel">Building our Kernel</a>
+                </li><li>
+                    <a href="index.html#printing-to-screen">Printing to Screen</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#running-our-kernel">Running our Kernel</a>
+            <ol>
+                <li>
+                    <a href="index.html#creating-a-bootimage">Creating a Bootimage</a>
+                </li><li>
+                    <a href="index.html#booting-it-in-qemu">Booting it in QEMU</a>
+                </li><li>
+                    <a href="index.html#real-machine">Real Machine</a>
+                </li><li>
+                    <a href="index.html#using-cargo-run">Using cargo run</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>A Minimal Rust Kernel</h1>
+    <time datetime="2018-02-10" class="post-date">
+        Feb 10, 2018
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>In this post, we create a minimal 64-bit Rust kernel for the x86 architecture. We build upon the <a href="../freestanding-rust-binary/index.html">freestanding Rust binary</a> from the previous post to create a bootable disk image that prints something to the screen.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-02"><code>post-02</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#the-boot-process">The Boot Process</a>
+                <ul>
+                    <li>
+                        <a href="index.html#bios-boot">BIOS Boot</a>
+                    </li><li>
+                        <a href="index.html#uefi">UEFI</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#a-minimal-kernel">A Minimal Kernel</a>
+                <ul>
+                    <li>
+                        <a href="index.html#installing-rust-nightly">Installing Rust Nightly</a>
+                    </li><li>
+                        <a href="index.html#target-specification">Target Specification</a>
+                    </li><li>
+                        <a href="index.html#building-our-kernel">Building our Kernel</a>
+                    </li><li>
+                        <a href="index.html#printing-to-screen">Printing to Screen</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#running-our-kernel">Running our Kernel</a>
+                <ul>
+                    <li>
+                        <a href="index.html#creating-a-bootimage">Creating a Bootimage</a>
+                    </li><li>
+                        <a href="index.html#booting-it-in-qemu">Booting it in QEMU</a>
+                    </li><li>
+                        <a href="index.html#real-machine">Real Machine</a>
+                    </li><li>
+                        <a href="index.html#using-cargo-run">Using cargo run</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="the-boot-process"><a class="zola-anchor" href="index.html#the-boot-process" aria-label="Anchor link for: the-boot-process">🔗</a>The Boot Process</h2>
+<p>When you turn on a computer, it begins executing firmware code that is stored in motherboard <a href="https://en.wikipedia.org/wiki/Read-only_memory">ROM</a>. This code performs a <a href="https://en.wikipedia.org/wiki/Power-on_self-test">power-on self-test</a>, detects available RAM, and pre-initializes the CPU and hardware. Afterwards, it looks for a bootable disk and starts booting the operating system kernel.</p>
+<p>On x86, there are two firmware standards: the “Basic Input/Output System“ (<strong><a href="https://en.wikipedia.org/wiki/BIOS">BIOS</a></strong>) and the newer “Unified Extensible Firmware Interface” (<strong><a href="https://en.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">UEFI</a></strong>). The BIOS standard is old and outdated, but simple and well-supported on any x86 machine since the 1980s. UEFI, in contrast, is more modern and has much more features, but is more complex to set up (at least in my opinion).</p>
+<p>Currently, we only provide BIOS support, but support for UEFI is planned, too. If you’d like to help us with this, check out the <a href="https://github.com/phil-opp/blog_os/issues/349">Github issue</a>.</p>
+<h3 id="bios-boot"><a class="zola-anchor" href="index.html#bios-boot" aria-label="Anchor link for: bios-boot">🔗</a>BIOS Boot</h3>
+<p>Almost all x86 systems have support for BIOS booting, including newer UEFI-based machines that use an emulated BIOS. This is great, because you can use the same boot logic across all machines from the last century. But this wide compatibility is at the same time the biggest disadvantage of BIOS booting, because it means that the CPU is put into a 16-bit compatibility mode called <a href="https://en.wikipedia.org/wiki/Real_mode">real mode</a> before booting so that archaic bootloaders from the 1980s would still work.</p>
+<p>But let’s start from the beginning:</p>
+<p>When you turn on a computer, it loads the BIOS from some special flash memory located on the motherboard. The BIOS runs self-test and initialization routines of the hardware, then it looks for bootable disks. If it finds one, control is transferred to its <em>bootloader</em>, which is a 512-byte portion of executable code stored at the disk’s beginning. Most bootloaders are larger than 512 bytes, so bootloaders are commonly split into a small first stage, which fits into 512 bytes, and a second stage, which is subsequently loaded by the first stage.</p>
+<p>The bootloader has to determine the location of the kernel image on the disk and load it into memory. It also needs to switch the CPU from the 16-bit <a href="https://en.wikipedia.org/wiki/Real_mode">real mode</a> first to the 32-bit <a href="https://en.wikipedia.org/wiki/Protected_mode">protected mode</a>, and then to the 64-bit <a href="https://en.wikipedia.org/wiki/Long_mode">long mode</a>, where 64-bit registers and the complete main memory are available. Its third job is to query certain information (such as a memory map) from the BIOS and pass it to the OS kernel.</p>
+<p>Writing a bootloader is a bit cumbersome as it requires assembly language and a lot of non insightful steps like “write this magic value to this processor register”. Therefore, we don’t cover bootloader creation in this post and instead provide a tool named <a href="https://github.com/rust-osdev/bootimage">bootimage</a> that automatically prepends a bootloader to your kernel.</p>
+<p>If you are interested in building your own bootloader: Stay tuned, a set of posts on this topic is already planned! <!-- , check out our “_[Writing a Bootloader]_” posts, where we explain in detail how a bootloader is built. --></p>
+<h4 id="the-multiboot-standard"><a class="zola-anchor" href="index.html#the-multiboot-standard" aria-label="Anchor link for: the-multiboot-standard">🔗</a>The Multiboot Standard</h4>
+<p>To avoid that every operating system implements its own bootloader, which is only compatible with a single OS, the <a href="https://en.wikipedia.org/wiki/Free_Software_Foundation">Free Software Foundation</a> created an open bootloader standard called <a href="https://wiki.osdev.org/Multiboot">Multiboot</a> in 1995. The standard defines an interface between the bootloader and the operating system, so that any Multiboot-compliant bootloader can load any Multiboot-compliant operating system. The reference implementation is <a href="https://en.wikipedia.org/wiki/GNU_GRUB">GNU GRUB</a>, which is the most popular bootloader for Linux systems.</p>
+<p>To make a kernel Multiboot compliant, one just needs to insert a so-called <a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#OS-image-format">Multiboot header</a> at the beginning of the kernel file. This makes it very easy to boot an OS from GRUB. However, GRUB and the Multiboot standard have some problems too:</p>
+<ul>
+<li>They support only the 32-bit protected mode. This means that you still have to do the CPU configuration to switch to the 64-bit long mode.</li>
+<li>They are designed to make the bootloader simple instead of the kernel. For example, the kernel needs to be linked with an <a href="https://wiki.osdev.org/Multiboot#Multiboot_2">adjusted default page size</a>, because GRUB can’t find the Multiboot header otherwise. Another example is that the <a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format">boot information</a>, which is passed to the kernel, contains lots of architecture-dependent structures instead of providing clean abstractions.</li>
+<li>Both GRUB and the Multiboot standard are only sparsely documented.</li>
+<li>GRUB needs to be installed on the host system to create a bootable disk image from the kernel file. This makes development on Windows or Mac more difficult.</li>
+</ul>
+<p>Because of these drawbacks, we decided to not use GRUB or the Multiboot standard. However, we plan to add Multiboot support to our <a href="https://github.com/rust-osdev/bootimage">bootimage</a> tool, so that it’s possible to load your kernel on a GRUB system too. If you’re interested in writing a Multiboot compliant kernel, check out the <a href="../edition-1">first edition</a> of this blog series.</p>
+<h3 id="uefi"><a class="zola-anchor" href="index.html#uefi" aria-label="Anchor link for: uefi">🔗</a>UEFI</h3>
+<p>(We don’t provide UEFI support at the moment, but we would love to! If you’d like to help, please tell us in the <a href="https://github.com/phil-opp/blog_os/issues/349">Github issue</a>.)</p>
+<h2 id="a-minimal-kernel"><a class="zola-anchor" href="index.html#a-minimal-kernel" aria-label="Anchor link for: a-minimal-kernel">🔗</a>A Minimal Kernel</h2>
+<p>Now that we roughly know how a computer boots, it’s time to create our own minimal kernel. Our goal is to create a disk image that prints a “Hello World!” to the screen when booted. We do this by extending the previous post’s <a href="../freestanding-rust-binary/index.html">freestanding Rust binary</a>.</p>
+<p>As you may remember, we built the freestanding binary through <code>cargo</code>, but depending on the operating system, we needed different entry point names and compile flags. That’s because <code>cargo</code> builds for the <em>host system</em> by default, i.e., the system you’re running on. This isn’t something we want for our kernel, because a kernel that runs on top of, e.g., Windows, does not make much sense. Instead, we want to compile for a clearly defined <em>target system</em>.</p>
+<h3 id="installing-rust-nightly"><a class="zola-anchor" href="index.html#installing-rust-nightly" aria-label="Anchor link for: installing-rust-nightly">🔗</a>Installing Rust Nightly</h3>
+<p>Rust has three release channels: <em>stable</em>, <em>beta</em>, and <em>nightly</em>. The Rust Book explains the difference between these channels really well, so take a minute and <a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html#choo-choo-release-channels-and-riding-the-trains">check it out</a>. For building an operating system, we will need some experimental features that are only available on the nightly channel, so we need to install a nightly version of Rust.</p>
+<p>To manage Rust installations, I highly recommend <a href="https://www.rustup.rs/">rustup</a>. It allows you to install nightly, beta, and stable compilers side-by-side and makes it easy to update them. With rustup, you can use a nightly compiler for the current directory by running <code>rustup override set nightly</code>. Alternatively, you can add a file called <code>rust-toolchain</code> with the content <code>nightly</code> to the project’s root directory. You can check that you have a nightly version installed by running <code>rustc --version</code>: The version number should contain <code>-nightly</code> at the end.</p>
+<p>The nightly compiler allows us to opt-in to various experimental features by using so-called <em>feature flags</em> at the top of our file. For example, we could enable the experimental <a href="https://doc.rust-lang.org/stable/reference/inline-assembly.html"><code>asm!</code> macro</a> for inline assembly by adding <code>#![feature(asm)]</code> to the top of our <code>main.rs</code>. Note that such experimental features are completely unstable, which means that future Rust versions might change or remove them without prior warning. For this reason, we will only use them if absolutely necessary.</p>
+<h3 id="target-specification"><a class="zola-anchor" href="index.html#target-specification" aria-label="Anchor link for: target-specification">🔗</a>Target Specification</h3>
+<p>Cargo supports different target systems through the <code>--target</code> parameter. The target is described by a so-called <em><a href="https://clang.llvm.org/docs/CrossCompilation.html#target-triple">target triple</a></em>, which describes the CPU architecture, the vendor, the operating system, and the <a href="https://stackoverflow.com/a/2456882">ABI</a>. For example, the <code>x86_64-unknown-linux-gnu</code> target triple describes a system with an <code>x86_64</code> CPU, no clear vendor, and a Linux operating system with the GNU ABI. Rust supports <a href="https://forge.rust-lang.org/release/platform-support.html">many different target triples</a>, including <code>arm-linux-androideabi</code> for Android or <a href="https://www.hellorust.com/setup/wasm-target/"><code>wasm32-unknown-unknown</code> for WebAssembly</a>.</p>
+<p>For our target system, however, we require some special configuration parameters (e.g. no underlying OS), so none of the <a href="https://forge.rust-lang.org/release/platform-support.html">existing target triples</a> fits. Fortunately, Rust allows us to define <a href="https://doc.rust-lang.org/nightly/rustc/targets/custom.html">our own target</a> through a JSON file. For example, a JSON file that describes the <code>x86_64-unknown-linux-gnu</code> target looks like this:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;linux&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;pre-link-args&quot;</span><span>: [</span><span style="color:#d69d85;">&quot;-m64&quot;</span><span>],
+</span><span>    </span><span style="color:#d69d85;">&quot;morestack&quot;</span><span>: </span><span style="color:#569cd6;">false
+</span><span>}
+</span></code></pre>
+<p>Most fields are required by LLVM to generate code for that platform. For example, the <a href="https://llvm.org/docs/LangRef.html#data-layout"><code>data-layout</code></a> field defines the size of various integer, floating point, and pointer types. Then there are fields that Rust uses for conditional compilation, such as <code>target-pointer-width</code>. The third kind of field defines how the crate should be built. For example, the <code>pre-link-args</code> field specifies arguments passed to the <a href="https://en.wikipedia.org/wiki/Linker_(computing)">linker</a>.</p>
+<p>We also target <code>x86_64</code> systems with our kernel, so our target specification will look very similar to the one above. Let’s start by creating an <code>x86_64-blog_os.json</code> file (choose any name you like) with the common content:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true
+</span><span>}
+</span></code></pre>
+<p>Note that we changed the OS in the <code>llvm-target</code> and the <code>os</code> field to <code>none</code>, because we will run on bare metal.</p>
+<p>We add the following build-related entries:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span></code></pre>
+<p>Instead of using the platform’s default linker (which might not support Linux targets), we use the cross-platform <a href="https://lld.llvm.org/">LLD</a> linker that is shipped with Rust for linking our kernel.</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span></code></pre>
+<p>This setting specifies that the target doesn’t support <a href="https://www.bogotobogo.com/cplusplus/stackunwinding.php">stack unwinding</a> on panic, so instead the program should abort directly. This has the same effect as the <code>panic = &quot;abort&quot;</code> option in our Cargo.toml, so we can remove it from there. (Note that, in contrast to the Cargo.toml option, this target option also applies when we recompile the <code>core</code> library later in this post. So, even if you prefer to keep the Cargo.toml option, make sure to include this option.)</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span></code></pre>
+<p>We’re writing a kernel, so we’ll need to handle interrupts at some point. To do that safely, we have to disable a certain stack pointer optimization called the <em>“red zone”</em>, because it would cause stack corruption otherwise. For more information, see our separate post about <a href="../red-zone/index.html">disabling the red zone</a>.</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;</span><span>,
+</span></code></pre>
+<p>The <code>features</code> field enables/disables target features. We disable the <code>mmx</code> and <code>sse</code> features by prefixing them with a minus and enable the <code>soft-float</code> feature by prefixing it with a plus. Note that there must be no spaces between different flags, otherwise LLVM fails to interpret the features string.</p>
+<p>The <code>mmx</code> and <code>sse</code> features determine support for <a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a> instructions, which can often speed up programs significantly. However, using the large SIMD registers in OS kernels leads to performance problems. The reason is that the kernel needs to restore all registers to their original state before continuing an interrupted program. This means that the kernel has to save the complete SIMD state to main memory on each system call or hardware interrupt. Since the SIMD state is very large (512–1600 bytes) and interrupts can occur very often, these additional save/restore operations considerably harm performance. To avoid this, we disable SIMD for our kernel (not for applications running on top!).</p>
+<p>A problem with disabling SIMD is that floating point operations on <code>x86_64</code> require SIMD registers by default. To solve this problem, we add the <code>soft-float</code> feature, which emulates all floating point operations through software functions based on normal integers.</p>
+<p>For more information, see our post on <a href="../disable-simd/index.html">disabling SIMD</a>.</p>
+<h4 id="putting-it-together"><a class="zola-anchor" href="index.html#putting-it-together" aria-label="Anchor link for: putting-it-together">🔗</a>Putting it Together</h4>
+<p>Our target specification file now looks like this:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<h3 id="building-our-kernel"><a class="zola-anchor" href="index.html#building-our-kernel" aria-label="Anchor link for: building-our-kernel">🔗</a>Building our Kernel</h3>
+<p>Compiling for our new target will use Linux conventions (I’m not quite sure why; I assume it’s just LLVM’s default). This means that we need an entry point named <code>_start</code> as described in the <a href="../freestanding-rust-binary/index.html">previous post</a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std] </span><span style="color:#608b4e;">// don&#39;t link the Rust standard library
+</span><span>#![no_main] </span><span style="color:#608b4e;">// disable all Rust-level entry points
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// this function is the entry point, since the linker looks for a function
+</span><span>    </span><span style="color:#608b4e;">// named `_start` by default
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Note that the entry point needs to be called <code>_start</code> regardless of your host OS.</p>
+<p>We can now build the kernel for our new target by passing the name of the JSON file as <code>--target</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>
+</span><span>error[E0463]: can&#39;t find crate for `core`
+</span></code></pre>
+<p>It fails! The error tells us that the Rust compiler no longer finds the <a href="https://doc.rust-lang.org/nightly/core/index.html"><code>core</code> library</a>. This library contains basic Rust types such as <code>Result</code>, <code>Option</code>, and iterators, and is implicitly linked to all <code>no_std</code> crates.</p>
+<p>The problem is that the core library is distributed together with the Rust compiler as a <em>precompiled</em> library. So it is only valid for supported host triples (e.g., <code>x86_64-unknown-linux-gnu</code>) but not for our custom target. If we want to compile code for other targets, we need to recompile <code>core</code> for these targets first.</p>
+<h4 id="the-build-std-option"><a class="zola-anchor" href="index.html#the-build-std-option" aria-label="Anchor link for: the-build-std-option">🔗</a>The <code>build-std</code> Option</h4>
+<p>That’s where the <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std"><code>build-std</code> feature</a> of cargo comes in. It allows to recompile <code>core</code> and other standard library crates on demand, instead of using the precompiled versions shipped with the Rust installation. This feature is very new and still not finished, so it is marked as “unstable” and only available on <a href="index.html#installing-rust-nightly">nightly Rust compilers</a>.</p>
+<p>To use the feature, we need to create a <a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo configuration</a> file at <code>.cargo/config.toml</code> with the following content:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>This tells cargo that it should recompile the <code>core</code> and <code>compiler_builtins</code> libraries. The latter is required because it is a dependency of <code>core</code>. In order to recompile these libraries, cargo needs access to the rust source code, which we can install with <code>rustup component add rust-src</code>.</p>
+<div class="note">
+<p><strong>Note:</strong> The <code>unstable.build-std</code> configuration key requires at least the Rust nightly from 2020-07-15.</p>
+</div>
+<p>After setting the <code>unstable.build-std</code> configuration key and installing the <code>rust-src</code> component, we can rerun our build command:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>   Compiling core v0.0.0 (/…/rust/src/libcore)
+</span><span>   Compiling rustc-std-workspace-core v1.99.0 (/…/rust/src/tools/rustc-std-workspace-core)
+</span><span>   Compiling compiler_builtins v0.1.32
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.29 secs
+</span></code></pre>
+<p>We see that <code>cargo build</code> now recompiles the <code>core</code>, <code>rustc-std-workspace-core</code> (a dependency of <code>compiler_builtins</code>), and <code>compiler_builtins</code> libraries for our custom target.</p>
+<h4 id="memory-related-intrinsics"><a class="zola-anchor" href="index.html#memory-related-intrinsics" aria-label="Anchor link for: memory-related-intrinsics">🔗</a>Memory-Related Intrinsics</h4>
+<p>The Rust compiler assumes that a certain set of built-in functions is available for all systems. Most of these functions are provided by the <code>compiler_builtins</code> crate that we just recompiled. However, there are some memory-related functions in that crate that are not enabled by default because they are normally provided by the C library on the system. These functions include <code>memset</code>, which sets all bytes in a memory block to a given value, <code>memcpy</code>, which copies one memory block to another, and <code>memcmp</code>, which compares two memory blocks. While we didn’t need any of these functions to compile our kernel right now, they will be required as soon as we add some more code to it (e.g. when copying structs around).</p>
+<p>Since we can’t link to the C library of the operating system, we need an alternative way to provide these functions to the compiler. One possible approach for this could be to implement our own <code>memset</code> etc. functions and apply the <code>#[no_mangle]</code> attribute to them (to avoid the automatic renaming during compilation). However, this is dangerous since the slightest mistake in the implementation of these functions could lead to undefined behavior. For example, implementing <code>memcpy</code> with a <code>for</code> loop may result in an infinite recursion because <code>for</code> loops implicitly call the <a href="https://doc.rust-lang.org/stable/core/iter/trait.IntoIterator.html#tymethod.into_iter"><code>IntoIterator::into_iter</code></a> trait method, which may call <code>memcpy</code> again. So it’s a good idea to reuse existing, well-tested implementations instead.</p>
+<p>Fortunately, the <code>compiler_builtins</code> crate already contains implementations for all the needed functions, they are just disabled by default to not collide with the implementations from the C library. We can enable them by setting cargo’s <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std-features"><code>build-std-features</code></a> flag to <code>[&quot;compiler-builtins-mem&quot;]</code>. Like the <code>build-std</code> flag, this flag can be either passed on the command line as a <code>-Z</code> flag or configured in the <code>unstable</code> table in the <code>.cargo/config.toml</code> file. Since we always want to build with this flag, the config file option makes more sense for us:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std-features </span><span>= [</span><span style="color:#d69d85;">&quot;compiler-builtins-mem&quot;</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>(Support for the <code>compiler-builtins-mem</code> feature was only <a href="https://github.com/rust-lang/rust/pull/77284">added very recently</a>, so you need at least Rust nightly <code>2020-09-30</code> for it.)</p>
+<p>Behind the scenes, this flag enables the <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/Cargo.toml#L54-L55"><code>mem</code> feature</a> of the <code>compiler_builtins</code> crate. The effect of this is that the <code>#[no_mangle]</code> attribute is applied to the <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/src/mem.rs#L12-L69"><code>memcpy</code> etc. implementations</a> of the crate, which makes them available to the linker.</p>
+<p>With this change, our kernel has valid implementations for all compiler-required functions, so it will continue to compile even if our code gets more complex.</p>
+<h4 id="set-a-default-target"><a class="zola-anchor" href="index.html#set-a-default-target" aria-label="Anchor link for: set-a-default-target">🔗</a>Set a Default Target</h4>
+<p>To avoid passing the <code>--target</code> parameter on every invocation of <code>cargo build</code>, we can override the default target. To do this, we add the following to our <a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo configuration</a> file at <code>.cargo/config.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">build</span><span>]
+</span><span style="color:#569cd6;">target </span><span>= </span><span style="color:#d69d85;">&quot;x86_64-blog_os.json&quot;
+</span></code></pre>
+<p>This tells <code>cargo</code> to use our <code>x86_64-blog_os.json</code> target when no explicit <code>--target</code> argument is passed. This means that we can now build our kernel with a simple <code>cargo build</code>. For more information on cargo configuration options, check out the <a href="https://doc.rust-lang.org/cargo/reference/config.html">official documentation</a>.</p>
+<p>We are now able to build our kernel for a bare metal target with a simple <code>cargo build</code>. However, our <code>_start</code> entry point, which will be called by the boot loader, is still empty. It’s time that we output something to screen from it.</p>
+<h3 id="printing-to-screen"><a class="zola-anchor" href="index.html#printing-to-screen" aria-label="Anchor link for: printing-to-screen">🔗</a>Printing to Screen</h3>
+<p>The easiest way to print text to the screen at this stage is the <a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGA text buffer</a>. It is a special memory area mapped to the VGA hardware that contains the contents displayed on screen. It normally consists of 25 lines that each contain 80 character cells. Each character cell displays an ASCII character with some foreground and background colors. The screen output looks like this:</p>
+<p><img src="https://upload.wikimedia.org/wikipedia/commons/f/f8/Codepage-437.png" alt="screen output for common ASCII characters" /></p>
+<p>We will discuss the exact layout of the VGA buffer in the next post, where we write a first small driver for it. For printing “Hello World!”, we just need to know that the buffer is located at address <code>0xb8000</code> and that each character cell consists of an ASCII byte and a color byte.</p>
+<p>The implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HELLO</span><span>: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">u8</span><span>] = </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&quot;Hello World!&quot;</span><span>;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> vga_buffer = </span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut u8</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, </span><span style="color:#569cd6;">&amp;</span><span>byte) </span><span style="color:#569cd6;">in </span><span style="color:#b4cea8;">HELLO</span><span>.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2</span><span>) = byte;
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2 </span><span>+ </span><span style="color:#b5cea8;">1</span><span>) = </span><span style="color:#b5cea8;">0xb</span><span>;
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>First, we cast the integer <code>0xb8000</code> into a <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html#dereferencing-a-raw-pointer">raw pointer</a>. Then we <a href="https://doc.rust-lang.org/stable/book/ch13-02-iterators.html">iterate</a> over the bytes of the <a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#the-static-lifetime">static</a> <code>HELLO</code> <a href="https://doc.rust-lang.org/reference/tokens.html#byte-string-literals">byte string</a>. We use the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a> method to additionally get a running variable <code>i</code>. In the body of the for loop, we use the <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.offset"><code>offset</code></a> method to write the string byte and the corresponding color byte (<code>0xb</code> is a light cyan).</p>
+<p>Note that there’s an <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html"><code>unsafe</code></a> block around all memory writes. The reason is that the Rust compiler can’t prove that the raw pointers we create are valid. They could point anywhere and lead to data corruption. By putting them into an <code>unsafe</code> block, we’re basically telling the compiler that we are absolutely sure that the operations are valid. Note that an <code>unsafe</code> block does not turn off Rust’s safety checks. It only allows you to do <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html#unsafe-superpowers">five additional things</a>.</p>
+<p>I want to emphasize that <strong>this is not the way we want to do things in Rust!</strong> It’s very easy to mess up when working with raw pointers inside unsafe blocks. For example, we could easily write beyond the buffer’s end if we’re not careful.</p>
+<p>So we want to minimize the use of <code>unsafe</code> as much as possible. Rust gives us the ability to do this by creating safe abstractions. For example, we could create a VGA buffer type that encapsulates all unsafety and ensures that it is <em>impossible</em> to do anything wrong from the outside. This way, we would only need minimal amounts of <code>unsafe</code> code and can be sure that we don’t violate <a href="https://en.wikipedia.org/wiki/Memory_safety">memory safety</a>. We will create such a safe VGA buffer abstraction in the next post.</p>
+<h2 id="running-our-kernel"><a class="zola-anchor" href="index.html#running-our-kernel" aria-label="Anchor link for: running-our-kernel">🔗</a>Running our Kernel</h2>
+<p>Now that we have an executable that does something perceptible, it is time to run it. First, we need to turn our compiled kernel into a bootable disk image by linking it with a bootloader. Then we can run the disk image in the <a href="https://www.qemu.org/">QEMU</a> virtual machine or boot it on real hardware using a USB stick.</p>
+<h3 id="creating-a-bootimage"><a class="zola-anchor" href="index.html#creating-a-bootimage" aria-label="Anchor link for: creating-a-bootimage">🔗</a>Creating a Bootimage</h3>
+<p>To turn our compiled kernel into a bootable disk image, we need to link it with a bootloader. As we learned in the <a href="index.html#the-boot-process">section about booting</a>, the bootloader is responsible for initializing the CPU and loading our kernel.</p>
+<p>Instead of writing our own bootloader, which is a project on its own, we use the <a href="https://crates.io/crates/bootloader"><code>bootloader</code></a> crate. This crate implements a basic BIOS bootloader without any C dependencies, just Rust and inline assembly. To use it for booting our kernel, we need to add a dependency on it:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= </span><span style="color:#d69d85;">&quot;0.9.23&quot;
+</span></code></pre>
+<p>Adding the bootloader as a dependency is not enough to actually create a bootable disk image. The problem is that we need to link our kernel with the bootloader after compilation, but cargo has no support for <a href="https://github.com/rust-lang/cargo/issues/545">post-build scripts</a>.</p>
+<p>To solve this problem, we created a tool named <code>bootimage</code> that first compiles the kernel and bootloader, and then links them together to create a bootable disk image. To install the tool, execute the following command in your terminal:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install bootimage
+</span></code></pre>
+<p>For running <code>bootimage</code> and building the bootloader, you need to have the <code>llvm-tools-preview</code> rustup component installed. You can do so by executing <code>rustup component add llvm-tools-preview</code>.</p>
+<p>After installing <code>bootimage</code> and adding the <code>llvm-tools-preview</code> component, we can create a bootable disk image by executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo bootimage
+</span></code></pre>
+<p>We see that the tool recompiles our kernel using <code>cargo build</code>, so it will automatically pick up any changes you make. Afterwards, it compiles the bootloader, which might take a while. Like all crate dependencies, it is only built once and then cached, so subsequent builds will be much faster. Finally, <code>bootimage</code> combines the bootloader and your kernel into a bootable disk image.</p>
+<p>After executing the command, you should see a bootable disk image named <code>bootimage-blog_os.bin</code> in your <code>target/x86_64-blog_os/debug</code> directory. You can boot it in a virtual machine or copy it to a USB drive to boot it on real hardware. (Note that this is not a CD image, which has a different format, so burning it to a CD doesn’t work).</p>
+<h4 id="how-does-it-work"><a class="zola-anchor" href="index.html#how-does-it-work" aria-label="Anchor link for: how-does-it-work">🔗</a>How does it work?</h4>
+<p>The <code>bootimage</code> tool performs the following steps behind the scenes:</p>
+<ul>
+<li>It compiles our kernel to an <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a> file.</li>
+<li>It compiles the bootloader dependency as a standalone executable.</li>
+<li>It links the bytes of the kernel ELF file to the bootloader.</li>
+</ul>
+<p>When booted, the bootloader reads and parses the appended ELF file. It then maps the program segments to virtual addresses in the page tables, zeroes the <code>.bss</code> section, and sets up a stack. Finally, it reads the entry point address (our <code>_start</code> function) and jumps to it.</p>
+<h3 id="booting-it-in-qemu"><a class="zola-anchor" href="index.html#booting-it-in-qemu" aria-label="Anchor link for: booting-it-in-qemu">🔗</a>Booting it in QEMU</h3>
+<p>We can now boot the disk image in a virtual machine. To boot it in <a href="https://www.qemu.org/">QEMU</a>, execute the following command:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin
+</span></code></pre>
+<p>This opens a separate window which should look similar to this:</p>
+<p><img src="qemu.png" alt="QEMU showing “Hello World!”" /></p>
+<p>We see that our “Hello World!” is visible on the screen.</p>
+<h3 id="real-machine"><a class="zola-anchor" href="index.html#real-machine" aria-label="Anchor link for: real-machine">🔗</a>Real Machine</h3>
+<p>It is also possible to write it to a USB stick and boot it on a real machine, <strong>but be careful</strong> to choose the correct device name, because <strong>everything on that device is overwritten</strong>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; dd if=target/x86_64-blog_os/debug/bootimage-blog_os.bin of=/dev/sdX &amp;&amp; sync
+</span></code></pre>
+<p>Where <code>sdX</code> is the device name of your USB stick. </p>
+<p>After writing the image to the USB stick, you can run it on real hardware by booting from it. You probably need to use a special boot menu or change the boot order in your BIOS configuration to boot from the USB stick. Note that it currently doesn’t work for UEFI machines, since the <code>bootloader</code> crate has no UEFI support yet.</p>
+<h3 id="using-cargo-run"><a class="zola-anchor" href="index.html#using-cargo-run" aria-label="Anchor link for: using-cargo-run">🔗</a>Using <code>cargo run</code></h3>
+<p>To make it easier to run our kernel in QEMU, we can set the <code>runner</code> configuration key for cargo:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;none&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">runner </span><span>= </span><span style="color:#d69d85;">&quot;bootimage runner&quot;
+</span></code></pre>
+<p>The <code>target.'cfg(target_os = &quot;none&quot;)'</code> table applies to all targets whose target configuration file’s <code>&quot;os&quot;</code> field is set to <code>&quot;none&quot;</code>. This includes our <code>x86_64-blog_os.json</code> target. The <code>runner</code> key specifies the command that should be invoked for <code>cargo run</code>. The command is run after a successful build with the executable path passed as the first argument. See the <a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo documentation</a> for more details.</p>
+<p>The <code>bootimage runner</code> command is specifically designed to be usable as a <code>runner</code> executable. It links the given executable with the project’s bootloader dependency and then launches QEMU. See the <a href="https://github.com/rust-osdev/bootimage">Readme of <code>bootimage</code></a> for more details and possible configuration options.</p>
+<p>Now we can use <code>cargo run</code> to compile our kernel and boot it in QEMU.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>In the next post, we will explore the VGA text buffer in more detail and write a safe interface for it. We will also add support for the <code>println</code> macro.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../freestanding-rust-binary/index.html">&laquo; A Freestanding Rust Binary</a>
+        
+        
+            <a class="next" href="../vga-text-mode/index.html">VGA Text Mode &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22A%20Minimal%20Rust%20Kernel%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="A Minimal Rust Kernel"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22A%20Minimal%20Rust%20Kernel%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="zh-CN" class=""><a href="../zh-CN/minimal-rust-kernel/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fr" class=""><a href="../fr/minimal-rust-kernel/index.html">
+                        French
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../ja/minimal-rust-kernel/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../fa/minimal-rust-kernel/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ru" class=""><a href="../ru/minimal-rust-kernel/index.html">
+                        Russian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../ko/minimal-rust-kernel/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

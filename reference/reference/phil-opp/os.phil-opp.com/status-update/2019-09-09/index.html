@@ -1,0 +1,146 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Updates in August 2019 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Updates in August 2019</h1>
+    <time datetime="2019-09-09" class="post-date">
+        Sep 09, 2019
+        
+    </time>
+    <p>This post gives an overview of the recent updates to the <em>Writing an OS in Rust</em> blog and the used libraries and tools.</p>
+<p>I was very busy with finishing my master’s thesis, so I didn’t have any to implement any notable changes myself. Thanks to contributions by <a href="https://github.com/vinaychandra">@vinaychandra</a> and <a href="https://github.com/64">@64</a>, we were still able to publish new versions of the <code>x86_64</code>, <code>bootimage</code> and <code>bootloader</code> crates.</p>
+<h2 id="blog-os"><code>blog_os</code></h2>
+<p>Apart from <a href="https://github.com/phil-opp/blog_os/pull/650">rewriting the section about no-harness tests</a> of the <em>Testing</em> post, there were no notable changes to the blog in August. Now that I have some more free time again, I plan to upgrade the blog to the latest versions of <code>bootloader</code> and <code>bootimage</code>, evaluate the use of <a href="https://github.com/features/actions">GitHub Actions</a> for the repository, and continue the work on the upcoming post about heap allocator implementations.</p>
+<h2 id="x86-64"><code>x86_64</code></h2>
+<p>Thanks to <a href="https://github.com/vinaychandra">@vinaychandra</a>, the <code>x86_64</code> crate now has <a href="https://github.com/rust-osdev/x86_64/pull/87">support for the <code>FsBase</code> and <code>GsBase</code> registers</a>. The change was published as version 0.7.5.</p>
+<h2 id="bootimage"><code>bootimage</code></h2>
+<p>To allow bootloaders to read configuration from the <code>Cargo.toml</code> file of the kernel, the <code>bootimage</code> crate now <a href="https://github.com/rust-osdev/bootimage/pull/45">passes the location of the kernel’s Cargo.toml to bootloader crates</a>. This change was implemented by <a href="https://github.com/64">@64</a> and published as version 0.7.7.</p>
+<h2 id="bootloader"><code>bootloader</code></h2>
+<p>Apart from initializing the CPU and loading the kernel, the <code>bootloader</code> crate is also responsible for creating several memory regions for the kernel, for example a program stack and the boot information struct. These regions must be mapped at some address in the virtual address space.</p>
+<p>As a stop-gap solution, the <code>bootloader</code> crate used fixed virtual addresses for these regions, which resulted in errors if the kernel tried to use the same address ranges itself. For example, the (optional) recursive mapping of page tables often conflicted with so-called <em>higher half kernels</em>, which live at the upper end of the address space. To avoid these conflicts, <a href="https://github.com/64">@64</a> updated the <code>bootloader</code> crate to <a href="https://github.com/rust-osdev/bootloader/pull/71">dynamically map the kernel stack, boot info, physical memory, and recursive table regions</a> at an unused virtual address range.</p>
+<p>To also support specifying explicit addresses for these regions, <a href="https://github.com/64">@64</a> further added support for <a href="https://github.com/rust-osdev/bootloader/pull/73">parsing bootloader configuration from the kernel’s Cargo.toml</a>. This way, the virtual addresses of the kernel stack and physical memory mapping can now be configured using a <code>package.metadata.bootloader</code> key in the <code>Cargo.toml</code> of the kernel. In a third pull request, <a href="https://github.com/64">@64</a> also made the <a href="https://github.com/rust-osdev/bootloader/pull/72">kernel stack size configurable</a>.</p>
+<p>The changes were published together as version 0.8.0. This is a breaking update because the new configuration system requires at least version 0.7.7 of <code>bootimage</code>, which is the first version that passes the location of the kernel’s <code>Cargo.toml</code> file.</p>
+
+
+    <div>
+        <h2>Thank You!</h2>
+        <p>Thanks a lot to all the contributors this month!</p>
+        <p>I also want to thank all the people who support me on <a href="https://github.com/sponsors/phil-opp">GitHub</a>, <a href="https://www.patreon.com/phil_opp">Patreon</a>, and <a href="https://donorbox.org/phil-opp">Donorbox</a>. It means a lot to me!</p>
+    </div>
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../2019-10-06/index.html">&laquo; Updates in September 2019</a>
+        
+        
+            <a class="next" href="../2019-08-02/index.html">Updates in July 2019 &raquo;</a>
+        
+    </div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20August%202019%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Updates in August 2019"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20August%202019%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

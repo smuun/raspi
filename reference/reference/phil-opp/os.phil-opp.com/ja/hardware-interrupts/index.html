@@ -1,0 +1,806 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事では、ハードウェア割り込みを正しく CPU に転送するためにプログラム可能な割り込みコントローラの設定を行います。これらの割り込みに対処するため、例外ハンドラのときに行ったのと同じように割り込み記述子表に新しいエントリを追加しなくてはいけません。ここでは周期タイマ割り込みの受け方と、キーボー…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>ハードウェア割り込み | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#gai-yao">概要</a>
+            
+        </li><li>
+            <a href="index.html#8259-pic">8259 PIC</a>
+            <ol>
+                <li>
+                    <a href="index.html#shi-zhuang">実装</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#ge-riip-minoyou-xiao-hua">割り込みの有効化</a>
+            
+        </li><li>
+            <a href="index.html#taimage-riip-minochu-li">タイマ割り込みの処理</a>
+            <ol>
+                <li>
+                    <a href="index.html#ge-riip-minozhong-liao">割り込みの終了</a>
+                </li><li>
+                    <a href="index.html#taimanoshe-ding">タイマの設定</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#detudorotuku">デッドロック</a>
+            <ol>
+                <li>
+                    <a href="index.html#detudorotukuwoqi-kosu">デッドロックを起こす</a>
+                </li><li>
+                    <a href="index.html#detudorotukuwoxiu-zheng-suru">デッドロックを修正する</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#jing-he-zhuang-tai-woxiu-zheng-suru">競合状態を修正する</a>
+            
+        </li><li>
+            <a href="index.html#hlt-ming-ling">hlt 命令</a>
+            
+        </li><li>
+            <a href="index.html#kibodoru-li">キーボード入力</a>
+            <ol>
+                <li>
+                    <a href="index.html#sukiyankodonodu-miqu-ri">スキャンコードの読み取り</a>
+                </li><li>
+                    <a href="index.html#sukiyankodonojie-shi">スキャンコードの解釈</a>
+                </li><li>
+                    <a href="index.html#kibodonoshe-ding">キーボードの設定</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>ハードウェア割り込み</h1>
+    <time datetime="2018-10-22" class="post-date">
+        Oct 22, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../hardware-interrupts/index.html">Hardware Interrupts</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/shimomura1004">@shimomura1004</a> 及び <a href="https://github.com/woodyZootopia">@woodyZootopia</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事では、ハードウェア割り込みを正しく CPU に転送するためにプログラム可能な割り込みコントローラの設定を行います。これらの割り込みに対処するため、例外ハンドラのときに行ったのと同じように割り込み記述子表に新しいエントリを追加しなくてはいけません。ここでは周期タイマ割り込みの受け方と、キーボードからの入力の受け方を学びます。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-07"><code>post-07</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#gai-yao">概要</a>
+                
+            </li><li>
+                <a href="index.html#8259-pic">8259 PIC</a>
+                <ul>
+                    <li>
+                        <a href="index.html#shi-zhuang">実装</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#ge-riip-minoyou-xiao-hua">割り込みの有効化</a>
+                
+            </li><li>
+                <a href="index.html#taimage-riip-minochu-li">タイマ割り込みの処理</a>
+                <ul>
+                    <li>
+                        <a href="index.html#ge-riip-minozhong-liao">割り込みの終了</a>
+                    </li><li>
+                        <a href="index.html#taimanoshe-ding">タイマの設定</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#detudorotuku">デッドロック</a>
+                <ul>
+                    <li>
+                        <a href="index.html#detudorotukuwoqi-kosu">デッドロックを起こす</a>
+                    </li><li>
+                        <a href="index.html#detudorotukuwoxiu-zheng-suru">デッドロックを修正する</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#jing-he-zhuang-tai-woxiu-zheng-suru">競合状態を修正する</a>
+                
+            </li><li>
+                <a href="index.html#hlt-ming-ling">hlt 命令</a>
+                
+            </li><li>
+                <a href="index.html#kibodoru-li">キーボード入力</a>
+                <ul>
+                    <li>
+                        <a href="index.html#sukiyankodonodu-miqu-ri">スキャンコードの読み取り</a>
+                    </li><li>
+                        <a href="index.html#sukiyankodonojie-shi">スキャンコードの解釈</a>
+                    </li><li>
+                        <a href="index.html#kibodonoshe-ding">キーボードの設定</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="gai-yao"><a class="zola-anchor" href="index.html#gai-yao" aria-label="Anchor link for: gai-yao">🔗</a>概要</h2>
+<p>割り込みは、接続されたハードウェアデバイスから CPU に通知を行う方法を提供します。よって、新しい文字がないか定期的にカーネルにキーボードを確認させるかわりに (<a href="https://ja.wikipedia.org/wiki/%E3%83%9D%E3%83%BC%E3%83%AA%E3%83%B3%E3%82%B0_(%E6%83%85%E5%A0%B1)">ポーリング</a>と呼ばれます)、キー入力のたびにキーボードのほうからカーネルに通知することができます。この方法の場合、カーネルはなにかが起きたときだけ処置を行えばよいので、とても効率がいいです。カーネルは次のポーリングのタイミングを待たずとも即座に反応することができるので、応答時間も短くなります。</p>
+<p>すべてのハードウェアを直接 CPU に接続することはできません。そのかわりに、独立した <em>割り込みコントローラ</em> がすべてのデバイスからの割り込みを取りまとめて CPU に通知します:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>                                    ____________             _____
+</span><span>               Timer ------------&gt; |            |           |     |
+</span><span>               Keyboard ---------&gt; | Interrupt  |---------&gt; | CPU |
+</span><span>               Other Hardware ---&gt; | Controller |           |_____|
+</span><span>               Etc. -------------&gt; |____________|
+</span><span>
+</span></code></pre>
+<p>多くの割り込みコントローラはプログラム可能です。これはそれぞれの割り込みに対して異なる優先度を設定することができるということです。例えば正確な時間管理を保証するために、キーボード割り込みよりもタイマ割り込みに高い優先度を設定することができます。</p>
+<p>例外とは異なり、ハードウェア割り込みは <em>非同期的</em> です。これは、ハードウェア割り込みは実行コードからは完全に独立していて、どんなタイミングでもハードウェア割り込みが発生する可能性があるということです。よって突如として私達のカーネルはある種の並行性を持つようになり、これにより並行処理に関するあらゆる潜在的なバグを持つことになります。Rust の厳格な所有権モデルはグローバルな状態を変更可能にすることを禁止しているため、この問題に役立ちます。ただしこの記事の後半で見るとおり、それでもデッドロックは発生してしまいます。</p>
+<h2 id="8259-pic"><a class="zola-anchor" href="index.html#8259-pic" aria-label="Anchor link for: 8259-pic">🔗</a>8259 PIC</h2>
+<p><a href="https://ja.wikipedia.org/wiki/Intel_8259">Intel 8259</a> は 1976 年に登場したプログラム可能な割り込みコントローラ (programmable interrupt controller: PIC) です。ずいぶん前に、より新しい <a href="https://ja.wikipedia.org/wiki/APIC">APIC</a> によって置き換えられましたが、そのインタフェースは現在のシステムでも後方互換性のためにサポートされています。8259 PIC は APIC よりも設定がかなり簡単なので、後の記事で APIC に切り替える前に、8259 PIC を使って割り込み処理に入門することにしましょう。</p>
+<p>8259 PIC は、割り込み線8本と、CPU と通信するための線を数本持っています。当時の典型的なシステムは 8259 PIC をプライマリとセカンダリの2つ搭載しており、セカンダリの PIC はプライマリの PIC の割り込み線のひとつに接続されていました:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>                     ____________                          ____________
+</span><span>Real Time Clock --&gt; |            |   Timer -------------&gt; |            |
+</span><span>ACPI -------------&gt; |            |   Keyboard-----------&gt; |            |      _____
+</span><span>Available --------&gt; | Secondary  |----------------------&gt; | Primary    |     |     |
+</span><span>Available --------&gt; | Interrupt  |   Serial Port 2 -----&gt; | Interrupt  |---&gt; | CPU |
+</span><span>Mouse ------------&gt; | Controller |   Serial Port 1 -----&gt; | Controller |     |_____|
+</span><span>Co-Processor -----&gt; |            |   Parallel Port 2/3 -&gt; |            |
+</span><span>Primary ATA ------&gt; |            |   Floppy disk -------&gt; |            |
+</span><span>Secondary ATA ----&gt; |____________|   Parallel Port 1----&gt; |____________|
+</span><span>
+</span></code></pre>
+<p>この図は典型的な割り込み線の割り当てを示しています。15本の線の多くは割り当てが固定されています。例えば、セカンダリの PIC の4番目の線はマウスに割り当てられています。</p>
+<p>それぞれのコントローラは、“コマンド” ポートと “データ” ポートという2つの <a href="../../testing/index.html#i-o-ports">I/O ポート</a> を通じて設定を行うことができます。プライマリコントローラでは、これらのポートは <code>0x20</code> (コマンド) と <code>0x21</code> (データ) になります。セカンダリコントローラでは、<code>0xa0</code> (コマンド) と <code>0xa1</code> (データ) になります。PIC の設定方法の詳細は <a href="https://wiki.osdev.org/8259_PIC">osdev.org の記事</a>を見てください。</p>
+<h3 id="shi-zhuang"><a class="zola-anchor" href="index.html#shi-zhuang" aria-label="Anchor link for: shi-zhuang">🔗</a>実装</h3>
+<p>PIC のデフォルト設定では、0から15の割り込みベクタ番号を CPU に送るようになっているため使うことができません。これらの番号は既に CPU 例外で使われており、例えば8番はダブルフォルトに対応します。この重複による問題を解決するためには PIC の割り込みを別の番号にマッピングし直さないといけません。割り込み番号の範囲は例外と重複しなければ問題になりませんが、32個の例外スロットのあとの最初の空き番号である32から47の範囲がよく使われます。</p>
+<p>コマンドポートとデータポートに特別な値を書き込むことで PIC の設定を行います。幸い <a href="https://docs.rs/pic8259/0.10.1/pic8259/"><code>pic8259</code></a> というクレートが既にありますので、初期化シーケンスを自分たちで書く必要はありません。クレートの動作に興味があるなら<a href="https://docs.rs/crate/pic8259/0.10.1/source/src/lib.rs">ソースコード</a>を確認してみてください。とても小さくドキュメントも豊富です。</p>
+<p>クレートを依存関係を追加するため、以下の内容をプロジェクトに追加します:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">pic8259 </span><span>= </span><span style="color:#d69d85;">&quot;0.10.1&quot;
+</span></code></pre>
+<p>このクレートが提供する主な抽象化は、上で見たようなプライマリとセカンダリの PIC からなるレイアウトを表わす <a href="https://docs.rs/pic8259/0.10.1/pic8259/struct.ChainedPics.html"><code>ChainedPics</code></a> 構造体です。これは以下のように使うように設計されています:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>pic8259::ChainedPics;
+</span><span style="color:#569cd6;">use</span><span> spin;
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#b5cea8;">32</span><span>;
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">PIC_2_OFFSET</span><span>: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#b4cea8;">PIC_1_OFFSET </span><span>+ </span><span style="color:#b5cea8;">8</span><span>;
+</span><span>
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">PICS</span><span>: spin::Mutex&lt;ChainedPics&gt; =
+</span><span>    spin::Mutex::new(</span><span style="color:#569cd6;">unsafe </span><span>{ ChainedPics::new(</span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>, </span><span style="color:#b4cea8;">PIC_2_OFFSET</span><span>) });
+</span></code></pre>
+<p>上で述べたように、PIC のオフセットを32から47の範囲に設定しています。<code>ChainedPics</code> 構造体を <code>Mutex</code> でラップすることで、次のステップで必要になる安全な可変アクセスを (<a href="https://docs.rs/spin/0.5.2/spin/struct.Mutex.html#method.lock"><code>lock</code> メソッド</a>を使って) 得ることができます。間違ったオフセットを指定すると未定義動作となるため、<code>ChainedPics::new</code> 関数は unsafe です。</p>
+<p>8259 PIC の初期化は <code>init</code> 関数内で行うことができます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ interrupts::</span><span style="color:#b4cea8;">PICS</span><span>.lock().initialize() }; </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>PIC の初期化を行うために <a href="https://docs.rs/pic8259/0.10.1/pic8259/struct.ChainedPics.html#method.initialize"><code>initialize</code></a> 関数を使います。<code>ChainedPics::new</code> 関数と同じように、PIC を間違って設定すると未定義動作となるため、この関数も unsafe になります。</p>
+<p>すべてうまくいけば、<code>cargo run</code> を実行すると “It did not crash” というメッセージが引き続き表示されるはずです。</p>
+<h2 id="ge-riip-minoyou-xiao-hua"><a class="zola-anchor" href="index.html#ge-riip-minoyou-xiao-hua" aria-label="Anchor link for: ge-riip-minoyou-xiao-hua">🔗</a>割り込みの有効化</h2>
+<p>CPU の設定で割り込みが無効化されていたため、これまではなにも起きませんでした。これは CPU が割り込みコントローラからの信号をすべて無視していたため、割り込みが CPU に届かなかったということです。これを変更しましょう:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ interrupts::</span><span style="color:#b4cea8;">PICS</span><span>.lock().initialize() };
+</span><span>    x86_64::instructions::interrupts::enable();     </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p><code>x86_64</code> クレートの <code>interrupts::enable</code> 関数は、特別な <code>sti</code> (“set interrupts”) 命令を実行し外部割り込みを有効にします。ここで <code>cargo run</code> を実行するとダブルフォルトが発生します:</p>
+<p><img src="qemu-hardware-timer-double-fault.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT because of hardware timer" /></p>
+<p>ダブルフォルトが発生する理由は、ハードウェアタイマ (正確には <a href="https://en.wikipedia.org/wiki/Intel_8253">Intel 8253</a>) がデフォルトで有効になっているため、割り込みを有効にするとすぐにタイマ割り込みを受け取り始めるためです。この割り込みのためのハンドラ関数を定義していないため、ダブルフォルトのハンドラが呼ばれることになります。</p>
+<h2 id="taimage-riip-minochu-li"><a class="zola-anchor" href="index.html#taimage-riip-minochu-li" aria-label="Anchor link for: taimage-riip-minochu-li">🔗</a>タイマ割り込みの処理</h2>
+<p><a href="index.html#8259-pic">上述</a>した図にある通り、タイマはプライマリの PIC の0番目の線を使います。これはタイマ割り込みは32番 (0 + オフセットの32) の割り込みとして CPU に届くということです。32をハードコーディングする代わりに <code>InterruptIndex</code> enum に保存することにしましょう:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>InterruptIndex {
+</span><span>    Timer = </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>InterruptIndex {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>as_u8(self) -&gt; </span><span style="color:#569cd6;">u8 </span><span>{
+</span><span>        self </span><span style="color:#569cd6;">as u8
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>as_usize(self) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>        </span><span style="color:#569cd6;">usize</span><span>::from(self.as_u8())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Rust の enum は <a href="https://doc.rust-lang.org/reference/items/enumerations.html#custom-discriminant-values-for-fieldless-enumerations">C 言語ライクな enum</a> であるため、各ヴァリアントに直接インデックスを指定できます。 <code>repr(u8)</code> アトリビュートは、各ヴァリアントが <code>u8</code> 型で表されるよう指定しています。今後、他の例外に対してヴァリアントを追加していきます。</p>
+<p>さて、タイマ割り込みへのハンドラ関数を追加していきます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use crate</span><span>::print;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        […]
+</span><span>        idt[InterruptIndex::Timer.as_usize()]
+</span><span>            .set_handler_fn(timer_interrupt_handler); </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>timer_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;.&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>CPU は例外に対しても外部割り込みに対しても同じように反応するため、我々が定義した <code>timer_interrupt_handler</code> は例外ハンドラと同じシグニチャを持っています (唯一の違いは、一部の例外はエラーコードをプッシュすることです)。<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptDescriptorTable.html"><code>InterruptDescriptorTable</code></a> 構造体は <a href="https://doc.rust-lang.org/core/ops/trait.IndexMut.html"><code>IndexMut</code></a> トレイトを実装しているので、配列の添字記法でそれぞれのエントリにアクセスすることができます。</p>
+<p>我々のタイマ割り込みハンドラでは画面にドットを表示します。タイマ割り込みは定期的に発生するので、タイマティックのたびに新たなドットが現れるだろうと思うでしょう。しかし実行してみると、ドットはひとつしか表示されません:</p>
+<p><img src="qemu-single-dot-printed.png" alt="QEMU printing only a single dot for hardware timer" /></p>
+<h3 id="ge-riip-minozhong-liao"><a class="zola-anchor" href="index.html#ge-riip-minozhong-liao" aria-label="Anchor link for: ge-riip-minozhong-liao">🔗</a>割り込みの終了</h3>
+<p>この理由は、PIC は明示的な “割り込みの終了” (end of interrupt: EOI) 信号を割り込みハンドラが通知してくると期待しているからです。この信号は、割り込みが既に処理されシステムが次の割り込みを受け取る準備ができたことをコントローラに伝えます。そのため PIC は、我々のシステムはまだ最初のタイマ割り込みを処理している最中だと考え、次の割り込みを送らずに辛抱強く EOI 信号を待ち続けているのです。</p>
+<p>EOI を送るためには、再び静的な <code>PICS</code> 構造体を使います:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>timer_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;.&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>notify_end_of_interrupt</code> は、プライマリとセカンダリのどちらの PIC が割り込みを送ったかを判断し、コマンドポートとデータポートを使って EOI 信号をそれぞれのコントローラに送ります。セカンダリの PIC はプライマリの PIC の入力線に接続されているため、もしセカンダリの PIC が割り込みを送った場合は、両方の PIC に信号を送る必要があります。</p>
+<p>正しい割り込みベクタ番号を使うよう気をつけないと、まだ送信されていない重要な割り込みを間違って消してしまったり、システムがハングしてしまうかもしれません。この関数が unsafe になっているのはこのためです。</p>
+<p><code>cargo run</code> を実行すると、画面上にドットが定期的に表示されるでしょう:</p>
+<p><img src="qemu-hardware-timer-dots.gif" alt="QEMU printing consecutive dots showing the hardware timer" /></p>
+<h3 id="taimanoshe-ding"><a class="zola-anchor" href="index.html#taimanoshe-ding" aria-label="Anchor link for: taimanoshe-ding">🔗</a>タイマの設定</h3>
+<p>我々が使ったハードウェアタイマは <em>プログラム可能インターバルタイマ</em> 、もしくは短く PIT と呼ばれています。名前が示すように、PIT は2つの割り込みの間の間隔を設定することができます。すぐに <a href="https://wiki.osdev.org/APIC_timer">APIC タイマ</a>に切り替えるのでここで詳細に入ることはしませんが、OSDev wiki には <a href="https://wiki.osdev.org/Programmable_Interval_Timer">PIT の設定</a>に関する記事が豊富にあります。</p>
+<h2 id="detudorotuku"><a class="zola-anchor" href="index.html#detudorotuku" aria-label="Anchor link for: detudorotuku">🔗</a>デッドロック</h2>
+<p>これで我々のカーネルはある種の並行性を持ちました: タイマ割り込みは非同期に発生するので、どんなタイミングでも <code>_start</code> 関数に割り込み得るのです。幸い、Rust の所有権システムは並行性に関連する多くのバグをコンパイル時に防ぐことができます。特筆すべき例外のひとつがデッドロックです。デッドロックはスレッドが決して解放されないロックを取得しようとしたときに起こり、そのスレッドは永遠にハングしてしまいます。</p>
+<p>我々のカーネルでは、既にデッドロックが起きる可能性があります。我々が実装した <code>prinln</code> マクロは <code>vga_buffer::_print</code> 関数を呼び出しており、_print 関数はスピンロックを使って<a href="../../vga-text-mode/index.html#spinlocks">グローバルな <code>WRITER</code> をロックする</a>ということを思い出してください:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>[…]
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>_print 関数は <code>WRITER</code> をロックし、<code>write_fmt</code> を呼び出し、そして関数の最後で暗黙にロックを解放します。では、<code>WRITER</code> がロックされている間に割り込みが発生し、割り込みハンドラもなにかを表示しようとしていると想像してみてください:</p>
+<table><thead><tr><th>時刻</th><th>_start</th><th>割り込みハンドラ</th></tr></thead><tbody>
+<tr><td>0</td><td><code>println!</code> を呼び出す</td><td> </td></tr>
+<tr><td>1</td><td><code>print</code> が <code>WRITER</code> をロック</td><td> </td></tr>
+<tr><td>2</td><td></td><td><strong>割り込みが発生</strong>、割り込みハンドラが動き出す</td></tr>
+<tr><td>3</td><td></td><td><code>println!</code> を呼び出す</td></tr>
+<tr><td>4</td><td></td><td><code>print</code> が <code>WRITER</code> をロックしようとする (既にロック済み)</td></tr>
+<tr><td>5</td><td></td><td><code>print</code> が <code>WRITER</code> をロックしようとする (既にロック済み)</td></tr>
+<tr><td>…</td><td></td><td>…</td></tr>
+<tr><td><em>(決して起こらない)</em></td><td><em><code>WRITER</code> のロックを解放する</em></td><td></td></tr>
+</tbody></table>
+<p><code>WRITER</code> はロックされているので、割り込みハンドラはそれが解放されるのを待ちます。しかし <code>_start</code> 関数は割り込みハンドラから処理が戻らないと実行されることはないので、ロックが解放されることはありません。このためシステム全体がハングしてしまいます。</p>
+<h3 id="detudorotukuwoqi-kosu"><a class="zola-anchor" href="index.html#detudorotukuwoqi-kosu" aria-label="Anchor link for: detudorotukuwoqi-kosu">🔗</a>デッドロックを起こす</h3>
+<p>我々のカーネルでは、<code>_start</code> 関数の最後のループの中で何かを表示するだけで簡単にデッドロックを起こすことができます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{
+</span><span>        </span><span style="color:#569cd6;">use </span><span>blog_os::print;
+</span><span>        print!(</span><span style="color:#d69d85;">&quot;-&quot;</span><span>);        </span><span style="color:#608b4e;">// new
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>QEMU で実行すると以下のような出力が得られます:</p>
+<p><img src="qemu-deadlock.png" alt="QEMU output with many rows of hyphens and no dots" /></p>
+<p>限られた数のハイフンが表示されたのち、最初のタイマ割り込みが発生したことがわかります。そしてタイマ割り込みハンドラがドットを表示しようとするとデッドロックするので、システムがハングしてしまいます。これが上記の出力でドットが表示されていない理由です。</p>
+<p>タイマ割り込みは非同期に発生するので、実際のハイフンの数は実行するたびに変わります。この非決定性が、並行性に関するバグのデバッグを非常に難しくします。</p>
+<h3 id="detudorotukuwoxiu-zheng-suru"><a class="zola-anchor" href="index.html#detudorotukuwoxiu-zheng-suru" aria-label="Anchor link for: detudorotukuwoxiu-zheng-suru">🔗</a>デッドロックを修正する</h3>
+<p>このデッドロックを回避するため、<code>Mutex</code> がロックされている間は割り込みを無効化することができます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#608b4e;">/// グローバルな `WRITER` インスタンスを使って
+</span><span style="color:#608b4e;">/// フォーマット済み文字列を VGA テキストバッファに出力する
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;   </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    interrupts::without_interrupts(|| {     </span><span style="color:#608b4e;">// new
+</span><span>        </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/interrupts/fn.without_interrupts.html"><code>without_interrupts</code></a> 関数は<a href="https://doc.rust-lang.org/book/ch13-01-closures.html">クロージャ</a>を引数に取り、これを割り込みが発生しない状態で実行します。これを使えば <code>Mutex</code> がロックされている間は割り込みが発生しないことを保証できます。このように修正したカーネルを実行すると、今度はハングせずに実行が続きます。(ドットがないように見えますが、これはスクロールが速すぎるためです。例えば <code>for _ in 0..10000 {}</code> をループ内で実行するなどで表示速度を遅くしてみてください。)</p>
+<p>シリアル出力関数でもデッドロックが起きないことを保証するために、同等の変更を加えます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: ::core::fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;       </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    interrupts::without_interrupts(|| {         </span><span style="color:#608b4e;">// new
+</span><span>        </span><span style="color:#b4cea8;">SERIAL1
+</span><span>            .lock()
+</span><span>            .write_fmt(args)
+</span><span>            .expect(</span><span style="color:#d69d85;">&quot;Printing to serial failed&quot;</span><span>);
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>割り込みを無効化することを一般的な解決策としてはならないことは覚えておいてください。割り込みの無効化は、レイテンシ、つまりシステムが割り込みに反応するまでの時間の最悪値を増加させるという問題があります。そのため割り込みの無効化はごく短時間に限るべきです。</p>
+<h2 id="jing-he-zhuang-tai-woxiu-zheng-suru"><a class="zola-anchor" href="index.html#jing-he-zhuang-tai-woxiu-zheng-suru" aria-label="Anchor link for: jing-he-zhuang-tai-woxiu-zheng-suru">🔗</a>競合状態を修正する</h2>
+<p><code>cargo test</code> を実行すると、<code>test_println_output</code> テストが失敗することが確認できるかもしれません:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --lib
+</span><span>[…]
+</span><span>Running 4 tests
+</span><span>test_breakpoint_exception...[ok]
+</span><span>test_println... [ok]
+</span><span>test_println_many... [ok]
+</span><span>test_println_output... [failed]
+</span><span>
+</span><span>Error: panicked at &#39;assertion failed: `(left == right)`
+</span><span>  left: `&#39;.&#39;`,
+</span><span> right: `&#39;S&#39;`&#39;, src/vga_buffer.rs:205:9
+</span></code></pre>
+<p>この理由はテスト関数とタイマ割り込みハンドラの間の <em>競合状態</em> です。テスト処理は以下のようになっていました:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s);
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> screen_char = </span><span style="color:#b4cea8;">WRITER</span><span>.lock().buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>        assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>このテストでは、VGA バッファに文字列を出力したあと <code>buffer_chars</code> 配列を手動でひとつずつチェックしています。<code>println</code> 関数を実行したあと、表示された文字の読み取り処理を行うまでの間にタイマ割り込みハンドラが動作するかもしれず、このとき競合状態になります。ただ、これは危険な <em>データ競合</em> ではないことに注意してください―― Rust はデータ競合をコンパイル時に完全に防ぐことができます。詳細は <a href="https://doc.rust-lang.org/nomicon/races.html"><em>Rustonomicon</em></a> を参照してください。</p>
+<p>これを修正するため、タイマ割り込みハンドラがテストの途中で <code>.</code> を画面に出力できないように、テストが完了するまでの間は <code>WRITER</code> をロックし続ける必要があります。修正されたテストはこのようになります:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    interrupts::without_interrupts(|| {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = </span><span style="color:#b4cea8;">WRITER</span><span>.lock();
+</span><span>        writeln!(writer, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s).expect(</span><span style="color:#d69d85;">&quot;writeln failed&quot;</span><span>);
+</span><span>        </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> screen_char = writer.buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>            assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>        }
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>以下のような変更を行いました:</p>
+<ul>
+<li><code>lock()</code> メソッドを明示的に使い、テスト実行中はずっと writer をロックし続けるようにします。<code>println</code> の代わりに、既にロックされた writer に表示を行うことができる <a href="https://doc.rust-lang.org/core/macro.writeln.html"><code>writeln</code></a> マクロを使います。</li>
+<li>他のデッドロックを防ぐため、テスト実行中は割り込みを無効化します。そうでないと writer がロックされている間に割り込みが入ってきてしまうかもしれません。</li>
+<li>テスト実行前にタイマ割り込みハンドラが実行される可能性は依然としてあるので、文字列 <code>s</code> を出力する前に追加で改行文字 <code>\n</code> を出力するようにします。これにより、タイマハンドラが現在の行に既に出力した <code>.</code> 文字によってテストが失敗するのを避けています。</li>
+</ul>
+<p>上記の変更によって、<code>cargo test</code> は再び必ず成功するようになります。</p>
+<p>これはテストが失敗するだけの無害な競合状態でした。想像できると思いますが、他の競合状態はその非決定的な性質のためずっとデバッグが大変になり得ます。幸運なことに Rust は、システムのクラッシュや無兆候でのメモリ破壊を含むあらゆる種類の未定義動作を引き起こす最も深刻なタイプの競合状態であるデータ競合から我々を守ってくれます。</p>
+<h2 id="hlt-ming-ling"><a class="zola-anchor" href="index.html#hlt-ming-ling" aria-label="Anchor link for: hlt-ming-ling">🔗</a><code>hlt</code> 命令</h2>
+<p>これまで我々は、<code>_start</code> や <code>panic</code> 関数の末尾で単純なループ文を使ってきました。これはずっと CPU を回し続けるので、期待通りに動作します。しかしこれはなにも仕事がない場合でも CPU が全速力で動作し続けることになるので、とても非効率です。カーネルを動かしているときにタスクマネージャを見ればこの問題がすぐに確認できるでしょう: QEMU のプロセスは、常時 CPU 時間のほぼ 100% を必要とします。</p>
+<p>我々が本当にやりたいことは、次の割り込みが入るまで CPU を停止することです。これにより CPU はほとんど電力を使わないスリープ状態に入ることができます。<a href="https://en.wikipedia.org/wiki/HLT_(x86_instruction)">hlt 命令</a>はまさにこれを行うものです。この命令を使ってエネルギー効率のいい無限ループを作ってみましょう:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>hlt_loop() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{
+</span><span>        x86_64::instructions::hlt();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>instructions::hlt</code> 関数はアセンブリ命令の<a href="https://github.com/rust-osdev/x86_64/blob/5e8e218381c5205f5777cb50da3ecac5d7e3b1ab/src/instructions/mod.rs#L16-L22">薄いラッパ</a>です。この命令はメモリ安全性を損なわないので unsafe ではありません。</p>
+<p>これで <code>hlt_loop</code> を <code>_start</code> や <code>panic</code> 関数内の無限ループの代わりに使うことができます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();            </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    blog_os::hlt_loop();            </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span></code></pre>
+<p><code>lib.rs</code> も同様に更新しましょう:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#608b4e;">/// `cargo test` のエントリポイント
+</span><span>#[cfg(test)]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    init();
+</span><span>    test_main();
+</span><span>    hlt_loop();         </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_panic_handler(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    hlt_loop();         </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>QEMU でカーネルを動かすと、CPU 時間の消費が大幅に減っていることがわかります。</p>
+<h2 id="kibodoru-li"><a class="zola-anchor" href="index.html#kibodoru-li" aria-label="Anchor link for: kibodoru-li">🔗</a>キーボード入力</h2>
+<p>外部デバイスからの割り込みを扱うことができるようになったので、ついにキーボード入力へのサポートを追加することができます。これにより、我々は初めてカーネルと対話することができるようになります。</p>
+<aside class="post_aside">
+<p>ここでは USB キーボードではなく、<a href="https://ja.wikipedia.org/wiki/PS/2%E3%82%B3%E3%83%8D%E3%82%AF%E3%82%BF">PS/2</a> キーボードの扱いかたしか説明しないので気をつけてください。ただ、マザーボードは古いソフトウェアをサポートするために USB キーボードを PS/2 デバイスとしてエミュレートするので、我々のカーネルが USB をサポートするまでは USB キーボードのことは忘れてしまっても大丈夫です。</p>
+</aside>
+<p>ハードウェアタイマのように、キーボードコントローラは既にデフォルトで有効になっています。なのでキーを押すと、キーボードコントローラは PIC に割り込みを送り、CPU に転送されます。CPU は IDT の中からハンドラ関数を探しますが、対応するエントリは空です。よってダブルフォルトが発生します。</p>
+<p>ではキーボード割り込みへのハンドラ関数を追加しましょう。異なる割り込み番号を使うだけで、タイマ割り込み用のハンドラを定義した方法とほとんど同じです:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>InterruptIndex {
+</span><span>    Timer = </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>,
+</span><span>    Keyboard, </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        […]
+</span><span>        </span><span style="color:#608b4e;">// new
+</span><span>        idt[InterruptIndex::Keyboard.as_usize()]
+</span><span>            .set_handler_fn(keyboard_interrupt_handler);
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;k&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><a href="index.html#8259-pic">上述</a>した図で見たように、キーボードはプライマリ PIC の1番目の線を使います。これはキーボード割り込みは33番(1 + オフセットの32)の割り込みとして CPU に届くということです。このインデックスを <code>Keyboard</code> というヴァリアントとして新たに <code>InterruptIndex</code> enum に追加します。enum ヴァリアントの値はデフォルトでは前の値に1を足したもの、すなわち33になるので、値を明示的に指定する必要はありません。割り込みハンドラでは、<code>k</code> の文字を表示して割り込みコントローラに EOI 信号を送ります。
+<a href="index.html#8259-pic">上述</a>した図で見たように、キーボードはプライマリ PIC の1番目の線を使います。これはキーボード割り込みは33番 (1 + オフセットの32) の割り込みとして CPU に届くということです。このインデックスを新たな <code>Keyboard</code> のヴァリアントとして <code>InterruptIndex</code> enum に追加します。enum ヴァリアントの値はデフォルトでは前の値に1を足したもの、すなわち33になるので、値を明示的に指定する必要はありません。割り込みハンドラでは、<code>k</code> の文字を表示して割り込みコントローラに EOI 信号を送ります。</p>
+<p>これでキーを押したときに画面上に <code>k</code> の文字が表示されます。しかしこれは最初のキー入力に対してしか動作しません。キーを押し続けたとしても、それ以上 <code>k</code> の文字が画面上に表示されることはありません。この理由は、我々が押されたキーの <em>スキャンコード</em> と呼ばれる値を読み取らない限りは、キーボードコントローラは別の割り込みを送らないためです。</p>
+<h3 id="sukiyankodonodu-miqu-ri"><a class="zola-anchor" href="index.html#sukiyankodonodu-miqu-ri" aria-label="Anchor link for: sukiyankodonodu-miqu-ri">🔗</a>スキャンコードの読み取り</h3>
+<p><em>どの</em> キーが押されたか知るためにはキーボードコントローラに問い合わせる必要があります。これは <a href="../../testing/index.html#i-o-ports">I/O ポート</a>の <code>0x60</code> に割り当てられた PS/2 コントローラのデータポートを読み取ることで行います:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, scancode);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>キーボードのデータポートから1バイトのデータを読み取るため、<code>x86_64</code> クレートに含まれる <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/port/struct.Port.html"><code>Port</code></a> 型を使います。この1バイトは<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%82%AD%E3%83%A3%E3%83%B3%E3%82%B3%E3%83%BC%E3%83%89">スキャンコード</a>と呼ばれ、キーのプレス/リリースの状態を表します。今のところはスキャンコードを画面に表示する以外にはなにもしません:</p>
+<p><img src="qemu-printing-scancodes.gif" alt="QEMU printing scancodes to the screen when keys are pressed" /></p>
+<p>上の画像は、私がゆっくりと “123” とタイプしたときの様子です。隣り合うキーは隣り合うスキャンコードを持ち、キーを押したときと離したときのスキャンコードは異なることがわかります。ではスキャンコードを実際のキー操作に正確に変換するためにはどうしたらいいのでしょうか。</p>
+<h3 id="sukiyankodonojie-shi"><a class="zola-anchor" href="index.html#sukiyankodonojie-shi" aria-label="Anchor link for: sukiyankodonojie-shi">🔗</a>スキャンコードの解釈</h3>
+<p><em>スキャンコードセット</em> と呼ばれるスキャンコードとキーのマッピングの標準は3つあります。3つのどれもが、 <a href="https://ja.wikipedia.org/wiki/IBM_PC_XT">IBM XT</a>、<a href="https://en.wikipedia.org/wiki/IBM_3270_PC">IBM 3270 PC</a>、<a href="https://ja.wikipedia.org/wiki/PC/AT">IBM AT</a> という、初期の IBM コンピュータのキーボードにさかのぼります。幸運なことに、その後のコンピュータは新たなスキャンコードセットを定義するという流れには乗らず、既存のセットをエミュレートして拡張しました。現在では、多くのキーボードは3つのセットのどれでもエミュレートするよう設定できるようになっています。</p>
+<p>デフォルトでは、PS/2 キーボードはスキャンコードセット1 (“XT”) をエミュレートします。このセットでは、スキャンコードの下位の7ビットでキーを表し、最上位の1ビットで押したか (“0”) 離したか (“1”) を表します。例えばエンターキーのような元の IBM XT のキーボードに存在しないキーに対しては、エスケープである <code>0xe0</code> とそのキーを表すバイトという連続した2つのスキャンコードを生成します。スキャンコードセット1の全てのスキャンコードと対応するキーについては <a href="https://wiki.osdev.org/Keyboard#Scan_Code_Set_1">OSDev Wiki</a> を確認してください。</p>
+<p>スキャンコードをキーに変換するために <code>match</code> 文を使います:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// new
+</span><span>    </span><span style="color:#569cd6;">let</span><span> key = </span><span style="color:#569cd6;">match</span><span> scancode {
+</span><span>        </span><span style="color:#b5cea8;">0x02 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;1&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x03 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;2&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x04 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;3&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x05 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;4&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x06 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;5&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x07 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;6&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x08 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;7&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x09 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;8&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x0a </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;9&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x0b </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;0&#39;</span><span>),
+</span><span>        </span><span style="color:#569cd6;">_ =&gt; </span><span>None,
+</span><span>    };
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>Some(key) = key {
+</span><span>        print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, key);
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>上記のコードは、0から9の数字キーが押された場合に変換を行い、それ以外のキーは無視します。全てのスキャンコードに対し、<a href="https://doc.rust-lang.org/book/ch06-02-match.html">match</a> 文を使って対応する文字か <code>None</code> を割り当てます。そのあと <a href="https://doc.rust-lang.org/book/ch18-01-all-the-places-for-patterns.html#conditional-if-let-expressions"><code>if let</code></a> 構文を使ってオプション型の <code>key</code> から値を取り出します。パターン部分に <code>key</code> という同じ変数名を使うことでそれ以前の宣言を<a href="https://doc.rust-lang.org/book/ch03-01-variables-and-mutability.html#shadowing">シャドーイング</a>します。これは Rust において <code>Option</code> 型から値を取り出すときによく使うパターンです。</p>
+<p>これで数字が表示できるようになりました:</p>
+<p><img src="qemu-printing-numbers.gif" alt="QEMU printing numbers to the screen" /></p>
+<p>他の文字も同じように変換することができます。幸運なことに、スキャンコードセットの1と2のスキャンコードを変換するための <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/"><code>pc-keyboard</code></a> というクレートがありますので、これを自分で実装する必要はありません。このクレートを使うために <code>Cargo.toml</code> に以下を追加し、<code>lib.rs</code> でインポートしましょう:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">pc-keyboard </span><span>= </span><span style="color:#d69d85;">&quot;0.5.0&quot;
+</span></code></pre>
+<p>これでこのクレートを使って <code>keyboard_interrupt_handler</code> を書き直すことができます:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in/src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+</span><span>    </span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    lazy_static! {
+</span><span>        </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">KEYBOARD</span><span>: Mutex&lt;Keyboard&lt;layouts::Us104Key, ScancodeSet1&gt;&gt; =
+</span><span>            Mutex::new(Keyboard::new(layouts::Us104Key, ScancodeSet1,
+</span><span>                HandleControl::Ignore)
+</span><span>            );
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> keyboard = </span><span style="color:#b4cea8;">KEYBOARD</span><span>.lock();
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+</span><span>        </span><span style="color:#569cd6;">if let </span><span>Some(key) = keyboard.process_keyevent(key_event) {
+</span><span>            </span><span style="color:#569cd6;">match</span><span> key {
+</span><span>                DecodedKey::Unicode(character) </span><span style="color:#569cd6;">=&gt; </span><span>print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, character),
+</span><span>                DecodedKey::RawKey(key) </span><span style="color:#569cd6;">=&gt; </span><span>print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, key),
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>ミューテックスで保護された静的な <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html"><code>Keyboard</code></a> オブジェクトを作るために <code>lazy_static</code> マクロを使います。<code>Keyboard</code> は、レイアウトを US キーボードに、スキャンコードセットは1として初期化を行います。<a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/enum.HandleControl.html"><code>HandleControl</code></a> パラメタは、<code>ctrl+[a-z]</code> を Unicode 文字の <code>U+0001</code> から <code>U+001A</code> にマッピングさせることができます。この機能は使いたくないので、<code>Ignore</code> オプションを使い <code>ctrl</code> キーを通常のキーと同様に扱います。</p>
+<p>各割り込みでは、ミューテックスをロックし、キーボードコントローラからスキャンコードを読み取り、それを読み取ったスキャンコードを <code>Option&lt;KeyEvent&gt;</code> に変換する <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html#method.add_byte"><code>add_byte</code></a> メソッドに渡します。<a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.KeyEvent.html"><code>KeyEvent</code></a> は、そのイベントを起こしたキーと、それが押されたのか離されたのかの情報を含んでいます。</p>
+<p>このキーイベントを解釈するために、変換可能であればキーイベントを文字に変換する <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html#method.process_keyevent"><code>process_keyevent</code></a> メソッドにキーイベントを渡します。例えば <code>A</code> キーの押下イベントを、シフトキーが押されていたかによって小文字の <code>a</code> か大文字の <code>A</code> に変換します。</p>
+<p>修正した割り込みハンドラで、テキストが入力できるようになります:</p>
+<p><img src="qemu-typing.gif" alt="Typing “Hello World” in QEMU" /></p>
+<h3 id="kibodonoshe-ding"><a class="zola-anchor" href="index.html#kibodonoshe-ding" aria-label="Anchor link for: kibodonoshe-ding">🔗</a>キーボードの設定</h3>
+<p>例えば使用するスキャンコードセットを変えるなど、PS/2 キーボードの一部の設定を変えることができます。もうこの記事は長くなりすぎたのでそれについて説明することはしませんが、OSDev Wiki に<a href="https://wiki.osdev.org/PS/2_Keyboard#Commands">設定コマンド</a>の概要が記載されています。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>この記事では、外部割り込みを有効にする方法とそれを処理する方法について説明しました。8259 PIC とそのプライマリ/セカンダリレイアウト、割り込み番号をマッピングし直す方法、そして “end of interrupt” 信号について学びました。我々はハードウェアタイマとキーボード向けの割り込みハンドラを実装し、次の割り込みまで CPU を停止させる <code>hlt</code> 命令について学びました。</p>
+<p>これで我々はカーネルと対話することができるようになり、小さなシェルやシンプルなゲームを作るための基本的な構成要素を得ることができました。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>タイマ割り込みは、定期的に動作中のプロセスに割り込み、制御をカーネルに戻す方法を提供するという意味で OS にとって必要不可欠なものです。この上でカーネルは別のプロセスに実行を切り替えることで、まるで複数のプロセスが並列に動いているように見せているのです。</p>
+<p>ただし、プロセスやスレッドを作る前に、それらにメモリを割り当てる方法が必要です。次の記事では、メモリ管理という基本的な構成要素を提供するため、メモリ管理について調査していきます。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../double-fault-exceptions/index.html">&laquo; Double Faults</a>
+        
+        
+            <a class="next" href="../paging-introduction/index.html">ページング入門 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Hardware%20Interrupts%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Hardware Interrupts (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Hardware%20Interrupts%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../hardware-interrupts/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/hardware-interrupts/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/hardware-interrupts/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/hardware-interrupts/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

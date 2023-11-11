@@ -1,0 +1,82 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Cross Compiling: libcore | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Cross Compiling: libcore</h1>
+    <p>If you get an <code>error: can't find crate for 'core'</code>, you’re probably compiling for a different target (e.g. you’re passing the <code>target</code> option to <code>cargo build</code>). Now the compiler complains that it can’t find the <code>core</code> library. This document gives a quick overview how to fix this problem. For more details, see the <a href="https://github.com/japaric/rust-cross">rust-cross</a> project.</p>
+<h2 id="libcore"><a class="zola-anchor" href="index.html#libcore" aria-label="Anchor link for: libcore">🔗</a>Libcore</h2>
+<p>The core library is a dependency-free library that is added implicitly when using <code>#![no_std]</code>. It provides basic standard library features like Option or Iterator. The core library is installed together with the rust compiler (just like the std library). But the installed libcore is specific to your architecture. If you aren’t working on x86_64 Linux and pass <code>‑‑target x86_64‑unknown‑linux‑gnu</code> to cargo, it can’t find a x86_64 libcore. To fix this, you can either use <code>rustup</code> or <code>xargo</code>.</p>
+<h2 id="rustup"><a class="zola-anchor" href="index.html#rustup" aria-label="Anchor link for: rustup">🔗</a>rustup</h2>
+<p>Thanks to <a href="https://rustup.rs">rustup</a>, cross-compilation for <a href="https://github.com/japaric/rust-cross#the-target-triple">official target triples</a> is pretty easy today: Just execute <code>rustup target add x86_64-unknown-linux-gnu</code>.</p>
+<h2 id="xargo"><a class="zola-anchor" href="index.html#xargo" aria-label="Anchor link for: xargo">🔗</a>xargo</h2>
+<p>If you’re using a <em>custom target specification</em>, the <code>rustup</code> method doesn’t work. Instead, you can use <a href="https://github.com/japaric/xargo">xargo</a>. Xargo is a wrapper for cargo that eases cross compilation. We can install it by executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install xargo
+</span></code></pre>
+<p>If the installation fails, make sure that you have <code>cmake</code> and the OpenSSL headers installed. For more details, see the xargo’s <a href="https://github.com/japaric/xargo#dependencies">dependency section</a>.</p>
+<p>Xargo is “a drop-in replacement for cargo”, so every cargo command also works with <code>xargo</code>. You can do e.g. <code>xargo --help</code>, <code>xargo clean</code>, or <code>xargo doc</code>. However, the <code>build</code> command gains additional functionality: <code>xargo build</code> will automatically cross compile the <code>core</code> library (and a few other libraries such as <code>alloc</code>) when compiling for custom targets.</p>
+<p>So if your custom target file is named <code>your-cool-target.json</code>, you can compile your code using xargo through <code>xargo build --target your-cool-target</code> (note the omitted extension).</p>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

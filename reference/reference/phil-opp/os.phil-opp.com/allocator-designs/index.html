@@ -1,0 +1,1095 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This post explains how to implement heap allocators from scratch. It presents and discusses different allocator designs, including bump allocation, li…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Allocator Designs | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#introduction">Introduction</a>
+            <ol>
+                <li>
+                    <a href="index.html#design-goals">Design Goals</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#bump-allocator">Bump Allocator</a>
+            <ol>
+                <li>
+                    <a href="index.html#idea">Idea</a>
+                </li><li>
+                    <a href="index.html#implementation">Implementation</a>
+                </li><li>
+                    <a href="index.html#implementing-globalalloc">Implementing GlobalAlloc</a>
+                </li><li>
+                    <a href="index.html#using-it">Using It</a>
+                </li><li>
+                    <a href="index.html#discussion">Discussion</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#linked-list-allocator">Linked List Allocator</a>
+            <ol>
+                <li>
+                    <a href="index.html#implementation-1">Implementation</a>
+                </li><li>
+                    <a href="index.html#using-it-1">Using it</a>
+                </li><li>
+                    <a href="index.html#discussion-1">Discussion</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#fixed-size-block-allocator">Fixed-Size Block Allocator</a>
+            <ol>
+                <li>
+                    <a href="index.html#introduction-1">Introduction</a>
+                </li><li>
+                    <a href="index.html#implementation-2">Implementation</a>
+                </li><li>
+                    <a href="index.html#using-it-2">Using it</a>
+                </li><li>
+                    <a href="index.html#discussion-2">Discussion</a>
+                </li><li>
+                    <a href="index.html#variations">Variations</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Allocator Designs</h1>
+    <time datetime="2020-01-20" class="post-date">
+        Jan 20, 2020
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>This post explains how to implement heap allocators from scratch. It presents and discusses different allocator designs, including bump allocation, linked list allocation, and fixed-size block allocation. For each of the three designs, we will create a basic implementation that can be used for our kernel.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-11"><code>post-11</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#introduction">Introduction</a>
+                <ul>
+                    <li>
+                        <a href="index.html#design-goals">Design Goals</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#bump-allocator">Bump Allocator</a>
+                <ul>
+                    <li>
+                        <a href="index.html#idea">Idea</a>
+                    </li><li>
+                        <a href="index.html#implementation">Implementation</a>
+                    </li><li>
+                        <a href="index.html#implementing-globalalloc">Implementing GlobalAlloc</a>
+                    </li><li>
+                        <a href="index.html#using-it">Using It</a>
+                    </li><li>
+                        <a href="index.html#discussion">Discussion</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#linked-list-allocator">Linked List Allocator</a>
+                <ul>
+                    <li>
+                        <a href="index.html#implementation-1">Implementation</a>
+                    </li><li>
+                        <a href="index.html#using-it-1">Using it</a>
+                    </li><li>
+                        <a href="index.html#discussion-1">Discussion</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#fixed-size-block-allocator">Fixed-Size Block Allocator</a>
+                <ul>
+                    <li>
+                        <a href="index.html#introduction-1">Introduction</a>
+                    </li><li>
+                        <a href="index.html#implementation-2">Implementation</a>
+                    </li><li>
+                        <a href="index.html#using-it-2">Using it</a>
+                    </li><li>
+                        <a href="index.html#discussion-2">Discussion</a>
+                    </li><li>
+                        <a href="index.html#variations">Variations</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="introduction"><a class="zola-anchor" href="index.html#introduction" aria-label="Anchor link for: introduction">🔗</a>Introduction</h2>
+<p>In the <a href="../heap-allocation/index.html">previous post</a>, we added basic support for heap allocations to our kernel. For that, we <a href="../heap-allocation/index.html#creating-a-kernel-heap">created a new memory region</a> in the page tables and <a href="../heap-allocation/index.html#using-an-allocator-crate">used the <code>linked_list_allocator</code> crate</a> to manage that memory. While we have a working heap now, we left most of the work to the allocator crate without trying to understand how it works.</p>
+<p>In this post, we will show how to create our own heap allocator from scratch instead of relying on an existing allocator crate. We will discuss different allocator designs, including a simplistic <em>bump allocator</em> and a basic <em>fixed-size block allocator</em>, and use this knowledge to implement an allocator with improved performance (compared to the <code>linked_list_allocator</code> crate).</p>
+<h3 id="design-goals"><a class="zola-anchor" href="index.html#design-goals" aria-label="Anchor link for: design-goals">🔗</a>Design Goals</h3>
+<p>The responsibility of an allocator is to manage the available heap memory. It needs to return unused memory on <code>alloc</code> calls and keep track of memory freed by <code>dealloc</code> so that it can be reused again. Most importantly, it must never hand out memory that is already in use somewhere else because this would cause undefined behavior.</p>
+<p>Apart from correctness, there are many secondary design goals. For example, the allocator should effectively utilize the available memory and keep <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)"><em>fragmentation</em></a> low. Furthermore, it should work well for concurrent applications and scale to any number of processors. For maximal performance, it could even optimize the memory layout with respect to the CPU caches to improve <a href="https://www.geeksforgeeks.org/locality-of-reference-and-cache-operation-in-cache-memory/">cache locality</a> and avoid <a href="https://mechanical-sympathy.blogspot.de/2011/07/false-sharing.html">false sharing</a>.</p>
+<p>These requirements can make good allocators very complex. For example, <a href="http://jemalloc.net/">jemalloc</a> has over 30.000 lines of code. This complexity is often undesired in kernel code, where a single bug can lead to severe security vulnerabilities. Fortunately, the allocation patterns of kernel code are often much simpler compared to userspace code, so that relatively simple allocator designs often suffice.</p>
+<p>In the following, we present three possible kernel allocator designs and explain their advantages and drawbacks.</p>
+<h2 id="bump-allocator"><a class="zola-anchor" href="index.html#bump-allocator" aria-label="Anchor link for: bump-allocator">🔗</a>Bump Allocator</h2>
+<p>The most simple allocator design is a <em>bump allocator</em> (also known as <em>stack allocator</em>). It allocates memory linearly and only keeps track of the number of allocated bytes and the number of allocations. It is only useful in very specific use cases because it has a severe limitation: it can only free all memory at once.</p>
+<h3 id="idea"><a class="zola-anchor" href="index.html#idea" aria-label="Anchor link for: idea">🔗</a>Idea</h3>
+<p>The idea behind a bump allocator is to linearly allocate memory by increasing (<em>“bumping”</em>) a <code>next</code> variable, which points to the start of the unused memory. At the beginning, <code>next</code> is equal to the start address of the heap. On each allocation, <code>next</code> is increased by the allocation size so that it always points to the boundary between used and unused memory:</p>
+<p><img src="bump-allocation.svg" alt="The heap memory area at three points in time: 1: A single allocation exists at the start of the heap; the next pointer points to its end. 2: A second allocation was added right after the first; the next pointer points to the end of the second allocation. 3: A third allocation was added right after the second one; the next pointer points to the end of the third allocation." /></p>
+<p>The <code>next</code> pointer only moves in a single direction and thus never hands out the same memory region twice. When it reaches the end of the heap, no more memory can be allocated, resulting in an out-of-memory error on the next allocation.</p>
+<p>A bump allocator is often implemented with an allocation counter, which is increased by 1 on each <code>alloc</code> call and decreased by 1 on each <code>dealloc</code> call. When the allocation counter reaches zero, it means that all allocations on the heap have been deallocated. In this case, the <code>next</code> pointer can be reset to the start address of the heap, so that the complete heap memory is available for allocations again.</p>
+<h3 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h3>
+<p>We start our implementation by declaring a new <code>allocator::bump</code> submodule:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>bump;
+</span></code></pre>
+<p>The content of the submodule lives in a new <code>src/allocator/bump.rs</code> file, which we create with the following content:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/bump.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>BumpAllocator {
+</span><span>    heap_start: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    heap_end: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    next: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    allocations: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Creates a new empty bump allocator.
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new() -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        BumpAllocator {
+</span><span>            heap_start: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>            heap_end: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>            next: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>            allocations: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">/// Initializes the bump allocator with the given heap bounds.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// This method is unsafe because the caller must ensure that the given
+</span><span>    </span><span style="color:#608b4e;">/// memory range is unused. Also, this method must be called only once.
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>init(</span><span style="color:#569cd6;">&amp;mut </span><span>self, heap_start: </span><span style="color:#569cd6;">usize</span><span>, heap_size: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        self.heap_start = heap_start;
+</span><span>        self.heap_end = heap_start + heap_size;
+</span><span>        self.next = heap_start;
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>heap_start</code> and <code>heap_end</code> fields keep track of the lower and upper bounds of the heap memory region. The caller needs to ensure that these addresses are valid, otherwise the allocator would return invalid memory. For this reason, the <code>init</code> function needs to be <code>unsafe</code> to call.</p>
+<p>The purpose of the <code>next</code> field is to always point to the first unused byte of the heap, i.e., the start address of the next allocation. It is set to <code>heap_start</code> in the <code>init</code> function because at the beginning, the entire heap is unused. On each allocation, this field will be increased by the allocation size (<em>“bumped”</em>) to ensure that we don’t return the same memory region twice.</p>
+<p>The <code>allocations</code> field is a simple counter for the active allocations with the goal of resetting the allocator after the last allocation has been freed. It is initialized with 0.</p>
+<p>We chose to create a separate <code>init</code> function instead of performing the initialization directly in <code>new</code> in order to keep the interface identical to the allocator provided by the <code>linked_list_allocator</code> crate. This way, the allocators can be switched without additional code changes.</p>
+<h3 id="implementing-globalalloc"><a class="zola-anchor" href="index.html#implementing-globalalloc" aria-label="Anchor link for: implementing-globalalloc">🔗</a>Implementing <code>GlobalAlloc</code></h3>
+<p>As <a href="../heap-allocation/index.html#the-allocator-interface">explained in the previous post</a>, all heap allocators need to implement the <a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html"><code>GlobalAlloc</code></a> trait, which is defined like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub unsafe trait </span><span>GlobalAlloc {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8</span><span>;
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc_zeroed(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{ </span><span style="color:#569cd6;">... </span><span>}
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>realloc(
+</span><span>        </span><span style="color:#569cd6;">&amp;</span><span>self,
+</span><span>        ptr: </span><span style="color:#569cd6;">*mut u8</span><span>,
+</span><span>        layout: Layout,
+</span><span>        new_size: </span><span style="color:#569cd6;">usize
+</span><span>    ) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{ </span><span style="color:#569cd6;">... </span><span>}
+</span><span>}
+</span></code></pre>
+<p>Only the <code>alloc</code> and <code>dealloc</code> methods are required; the other two methods have default implementations and can be omitted.</p>
+<h4 id="first-implementation-attempt"><a class="zola-anchor" href="index.html#first-implementation-attempt" aria-label="Anchor link for: first-implementation-attempt">🔗</a>First Implementation Attempt</h4>
+<p>Let’s try to implement the <code>alloc</code> method for our <code>BumpAllocator</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/bump.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::{GlobalAlloc, Layout};
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// TODO alignment and bounds check
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_start = self.next;
+</span><span>        self.next = alloc_start + layout.size();
+</span><span>        self.allocations += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        alloc_start </span><span style="color:#569cd6;">as *mut u8
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, _ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, _layout: Layout) {
+</span><span>        todo!();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>First, we use the <code>next</code> field as the start address for our allocation. Then we update the <code>next</code> field to point to the end address of the allocation, which is the next unused address on the heap. Before returning the start address of the allocation as a <code>*mut u8</code> pointer, we increase the <code>allocations</code> counter by 1.</p>
+<p>Note that we don’t perform any bounds checks or alignment adjustments, so this implementation is not safe yet. This does not matter much because it fails to compile anyway with the following error:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0594]: cannot assign to `self.next` which is behind a `&amp;` reference
+</span><span>  --&gt; src/allocator/bump.rs:29:9
+</span><span>   |
+</span><span>29 |         self.next = alloc_start + layout.size();
+</span><span>   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `self` is a `&amp;` reference, so the data it refers to cannot be written
+</span></code></pre>
+<p>(The same error also occurs for the <code>self.allocations += 1</code> line. We omitted it here for brevity.)</p>
+<p>The error occurs because the <a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#tymethod.alloc"><code>alloc</code></a> and <a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#tymethod.dealloc"><code>dealloc</code></a> methods of the <code>GlobalAlloc</code> trait only operate on an immutable <code>&amp;self</code> reference, so updating the <code>next</code> and <code>allocations</code> fields is not possible. This is problematic because updating <code>next</code> on every allocation is the essential principle of a bump allocator.</p>
+<h4 id="globalalloc-and-mutability"><a class="zola-anchor" href="index.html#globalalloc-and-mutability" aria-label="Anchor link for: globalalloc-and-mutability">🔗</a><code>GlobalAlloc</code> and Mutability</h4>
+<p>Before we look at a possible solution to this mutability problem, let’s try to understand why the <code>GlobalAlloc</code> trait methods are defined with <code>&amp;self</code> arguments: As we saw <a href="../heap-allocation/index.html#the-global-allocator-attribute">in the previous post</a>, the global heap allocator is defined by adding the <code>#[global_allocator]</code> attribute to a <code>static</code> that implements the <code>GlobalAlloc</code> trait. Static variables are immutable in Rust, so there is no way to call a method that takes <code>&amp;mut self</code> on the static allocator. For this reason, all the methods of <code>GlobalAlloc</code> only take an immutable <code>&amp;self</code> reference.</p>
+<p>Fortunately, there is a way to get a <code>&amp;mut self</code> reference from a <code>&amp;self</code> reference: We can use synchronized <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">interior mutability</a> by wrapping the allocator in a <a href="https://docs.rs/spin/0.5.0/spin/struct.Mutex.html"><code>spin::Mutex</code></a> spinlock. This type provides a <code>lock</code> method that performs <a href="https://en.wikipedia.org/wiki/Mutual_exclusion">mutual exclusion</a> and thus safely turns a <code>&amp;self</code> reference to a <code>&amp;mut self</code> reference. We’ve already used the wrapper type multiple times in our kernel, for example for the <a href="../vga-text-mode/index.html#spinlocks">VGA text buffer</a>.</p>
+<h4 id="a-locked-wrapper-type"><a class="zola-anchor" href="index.html#a-locked-wrapper-type" aria-label="Anchor link for: a-locked-wrapper-type">🔗</a>A <code>Locked</code> Wrapper Type</h4>
+<p>With the help of the <code>spin::Mutex</code> wrapper type, we can implement the <code>GlobalAlloc</code> trait for our bump allocator. The trick is to implement the trait not for the <code>BumpAllocator</code> directly, but for the wrapped <code>spin::Mutex&lt;BumpAllocator&gt;</code> type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>spin::Mutex&lt;BumpAllocator&gt; {…}
+</span></code></pre>
+<p>Unfortunately, this still doesn’t work because the Rust compiler does not permit trait implementations for types defined in other crates:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0117]: only traits defined in the current crate can be implemented for arbitrary types
+</span><span>  --&gt; src/allocator/bump.rs:28:1
+</span><span>   |
+</span><span>28 | unsafe impl GlobalAlloc for spin::Mutex&lt;BumpAllocator&gt; {
+</span><span>   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^--------------------------
+</span><span>   | |                           |
+</span><span>   | |                           `spin::mutex::Mutex` is not defined in the current crate
+</span><span>   | impl doesn&#39;t use only types from inside the current crate
+</span><span>   |
+</span><span>   = note: define and implement a trait or new type instead
+</span></code></pre>
+<p>To fix this, we need to create our own wrapper type around <code>spin::Mutex</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#608b4e;">/// A wrapper around spin::Mutex to permit trait implementations.
+</span><span style="color:#569cd6;">pub struct </span><span>Locked&lt;A&gt; {
+</span><span>    inner: spin::Mutex&lt;A&gt;,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;A&gt; Locked&lt;A&gt; {
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new(inner: A) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        Locked {
+</span><span>            inner: spin::Mutex::new(inner),
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>lock(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; spin::MutexGuard&lt;A&gt; {
+</span><span>        self.inner.lock()
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The type is a generic wrapper around a <code>spin::Mutex&lt;A&gt;</code>. It imposes no restrictions on the wrapped type <code>A</code>, so it can be used to wrap all kinds of types, not just allocators. It provides a simple <code>new</code> constructor function that wraps a given value. For convenience, it also provides a <code>lock</code> function that calls <code>lock</code> on the wrapped <code>Mutex</code>. Since the <code>Locked</code> type is general enough to be useful for other allocator implementations too, we put it in the parent <code>allocator</code> module.</p>
+<h4 id="implementation-for-locked-bumpallocator"><a class="zola-anchor" href="index.html#implementation-for-locked-bumpallocator" aria-label="Anchor link for: implementation-for-locked-bumpallocator">🔗</a>Implementation for <code>Locked&lt;BumpAllocator&gt;</code></h4>
+<p>The <code>Locked</code> type is defined in our own crate (in contrast to <code>spin::Mutex</code>), so we can use it to implement <code>GlobalAlloc</code> for our bump allocator. The full implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/bump.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::{align_up, Locked};
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::{GlobalAlloc, Layout};
+</span><span style="color:#569cd6;">use </span><span>core::ptr;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>Locked&lt;BumpAllocator&gt; {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> bump = self.lock(); </span><span style="color:#608b4e;">// get a mutable reference
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_start = align_up(bump.next, layout.align());
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_end = </span><span style="color:#569cd6;">match</span><span> alloc_start.checked_add(layout.size()) {
+</span><span>            Some(end) </span><span style="color:#569cd6;">=&gt;</span><span> end,
+</span><span>            None </span><span style="color:#569cd6;">=&gt; return </span><span>ptr::null_mut(),
+</span><span>        };
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">if</span><span> alloc_end &gt; bump.heap_end {
+</span><span>            ptr::null_mut() </span><span style="color:#608b4e;">// out of memory
+</span><span>        } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>            bump.next = alloc_end;
+</span><span>            bump.allocations += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            alloc_start </span><span style="color:#569cd6;">as *mut u8
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, _ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, _layout: Layout) {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> bump = self.lock(); </span><span style="color:#608b4e;">// get a mutable reference
+</span><span>
+</span><span>        bump.allocations -= </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        </span><span style="color:#569cd6;">if</span><span> bump.allocations == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>            bump.next = bump.heap_start;
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The first step for both <code>alloc</code> and <code>dealloc</code> is to call the <a href="https://docs.rs/spin/0.5.0/spin/struct.Mutex.html#method.lock"><code>Mutex::lock</code></a> method through the <code>inner</code> field to get a mutable reference to the wrapped allocator type. The instance remains locked until the end of the method, so that no data race can occur in multithreaded contexts (we will add threading support soon).</p>
+<p>Compared to the previous prototype, the <code>alloc</code> implementation now respects alignment requirements and performs a bounds check to ensure that the allocations stay inside the heap memory region. The first step is to round up the <code>next</code> address to the alignment specified by the <code>Layout</code> argument. The code for the <code>align_up</code> function is shown in a moment. We then add the requested allocation size to <code>alloc_start</code> to get the end address of the allocation. To prevent integer overflow on large allocations, we use the <a href="https://doc.rust-lang.org/std/primitive.usize.html#method.checked_add"><code>checked_add</code></a> method. If an overflow occurs or if the resulting end address of the allocation is larger than the end address of the heap, we return a null pointer to signal an out-of-memory situation. Otherwise, we update the <code>next</code> address and increase the <code>allocations</code> counter by 1 like before. Finally, we return the <code>alloc_start</code> address converted to a <code>*mut u8</code> pointer.</p>
+<p>The <code>dealloc</code> function ignores the given pointer and <code>Layout</code> arguments. Instead, it just decreases the <code>allocations</code> counter. If the counter reaches <code>0</code> again, it means that all allocations were freed again. In this case, it resets the <code>next</code> address to the <code>heap_start</code> address to make the complete heap memory available again.</p>
+<h4 id="address-alignment"><a class="zola-anchor" href="index.html#address-alignment" aria-label="Anchor link for: address-alignment">🔗</a>Address Alignment</h4>
+<p>The <code>align_up</code> function is general enough that we can put it into the parent <code>allocator</code> module. A basic implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Align the given address `addr` upwards to alignment `align`.
+</span><span style="color:#569cd6;">fn </span><span>align_up(addr: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> remainder = addr % align;
+</span><span>    </span><span style="color:#569cd6;">if</span><span> remainder == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>        addr </span><span style="color:#608b4e;">// addr already aligned
+</span><span>    } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>        addr - remainder + align
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The function first computes the <a href="https://en.wikipedia.org/wiki/Euclidean_division">remainder</a> of the division of <code>addr</code> by <code>align</code>. If the remainder is <code>0</code>, the address is already aligned with the given alignment. Otherwise, we align the address by subtracting the remainder (so that the new remainder is 0) and then adding the alignment (so that the address does not become smaller than the original address).</p>
+<p>Note that this isn’t the most efficient way to implement this function. A much faster implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">/// Align the given address `addr` upwards to alignment `align`.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// Requires that `align` is a power of two.
+</span><span style="color:#569cd6;">fn </span><span>align_up(addr: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>    (addr + align - </span><span style="color:#b5cea8;">1</span><span>) </span><span style="color:#569cd6;">&amp; !</span><span>(align - </span><span style="color:#b5cea8;">1</span><span>)
+</span><span>}
+</span></code></pre>
+<p>This method requires <code>align</code> to be a power of two, which can be guaranteed by utilizing the <code>GlobalAlloc</code> trait (and its <a href="https://doc.rust-lang.org/alloc/alloc/struct.Layout.html"><code>Layout</code></a> parameter). This makes it possible to create a <a href="https://en.wikipedia.org/wiki/Mask_(computing)">bitmask</a> to align the address in a very efficient way. To understand how it works, let’s go through it step by step, starting on the right side:</p>
+<ul>
+<li>Since <code>align</code> is a power of two, its <a href="https://en.wikipedia.org/wiki/Binary_number#Representation">binary representation</a> has only a single bit set (e.g. <code>0b000100000</code>). This means that <code>align - 1</code> has all the lower bits set (e.g. <code>0b00011111</code>).</li>
+<li>By creating the <a href="https://en.wikipedia.org/wiki/Bitwise_operation#NOT">bitwise <code>NOT</code></a> through the <code>!</code> operator, we get a number that has all the bits set except for the bits lower than <code>align</code> (e.g. <code>0b…111111111100000</code>).</li>
+<li>By performing a <a href="https://en.wikipedia.org/wiki/Bitwise_operation#AND">bitwise <code>AND</code></a> on an address and <code>!(align - 1)</code>, we align the address <em>downwards</em>. This works by clearing all the bits that are lower than <code>align</code>.</li>
+<li>Since we want to align upwards instead of downwards, we increase the <code>addr</code> by <code>align - 1</code> before performing the bitwise <code>AND</code>. This way, already aligned addresses remain the same while non-aligned addresses are rounded to the next alignment boundary.</li>
+</ul>
+<p>Which variant you choose is up to you. Both compute the same result, only using different methods.</p>
+<h3 id="using-it"><a class="zola-anchor" href="index.html#using-it" aria-label="Anchor link for: using-it">🔗</a>Using It</h3>
+<p>To use the bump allocator instead of the <code>linked_list_allocator</code> crate, we need to update the <code>ALLOCATOR</code> static in <code>allocator.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bump::BumpAllocator;
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: Locked&lt;BumpAllocator&gt; = Locked::new(BumpAllocator::new());
+</span></code></pre>
+<p>Here it becomes important that we declared <code>BumpAllocator::new</code> and <code>Locked::new</code> as <a href="https://doc.rust-lang.org/reference/items/functions.html#const-functions"><code>const</code> functions</a>. If they were normal functions, a compilation error would occur because the initialization expression of a <code>static</code> must be evaluable at compile time.</p>
+<p>We don’t need to change the  <code>ALLOCATOR.lock().init(HEAP_START, HEAP_SIZE)</code> call in our <code>init_heap</code> function because the bump allocator provides the same interface as the allocator provided by the <code>linked_list_allocator</code>.</p>
+<p>Now our kernel uses our bump allocator! Everything should still work, including the <a href="../heap-allocation/index.html#adding-a-test"><code>heap_allocation</code> tests</a> that we created in the previous post:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --test heap_allocation
+</span><span>[…]
+</span><span>Running 3 tests
+</span><span>simple_allocation... [ok]
+</span><span>large_vec... [ok]
+</span><span>many_boxes... [ok]
+</span></code></pre>
+<h3 id="discussion"><a class="zola-anchor" href="index.html#discussion" aria-label="Anchor link for: discussion">🔗</a>Discussion</h3>
+<p>The big advantage of bump allocation is that it’s very fast. Compared to other allocator designs (see below) that need to actively look for a fitting memory block and perform various bookkeeping tasks on <code>alloc</code> and <code>dealloc</code>, a bump allocator <a href="https://fitzgeraldnick.com/2019/11/01/always-bump-downwards.html">can be optimized</a> to just a few assembly instructions. This makes bump allocators useful for optimizing the allocation performance, for example when creating a <a href="https://hacks.mozilla.org/2019/03/fast-bump-allocated-virtual-doms-with-rust-and-wasm/">virtual DOM library</a>.</p>
+<p>While a bump allocator is seldom used as the global allocator, the principle of bump allocation is often applied in the form of <a href="https://mgravell.github.io/Pipelines.Sockets.Unofficial/docs/arenas.html">arena allocation</a>, which basically batches individual allocations together to improve performance. An example of an arena allocator for Rust is contained in the <a href="https://docs.rs/toolshed/0.8.1/toolshed/index.html"><code>toolshed</code></a> crate.</p>
+<h4 id="the-drawback-of-a-bump-allocator"><a class="zola-anchor" href="index.html#the-drawback-of-a-bump-allocator" aria-label="Anchor link for: the-drawback-of-a-bump-allocator">🔗</a>The Drawback of a Bump Allocator</h4>
+<p>The main limitation of a bump allocator is that it can only reuse deallocated memory after all allocations have been freed. This means that a single long-lived allocation suffices to prevent memory reuse. We can see this when we add a variation of the <code>many_boxes</code> test:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>many_boxes_long_lived() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> long_lived = Box::new(</span><span style="color:#b5cea8;">1</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>    </span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">HEAP_SIZE </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let</span><span> x = Box::new(i);
+</span><span>        assert_eq!(*x, i);
+</span><span>    }
+</span><span>    assert_eq!(*long_lived, </span><span style="color:#b5cea8;">1</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>Like the <code>many_boxes</code> test, this test creates a large number of allocations to provoke an out-of-memory failure if the allocator does not reuse freed memory. Additionally, the test creates a <code>long_lived</code> allocation, which lives for the whole loop execution.</p>
+<p>When we try to run our new test, we see that it indeed fails:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --test heap_allocation
+</span><span>Running 4 tests
+</span><span>simple_allocation... [ok]
+</span><span>large_vec... [ok]
+</span><span>many_boxes... [ok]
+</span><span>many_boxes_long_lived... [failed]
+</span><span>
+</span><span>Error: panicked at &#39;allocation error: Layout { size_: 8, align_: 8 }&#39;, src/lib.rs:86:5
+</span></code></pre>
+<p>Let’s try to understand why this failure occurs in detail: First, the <code>long_lived</code> allocation is created at the start of the heap, thereby increasing the <code>allocations</code> counter by 1. For each iteration of the loop, a short-lived allocation is created and directly freed again before the next iteration starts. This means that the <code>allocations</code> counter is temporarily increased to 2 at the beginning of an iteration and decreased to 1 at the end of it. The problem now is that the bump allocator can only reuse memory after <em>all</em> allocations have been freed, i.e., when the <code>allocations</code> counter falls to 0. Since this doesn’t happen before the end of the loop, each loop iteration allocates a new region of memory, leading to an out-of-memory error after a number of iterations.</p>
+<h4 id="fixing-the-test"><a class="zola-anchor" href="index.html#fixing-the-test" aria-label="Anchor link for: fixing-the-test">🔗</a>Fixing the Test?</h4>
+<p>There are two potential tricks that we could utilize to fix the test for our bump allocator:</p>
+<ul>
+<li>We could update <code>dealloc</code> to check whether the freed allocation was the last allocation returned by <code>alloc</code> by comparing its end address with the <code>next</code> pointer. In case they’re equal, we can safely reset <code>next</code> back to the start address of the freed allocation. This way, each loop iteration reuses the same memory block.</li>
+<li>We could add an <code>alloc_back</code> method that allocates memory from the <em>end</em> of the heap using an additional <code>next_back</code> field. Then we could manually use this allocation method for all long-lived allocations, thereby separating short-lived and long-lived allocations on the heap. Note that this separation only works if it’s clear beforehand how long each allocation will live. Another drawback of this approach is that manually performing allocations is cumbersome and potentially unsafe.</li>
+</ul>
+<p>While both of these approaches work to fix the test, they are not a general solution since they are only able to reuse memory in very specific cases. The question is: Is there a general solution that reuses <em>all</em> freed memory?</p>
+<h4 id="reusing-all-freed-memory"><a class="zola-anchor" href="index.html#reusing-all-freed-memory" aria-label="Anchor link for: reusing-all-freed-memory">🔗</a>Reusing All Freed Memory?</h4>
+<p>As we learned <a href="../heap-allocation/index.html#dynamic-memory">in the previous post</a>, allocations can live arbitrarily long and can be freed in an arbitrary order. This means that we need to keep track of a potentially unbounded number of non-continuous, unused memory regions, as illustrated by the following example:</p>
+<p><img src="allocation-fragmentation.svg" alt="" /></p>
+<p>The graphic shows the heap over the course of time. At the beginning, the complete heap is unused, and the <code>next</code> address is equal to <code>heap_start</code> (line 1). Then the first allocation occurs (line 2). In line 3, a second memory block is allocated and the first allocation is freed. Many more allocations are added in line 4. Half of them are very short-lived and already get freed in line 5, where another new allocation is also added.</p>
+<p>Line 5 shows the fundamental problem: We have five unused memory regions with different sizes, but the <code>next</code> pointer can only point to the beginning of the last region. While we could store the start addresses and sizes of the other unused memory regions in an array of size 4 for this example, this isn’t a general solution since we could easily create an example with 8, 16, or 1000 unused memory regions.</p>
+<p>Normally, when we have a potentially unbounded number of items, we can just use a heap-allocated collection. This isn’t really possible in our case, since the heap allocator can’t depend on itself (it would cause endless recursion or deadlocks). So we need to find a different solution.</p>
+<h2 id="linked-list-allocator"><a class="zola-anchor" href="index.html#linked-list-allocator" aria-label="Anchor link for: linked-list-allocator">🔗</a>Linked List Allocator</h2>
+<p>A common trick to keep track of an arbitrary number of free memory areas when implementing allocators is to use these areas themselves as backing storage. This utilizes the fact that the regions are still mapped to a virtual address and backed by a physical frame, but the stored information is not needed anymore. By storing the information about the freed region in the region itself, we can keep track of an unbounded number of freed regions without needing additional memory.</p>
+<p>The most common implementation approach is to construct a single linked list in the freed memory, with each node being a freed memory region:</p>
+<p><img src="linked-list-allocation.svg" alt="" /></p>
+<p>Each list node contains two fields: the size of the memory region and a pointer to the next unused memory region. With this approach, we only need a pointer to the first unused region (called <code>head</code>) to keep track of all unused regions, regardless of their number. The resulting data structure is often called a <a href="https://en.wikipedia.org/wiki/Free_list"><em>free list</em></a>.</p>
+<p>As you might guess from the name, this is the technique that the <code>linked_list_allocator</code> crate uses. Allocators that use this technique are also often called <em>pool allocators</em>.</p>
+<h3 id="implementation-1"><a class="zola-anchor" href="index.html#implementation-1" aria-label="Anchor link for: implementation-1">🔗</a>Implementation</h3>
+<p>In the following, we will create our own simple <code>LinkedListAllocator</code> type that uses the above approach for keeping track of freed memory regions. This part of the post isn’t required for future posts, so you can skip the implementation details if you like.</p>
+<h4 id="the-allocator-type"><a class="zola-anchor" href="index.html#the-allocator-type" aria-label="Anchor link for: the-allocator-type">🔗</a>The Allocator Type</h4>
+<p>We start by creating a private <code>ListNode</code> struct in a new <code>allocator::linked_list</code> submodule:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>linked_list;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>ListNode {
+</span><span>    size: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    next: Option&lt;</span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> ListNode&gt;,
+</span><span>}
+</span></code></pre>
+<p>Like in the graphic, a list node has a <code>size</code> field and an optional pointer to the next node, represented by the <code>Option&lt;&amp;'static mut ListNode&gt;</code> type. The <code>&amp;'static mut</code> type semantically describes an <a href="https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html">owned</a> object behind a pointer. Basically, it’s a <a href="https://doc.rust-lang.org/alloc/boxed/index.html"><code>Box</code></a> without a destructor that frees the object at the end of the scope.</p>
+<p>We implement the following set of methods for <code>ListNode</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ListNode {
+</span><span>    </span><span style="color:#569cd6;">const fn </span><span>new(size: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        ListNode { size, next: None }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>start_addr(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>        self </span><span style="color:#569cd6;">as *const Self as usize
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>end_addr(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>        self.start_addr() + self.size
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The type has a simple constructor function named <code>new</code> and methods to calculate the start and end addresses of the represented region. We make the <code>new</code> function a <a href="https://doc.rust-lang.org/reference/items/functions.html#const-functions">const function</a>, which will be required later when constructing a static linked list allocator. Note that any use of mutable references in const functions (including setting the <code>next</code> field to <code>None</code>) is still unstable. In order to get it to compile, we need to add <strong><code>#![feature(const_mut_refs)]</code></strong> to the beginning of our <code>lib.rs</code>.</p>
+<p>With the <code>ListNode</code> struct as a building block, we can now create the <code>LinkedListAllocator</code> struct:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>LinkedListAllocator {
+</span><span>    head: ListNode,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>LinkedListAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Creates an empty LinkedListAllocator.
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new() -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>            head: ListNode::new(</span><span style="color:#b5cea8;">0</span><span>),
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">/// Initialize the allocator with the given heap bounds.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the given
+</span><span>    </span><span style="color:#608b4e;">/// heap bounds are valid and that the heap is unused. This method must be
+</span><span>    </span><span style="color:#608b4e;">/// called only once.
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>init(</span><span style="color:#569cd6;">&amp;mut </span><span>self, heap_start: </span><span style="color:#569cd6;">usize</span><span>, heap_size: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        self.add_free_region(heap_start, heap_size);
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">/// Adds the given memory region to the front of the list.
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>add_free_region(</span><span style="color:#569cd6;">&amp;mut </span><span>self, addr: </span><span style="color:#569cd6;">usize</span><span>, size: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        todo!();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The struct contains a <code>head</code> node that points to the first heap region. We are only interested in the value of the <code>next</code> pointer, so we set the <code>size</code> to 0 in the <code>ListNode::new</code> function. Making <code>head</code> a <code>ListNode</code> instead of just a <code>&amp;'static mut ListNode</code> has the advantage that the implementation of the <code>alloc</code> method will be simpler.</p>
+<p>Like for the bump allocator, the <code>new</code> function doesn’t initialize the allocator with the heap bounds. In addition to maintaining API compatibility, the reason is that the initialization routine requires writing a node to the heap memory, which can only happen at runtime. The <code>new</code> function, however, needs to be a <a href="https://doc.rust-lang.org/reference/items/functions.html#const-functions"><code>const</code> function</a> that can be evaluated at compile time because it will be used for initializing the <code>ALLOCATOR</code> static. For this reason, we again provide a separate, non-constant <code>init</code> method.</p>
+<p>The <code>init</code> method uses an <code>add_free_region</code> method, whose implementation will be shown in a moment. For now, we use the <a href="https://doc.rust-lang.org/core/macro.todo.html"><code>todo!</code></a> macro to provide a placeholder implementation that always panics.</p>
+<h4 id="the-add-free-region-method"><a class="zola-anchor" href="index.html#the-add-free-region-method" aria-label="Anchor link for: the-add-free-region-method">🔗</a>The <code>add_free_region</code> Method</h4>
+<p>The <code>add_free_region</code> method provides the fundamental <em>push</em> operation on the linked list. We currently only call this method from <code>init</code>, but it will also be the central method in our <code>dealloc</code> implementation. Remember, the <code>dealloc</code> method is called when an allocated memory region is freed again. To keep track of this freed memory region, we want to push it to the linked list.</p>
+<p>The implementation of the <code>add_free_region</code> method looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::align_up;
+</span><span style="color:#569cd6;">use </span><span>core::mem;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>LinkedListAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Adds the given memory region to the front of the list.
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>add_free_region(</span><span style="color:#569cd6;">&amp;mut </span><span>self, addr: </span><span style="color:#569cd6;">usize</span><span>, size: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        </span><span style="color:#608b4e;">// ensure that the freed region is capable of holding ListNode
+</span><span>        assert_eq!(align_up(addr, mem::align_of::&lt;ListNode&gt;()), addr);
+</span><span>        assert!(size &gt;= mem::size_of::&lt;ListNode&gt;());
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// create a new list node and append it at the start of the list
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> node = ListNode::new(size);
+</span><span>        node.next = self.head.next.take();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> node_ptr = addr </span><span style="color:#569cd6;">as *mut</span><span> ListNode;
+</span><span>        node_ptr.write(node);
+</span><span>        self.head.next = Some(</span><span style="color:#569cd6;">&amp;mut </span><span>*node_ptr)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The method takes the address and size of a memory region as an argument and adds it to the front of the list. First, it ensures that the given region has the necessary size and alignment for storing a <code>ListNode</code>. Then it creates the node and inserts it into the list through the following steps:</p>
+<p><img src="linked-list-allocator-push.svg" alt="" /></p>
+<p>Step 0 shows the state of the heap before <code>add_free_region</code> is called. In step 1, the method is called with the memory region marked as <code>freed</code> in the graphic. After the initial checks, the method creates a new <code>node</code> on its stack with the size of the freed region. It then uses the <a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.take"><code>Option::take</code></a> method to set the <code>next</code> pointer of the node to the current <code>head</code> pointer, thereby resetting the <code>head</code> pointer to <code>None</code>.</p>
+<p>In step 2, the method writes the newly created <code>node</code> to the beginning of the freed memory region through the <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.write"><code>write</code></a> method. It then points the <code>head</code> pointer to the new node. The resulting pointer structure looks a bit chaotic because the freed region is always inserted at the beginning of the list, but if we follow the pointers, we see that each free region is still reachable from the <code>head</code> pointer.</p>
+<h4 id="the-find-region-method"><a class="zola-anchor" href="index.html#the-find-region-method" aria-label="Anchor link for: the-find-region-method">🔗</a>The <code>find_region</code> Method</h4>
+<p>The second fundamental operation on a linked list is finding an entry and removing it from the list. This is the central operation needed for implementing the <code>alloc</code> method. We implement the operation as a <code>find_region</code> method in the following way:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>LinkedListAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Looks for a free region with the given size and alignment and removes
+</span><span>    </span><span style="color:#608b4e;">/// it from the list.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// Returns a tuple of the list node and the start address of the allocation.
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>find_region(</span><span style="color:#569cd6;">&amp;mut </span><span>self, size: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>)
+</span><span>        -&gt; Option&lt;(</span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> ListNode, </span><span style="color:#569cd6;">usize</span><span>)&gt;
+</span><span>    {
+</span><span>        </span><span style="color:#608b4e;">// reference to current list node, updated for each iteration
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> current = </span><span style="color:#569cd6;">&amp;mut </span><span>self.head;
+</span><span>        </span><span style="color:#608b4e;">// look for a large enough memory region in linked list
+</span><span>        </span><span style="color:#569cd6;">while let </span><span>Some(</span><span style="color:#569cd6;">ref mut</span><span> region) = current.next {
+</span><span>            </span><span style="color:#569cd6;">if let </span><span>Ok(alloc_start) = </span><span style="color:#569cd6;">Self</span><span>::alloc_from_region(</span><span style="color:#569cd6;">&amp;</span><span>region, size, align) {
+</span><span>                </span><span style="color:#608b4e;">// region suitable for allocation -&gt; remove node from list
+</span><span>                </span><span style="color:#569cd6;">let</span><span> next = region.next.take();
+</span><span>                </span><span style="color:#569cd6;">let</span><span> ret = Some((current.next.take().unwrap(), alloc_start));
+</span><span>                current.next = next;
+</span><span>                </span><span style="color:#569cd6;">return</span><span> ret;
+</span><span>            } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>                </span><span style="color:#608b4e;">// region not suitable -&gt; continue with next region
+</span><span>                current = current.next.as_mut().unwrap();
+</span><span>            }
+</span><span>        }
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// no suitable region found
+</span><span>        None
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The method uses a <code>current</code> variable and a <a href="https://doc.rust-lang.org/reference/expressions/loop-expr.html#predicate-pattern-loops"><code>while let</code> loop</a> to iterate over the list elements. At the beginning, <code>current</code> is set to the (dummy) <code>head</code> node. On each iteration, it is then updated to the <code>next</code> field of the current node (in the <code>else</code> block). If the region is suitable for an allocation with the given size and alignment, the region is removed from the list and returned together with the <code>alloc_start</code> address.</p>
+<p>When the <code>current.next</code> pointer becomes <code>None</code>, the loop exits. This means we iterated over the whole list but found no region suitable for an allocation. In that case, we return <code>None</code>. Whether a region is suitable is checked by the <code>alloc_from_region</code> function, whose implementation will be shown in a moment.</p>
+<p>Let’s take a more detailed look at how a suitable region is removed from the list:</p>
+<p><img src="linked-list-allocator-remove-region.svg" alt="" /></p>
+<p>Step 0 shows the situation before any pointer adjustments. The <code>region</code> and <code>current</code> regions and the <code>region.next</code> and <code>current.next</code> pointers are marked in the graphic. In step 1, both the <code>region.next</code> and <code>current.next</code> pointers are reset to <code>None</code> by using the <a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.take"><code>Option::take</code></a> method. The original pointers are stored in local variables called <code>next</code> and <code>ret</code>.</p>
+<p>In step 2, the <code>current.next</code> pointer is set to the local <code>next</code> pointer, which is the original <code>region.next</code> pointer. The effect is that <code>current</code> now directly points to the region after <code>region</code>, so that <code>region</code> is no longer an element of the linked list. The function then returns the pointer to <code>region</code> stored in the local <code>ret</code> variable.</p>
+<h5 id="the-alloc-from-region-function"><a class="zola-anchor" href="index.html#the-alloc-from-region-function" aria-label="Anchor link for: the-alloc-from-region-function">🔗</a>The <code>alloc_from_region</code> Function</h5>
+<p>The <code>alloc_from_region</code> function returns whether a region is suitable for an allocation with a given size and alignment. It is defined like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>LinkedListAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Try to use the given region for an allocation with given size and
+</span><span>    </span><span style="color:#608b4e;">/// alignment.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// Returns the allocation start address on success.
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>alloc_from_region(region: </span><span style="color:#569cd6;">&amp;</span><span>ListNode, size: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>)
+</span><span>        -&gt; Result&lt;</span><span style="color:#569cd6;">usize</span><span>, ()&gt;
+</span><span>    {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_start = align_up(region.start_addr(), align);
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_end = alloc_start.checked_add(size).ok_or(())</span><span style="color:#569cd6;">?</span><span>;
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">if</span><span> alloc_end &gt; region.end_addr() {
+</span><span>            </span><span style="color:#608b4e;">// region too small
+</span><span>            </span><span style="color:#569cd6;">return </span><span>Err(());
+</span><span>        }
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">let</span><span> excess_size = region.end_addr() - alloc_end;
+</span><span>        </span><span style="color:#569cd6;">if</span><span> excess_size &gt; </span><span style="color:#b5cea8;">0 </span><span style="color:#569cd6;">&amp;&amp;</span><span> excess_size &lt; mem::size_of::&lt;ListNode&gt;() {
+</span><span>            </span><span style="color:#608b4e;">// rest of region too small to hold a ListNode (required because the
+</span><span>            </span><span style="color:#608b4e;">// allocation splits the region in a used and a free part)
+</span><span>            </span><span style="color:#569cd6;">return </span><span>Err(());
+</span><span>        }
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// region suitable for allocation
+</span><span>        Ok(alloc_start)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>First, the function calculates the start and end address of a potential allocation, using the <code>align_up</code> function we defined earlier and the <a href="https://doc.rust-lang.org/std/primitive.usize.html#method.checked_add"><code>checked_add</code></a> method. If an overflow occurs or if the end address is behind the end address of the region, the allocation doesn’t fit in the region and we return an error.</p>
+<p>The function performs a less obvious check after that. This check is necessary because most of the time an allocation does not fit a suitable region perfectly, so that a part of the region remains usable after the allocation. This part of the region must store its own <code>ListNode</code> after the allocation, so it must be large enough to do so. The check verifies exactly that: either the allocation fits perfectly (<code>excess_size == 0</code>) or the excess size is large enough to store a <code>ListNode</code>.</p>
+<h4 id="implementing-globalalloc-1"><a class="zola-anchor" href="index.html#implementing-globalalloc-1" aria-label="Anchor link for: implementing-globalalloc-1">🔗</a>Implementing <code>GlobalAlloc</code></h4>
+<p>With the fundamental operations provided by the <code>add_free_region</code> and <code>find_region</code> methods, we can now finally implement the <code>GlobalAlloc</code> trait. As with the bump allocator, we don’t implement the trait directly for the <code>LinkedListAllocator</code> but only for a wrapped <code>Locked&lt;LinkedListAllocator&gt;</code>. The <a href="index.html#a-locked-wrapper-type"><code>Locked</code> wrapper</a> adds interior mutability through a spinlock, which allows us to modify the allocator instance even though the <code>alloc</code> and <code>dealloc</code> methods only take <code>&amp;self</code> references.</p>
+<p>The implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::Locked;
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::{GlobalAlloc, Layout};
+</span><span style="color:#569cd6;">use </span><span>core::ptr;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>Locked&lt;LinkedListAllocator&gt; {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// perform layout adjustments
+</span><span>        </span><span style="color:#569cd6;">let </span><span>(size, align) = LinkedListAllocator::size_align(layout);
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> allocator = self.lock();
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">if let </span><span>Some((region, alloc_start)) = allocator.find_region(size, align) {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> alloc_end = alloc_start.checked_add(size).expect(</span><span style="color:#d69d85;">&quot;overflow&quot;</span><span>);
+</span><span>            </span><span style="color:#569cd6;">let</span><span> excess_size = region.end_addr() - alloc_end;
+</span><span>            </span><span style="color:#569cd6;">if</span><span> excess_size &gt; </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>                allocator.add_free_region(alloc_end, excess_size);
+</span><span>            }
+</span><span>            alloc_start </span><span style="color:#569cd6;">as *mut u8
+</span><span>        } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>            ptr::null_mut()
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>        </span><span style="color:#608b4e;">// perform layout adjustments
+</span><span>        </span><span style="color:#569cd6;">let </span><span>(size, </span><span style="color:#569cd6;">_</span><span>) = LinkedListAllocator::size_align(layout);
+</span><span>
+</span><span>        self.lock().add_free_region(ptr </span><span style="color:#569cd6;">as usize</span><span>, size)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Let’s start with the <code>dealloc</code> method because it is simpler: First, it performs some layout adjustments, which we will explain in a moment. Then, it retrieves a <code>&amp;mut LinkedListAllocator</code> reference by calling the <a href="https://docs.rs/spin/0.5.0/spin/struct.Mutex.html#method.lock"><code>Mutex::lock</code></a> function on the <a href="index.html#a-locked-wrapper-type"><code>Locked</code> wrapper</a>. Lastly, it calls the <code>add_free_region</code> function to add the deallocated region to the free list.</p>
+<p>The <code>alloc</code> method is a bit more complex. It starts with the same layout adjustments and also calls the <a href="https://docs.rs/spin/0.5.0/spin/struct.Mutex.html#method.lock"><code>Mutex::lock</code></a> function to receive a mutable allocator reference. Then it uses the <code>find_region</code> method to find a suitable memory region for the allocation and remove it from the list. If this doesn’t succeed and <code>None</code> is returned, it returns <code>null_mut</code> to signal an error as there is no suitable memory region.</p>
+<p>In the success case, the <code>find_region</code> method returns a tuple of the suitable region (no longer in the list) and the start address of the allocation. Using <code>alloc_start</code>, the allocation size, and the end address of the region, it calculates the end address of the allocation and the excess size again. If the excess size is not null, it calls <code>add_free_region</code> to add the excess size of the memory region back to the free list. Finally, it returns the <code>alloc_start</code> address casted as a <code>*mut u8</code> pointer.</p>
+<h4 id="layout-adjustments"><a class="zola-anchor" href="index.html#layout-adjustments" aria-label="Anchor link for: layout-adjustments">🔗</a>Layout Adjustments</h4>
+<p>So what are these layout adjustments that we make at the beginning of both <code>alloc</code> and <code>dealloc</code>? They ensure that each allocated block is capable of storing a <code>ListNode</code>. This is important because the memory block is going to be deallocated at some point, where we want to write a <code>ListNode</code> to it. If the block is smaller than a <code>ListNode</code> or does not have the correct alignment, undefined behavior can occur.</p>
+<p>The layout adjustments are performed by the <code>size_align</code> function, which is defined like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/linked_list.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>LinkedListAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Adjust the given layout so that the resulting allocated memory
+</span><span>    </span><span style="color:#608b4e;">/// region is also capable of storing a `ListNode`.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// Returns the adjusted size and alignment as a (size, align) tuple.
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>size_align(layout: Layout) -&gt; (</span><span style="color:#569cd6;">usize</span><span>, </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> layout = layout
+</span><span>            .align_to(mem::align_of::&lt;ListNode&gt;())
+</span><span>            .expect(</span><span style="color:#d69d85;">&quot;adjusting alignment failed&quot;</span><span>)
+</span><span>            .pad_to_align();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> size = layout.size().max(mem::size_of::&lt;ListNode&gt;());
+</span><span>        (size, layout.align())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>First, the function uses the <a href="https://doc.rust-lang.org/core/alloc/struct.Layout.html#method.align_to"><code>align_to</code></a> method on the passed <a href="https://doc.rust-lang.org/alloc/alloc/struct.Layout.html"><code>Layout</code></a> to increase the alignment to the alignment of a <code>ListNode</code> if necessary. It then uses the <a href="https://doc.rust-lang.org/core/alloc/struct.Layout.html#method.pad_to_align"><code>pad_to_align</code></a> method to round up the size to a multiple of the alignment to ensure that the start address of the next memory block will have the correct alignment for storing a <code>ListNode</code> too.
+In the second step, it uses the <a href="https://doc.rust-lang.org/std/cmp/trait.Ord.html#method.max"><code>max</code></a> method to enforce a minimum allocation size of <code>mem::size_of::&lt;ListNode&gt;</code>. This way, the <code>dealloc</code> function can safely write a <code>ListNode</code> to the freed memory block.</p>
+<h3 id="using-it-1"><a class="zola-anchor" href="index.html#using-it-1" aria-label="Anchor link for: using-it-1">🔗</a>Using it</h3>
+<p>We can now update the <code>ALLOCATOR</code> static in the <code>allocator</code> module to use our new <code>LinkedListAllocator</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>linked_list::LinkedListAllocator;
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: Locked&lt;LinkedListAllocator&gt; =
+</span><span>    Locked::new(LinkedListAllocator::new());
+</span></code></pre>
+<p>Since the <code>init</code> function behaves the same for the bump and linked list allocators, we don’t need to modify the <code>init</code> call in <code>init_heap</code>.</p>
+<p>When we now run our <code>heap_allocation</code> tests again, we see that all tests pass now, including the <code>many_boxes_long_lived</code> test that failed with the bump allocator:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --test heap_allocation
+</span><span>simple_allocation... [ok]
+</span><span>large_vec... [ok]
+</span><span>many_boxes... [ok]
+</span><span>many_boxes_long_lived... [ok]
+</span></code></pre>
+<p>This shows that our linked list allocator is able to reuse freed memory for subsequent allocations.</p>
+<h3 id="discussion-1"><a class="zola-anchor" href="index.html#discussion-1" aria-label="Anchor link for: discussion-1">🔗</a>Discussion</h3>
+<p>In contrast to the bump allocator, the linked list allocator is much more suitable as a general-purpose allocator, mainly because it is able to directly reuse freed memory. However, it also has some drawbacks. Some of them are only caused by our basic implementation, but there are also fundamental drawbacks of the allocator design itself.</p>
+<h4 id="merging-freed-blocks"><a class="zola-anchor" href="index.html#merging-freed-blocks" aria-label="Anchor link for: merging-freed-blocks">🔗</a>Merging Freed Blocks</h4>
+<p>The main problem with our implementation is that it only splits the heap into smaller blocks but never merges them back together. Consider this example:</p>
+<p><img src="linked-list-allocator-fragmentation-on-dealloc.svg" alt="" /></p>
+<p>In the first line, three allocations are created on the heap. Two of them are freed again in line 2 and the third is freed in line 3. Now the complete heap is unused again, but it is still split into four individual blocks. At this point, a large allocation might not be possible anymore because none of the four blocks is large enough. Over time, the process continues, and the heap is split into smaller and smaller blocks. At some point, the heap is so fragmented that even normal sized allocations will fail.</p>
+<p>To fix this problem, we need to merge adjacent freed blocks back together. For the above example, this would mean the following:</p>
+<p><img src="linked-list-allocator-merge-on-dealloc.svg" alt="" /></p>
+<p>Like before, two of the three allocations are freed in line <code>2</code>. Instead of keeping the fragmented heap, we now perform an additional step in line <code>2a</code> to merge the two rightmost blocks back together. In line <code>3</code>, the third allocation is freed (like before), resulting in a completely unused heap represented by three distinct blocks. In an additional merging step in line <code>3a</code>, we then merge the three adjacent blocks back together.</p>
+<p>The <code>linked_list_allocator</code> crate implements this merging strategy in the following way: Instead of inserting freed memory blocks at the beginning of the linked list on <code>deallocate</code>, it always keeps the list sorted by start address. This way, merging can be performed directly on the <code>deallocate</code> call by examining the addresses and sizes of the two neighboring blocks in the list. Of course, the deallocation operation is slower this way, but it prevents the heap fragmentation we saw above.</p>
+<h4 id="performance"><a class="zola-anchor" href="index.html#performance" aria-label="Anchor link for: performance">🔗</a>Performance</h4>
+<p>As we learned above, the bump allocator is extremely fast and can be optimized to just a few assembly operations. The linked list allocator performs much worse in this category. The problem is that an allocation request might need to traverse the complete linked list until it finds a suitable block.</p>
+<p>Since the list length depends on the number of unused memory blocks, the performance can vary extremely for different programs. A program that only creates a couple of allocations will experience relatively fast allocation performance. For a program that fragments the heap with many allocations, however, the allocation performance will be very bad because the linked list will be very long and mostly contain very small blocks.</p>
+<p>It’s worth noting that this performance issue isn’t a problem caused by our basic implementation but a fundamental problem of the linked list approach. Since allocation performance can be very important for kernel-level code, we explore a third allocator design in the following that trades improved performance for reduced memory utilization.</p>
+<h2 id="fixed-size-block-allocator"><a class="zola-anchor" href="index.html#fixed-size-block-allocator" aria-label="Anchor link for: fixed-size-block-allocator">🔗</a>Fixed-Size Block Allocator</h2>
+<p>In the following, we present an allocator design that uses fixed-size memory blocks for fulfilling allocation requests. This way, the allocator often returns blocks that are larger than needed for allocations, which results in wasted memory due to <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)#Internal_fragmentation">internal fragmentation</a>. On the other hand, it drastically reduces the time required to find a suitable block (compared to the linked list allocator), resulting in much better allocation performance.</p>
+<h3 id="introduction-1"><a class="zola-anchor" href="index.html#introduction-1" aria-label="Anchor link for: introduction-1">🔗</a>Introduction</h3>
+<p>The idea behind a <em>fixed-size block allocator</em> is the following: Instead of allocating exactly as much memory as requested, we define a small number of block sizes and round up each allocation to the next block size. For example, with block sizes of 16, 64, and 512 bytes, an allocation of 4 bytes would return a 16-byte block, an allocation of 48 bytes a 64-byte block, and an allocation of 128 bytes a 512-byte block.</p>
+<p>Like the linked list allocator, we keep track of the unused memory by creating a linked list in the unused memory. However, instead of using a single list with different block sizes, we create a separate list for each size class. Each list then only stores blocks of a single size. For example, with block sizes of 16, 64, and 512, there would be three separate linked lists in memory:</p>
+<p><img src="fixed-size-block-example.svg" alt="" />.</p>
+<p>Instead of a single <code>head</code> pointer, we have the three head pointers <code>head_16</code>, <code>head_64</code>, and <code>head_512</code> that each point to the first unused block of the corresponding size. All nodes in a single list have the same size. For example, the list started by the <code>head_16</code> pointer only contains 16-byte blocks. This means that we no longer need to store the size in each list node since it is already specified by the name of the head pointer.</p>
+<p>Since each element in a list has the same size, each list element is equally suitable for an allocation request. This means that we can very efficiently perform an allocation using the following steps:</p>
+<ul>
+<li>Round up the requested allocation size to the next block size. For example, when an allocation of 12 bytes is requested, we would choose the block size of 16 in the above example.</li>
+<li>Retrieve the head pointer for the list, e.g., for block size 16, we need to use <code>head_16</code>.</li>
+<li>Remove the first block from the list and return it.</li>
+</ul>
+<p>Most notably, we can always return the first element of the list and no longer need to traverse the full list. Thus, allocations are much faster than with the linked list allocator.</p>
+<h4 id="block-sizes-and-wasted-memory"><a class="zola-anchor" href="index.html#block-sizes-and-wasted-memory" aria-label="Anchor link for: block-sizes-and-wasted-memory">🔗</a>Block Sizes and Wasted Memory</h4>
+<p>Depending on the block sizes, we lose a lot of memory by rounding up. For example, when a 512-byte block is returned for a 128-byte allocation, three-quarters of the allocated memory is unused. By defining reasonable block sizes, it is possible to limit the amount of wasted memory to some degree. For example, when using the powers of 2 (4, 8, 16, 32, 64, 128, …) as block sizes, we can limit the memory waste to half of the allocation size in the worst case and a quarter of the allocation size in the average case.</p>
+<p>It is also common to optimize block sizes based on common allocation sizes in a program. For example, we could additionally add block size 24 to improve memory usage for programs that often perform allocations of 24 bytes. This way, the amount of wasted memory can often be reduced without losing the performance benefits.</p>
+<h4 id="deallocation"><a class="zola-anchor" href="index.html#deallocation" aria-label="Anchor link for: deallocation">🔗</a>Deallocation</h4>
+<p>Much like allocation, deallocation is also very performant. It involves the following steps:</p>
+<ul>
+<li>Round up the freed allocation size to the next block size. This is required since the compiler only passes the requested allocation size to <code>dealloc</code>, not the size of the block that was returned by <code>alloc</code>. By using the same size-adjustment function in both <code>alloc</code> and <code>dealloc</code>, we can make sure that we always free the correct amount of memory.</li>
+<li>Retrieve the head pointer for the list.</li>
+<li>Add the freed block to the front of the list by updating the head pointer.</li>
+</ul>
+<p>Most notably, no traversal of the list is required for deallocation either. This means that the time required for a <code>dealloc</code> call stays the same regardless of the list length.</p>
+<h4 id="fallback-allocator"><a class="zola-anchor" href="index.html#fallback-allocator" aria-label="Anchor link for: fallback-allocator">🔗</a>Fallback Allocator</h4>
+<p>Given that large allocations (&gt;2 KB) are often rare, especially in operating system kernels, it might make sense to fall back to a different allocator for these allocations. For example, we could fall back to a linked list allocator for allocations greater than 2048 bytes in order to reduce memory waste. Since only very few allocations of that size are expected, the linked list would stay small and the (de)allocations would still be reasonably fast.</p>
+<h4 id="creating-new-blocks"><a class="zola-anchor" href="index.html#creating-new-blocks" aria-label="Anchor link for: creating-new-blocks">🔗</a>Creating new Blocks</h4>
+<p>Above, we always assumed that there are always enough blocks of a specific size in the list to fulfill all allocation requests. However, at some point, the linked list for a given block size becomes empty. At this point, there are two ways we can create new unused blocks of a specific size to fulfill an allocation request:</p>
+<ul>
+<li>Allocate a new block from the fallback allocator (if there is one).</li>
+<li>Split a larger block from a different list. This best works if block sizes are powers of two. For example, a 32-byte block can be split into two 16-byte blocks.</li>
+</ul>
+<p>For our implementation, we will allocate new blocks from the fallback allocator since the implementation is much simpler.</p>
+<h3 id="implementation-2"><a class="zola-anchor" href="index.html#implementation-2" aria-label="Anchor link for: implementation-2">🔗</a>Implementation</h3>
+<p>Now that we know how a fixed-size block allocator works, we can start our implementation. We won’t depend on the implementation of the linked list allocator created in the previous section, so you can follow this part even if you skipped the linked list allocator implementation.</p>
+<h4 id="list-node"><a class="zola-anchor" href="index.html#list-node" aria-label="Anchor link for: list-node">🔗</a>List Node</h4>
+<p>We start our implementation by creating a <code>ListNode</code> type in a new <code>allocator::fixed_size_block</code> module:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>fixed_size_block;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>ListNode {
+</span><span>    next: Option&lt;</span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> ListNode&gt;,
+</span><span>}
+</span></code></pre>
+<p>This type is similar to the <code>ListNode</code> type of our <a href="index.html#the-allocator-type">linked list allocator implementation</a>, with the difference that we don’t have a <code>size</code> field. It isn’t needed because every block in a list has the same size with the fixed-size block allocator design.</p>
+<h4 id="block-sizes"><a class="zola-anchor" href="index.html#block-sizes" aria-label="Anchor link for: block-sizes">🔗</a>Block Sizes</h4>
+<p>Next, we define a constant <code>BLOCK_SIZES</code> slice with the block sizes used for our implementation:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#608b4e;">/// The block sizes to use.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// The sizes must each be power of 2 because they are also used as
+</span><span style="color:#608b4e;">/// the block alignment (alignments must be always powers of 2).
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">usize</span><span>] = </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#b5cea8;">8</span><span>, </span><span style="color:#b5cea8;">16</span><span>, </span><span style="color:#b5cea8;">32</span><span>, </span><span style="color:#b5cea8;">64</span><span>, </span><span style="color:#b5cea8;">128</span><span>, </span><span style="color:#b5cea8;">256</span><span>, </span><span style="color:#b5cea8;">512</span><span>, </span><span style="color:#b5cea8;">1024</span><span>, </span><span style="color:#b5cea8;">2048</span><span>];
+</span></code></pre>
+<p>As block sizes, we use powers of 2, starting from 8 up to 2048. We don’t define any block sizes smaller than 8 because each block must be capable of storing a 64-bit pointer to the next block when freed. For allocations greater than 2048 bytes, we will fall back to a linked list allocator.</p>
+<p>To simplify the implementation, we define the size of a block as its required alignment in memory. So a 16-byte block is always aligned on a 16-byte boundary and a 512-byte block is aligned on a 512-byte boundary. Since alignments always need to be powers of 2, this rules out any other block sizes. If we need block sizes that are not powers of 2 in the future, we can still adjust our implementation for this (e.g., by defining a second <code>BLOCK_ALIGNMENTS</code> array).</p>
+<h4 id="the-allocator-type-1"><a class="zola-anchor" href="index.html#the-allocator-type-1" aria-label="Anchor link for: the-allocator-type-1">🔗</a>The Allocator Type</h4>
+<p>Using the <code>ListNode</code> type and the <code>BLOCK_SIZES</code> slice, we can now define our allocator type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>FixedSizeBlockAllocator {
+</span><span>    list_heads: [Option&lt;</span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> ListNode&gt;; BLOCK_SIZES.len()],
+</span><span>    fallback_allocator: linked_list_allocator::Heap,
+</span><span>}
+</span></code></pre>
+<p>The <code>list_heads</code> field is an array of <code>head</code> pointers, one for each block size. This is implemented by using the <code>len()</code> of the <code>BLOCK_SIZES</code> slice as the array length. As a fallback allocator for allocations larger than the largest block size, we use the allocator provided by the <code>linked_list_allocator</code>. We could also use the <code>LinkedListAllocator</code> we implemented ourselves instead, but it has the disadvantage that it does not <a href="index.html#merging-freed-blocks">merge freed blocks</a>.</p>
+<p>For constructing a <code>FixedSizeBlockAllocator</code>, we provide the same <code>new</code> and <code>init</code> functions that we implemented for the other allocator types too:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>FixedSizeBlockAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Creates an empty FixedSizeBlockAllocator.
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new() -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        </span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">EMPTY</span><span>: Option&lt;</span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> ListNode&gt; = None;
+</span><span>        FixedSizeBlockAllocator {
+</span><span>            list_heads: [</span><span style="color:#b4cea8;">EMPTY</span><span>; </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>.len()],
+</span><span>            fallback_allocator: linked_list_allocator::Heap::empty(),
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">/// Initialize the allocator with the given heap bounds.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the given
+</span><span>    </span><span style="color:#608b4e;">/// heap bounds are valid and that the heap is unused. This method must be
+</span><span>    </span><span style="color:#608b4e;">/// called only once.
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>init(</span><span style="color:#569cd6;">&amp;mut </span><span>self, heap_start: </span><span style="color:#569cd6;">usize</span><span>, heap_size: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        self.fallback_allocator.init(heap_start, heap_size);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>new</code> function just initializes the <code>list_heads</code> array with empty nodes and creates an <a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html#method.empty"><code>empty</code></a> linked list allocator as <code>fallback_allocator</code>. The <code>EMPTY</code> constant is needed to tell the Rust compiler that we want to initialize the array with a constant value. Initializing the array directly as <code>[None; BLOCK_SIZES.len()]</code> does not work, because then the compiler requires <code>Option&lt;&amp;'static mut ListNode&gt;</code> to implement the <code>Copy</code> trait, which it does not. This is a current limitation of the Rust compiler, which might go away in the future.</p>
+<p>If you haven’t done so already for the <code>LinkedListAllocator</code> implementation, you also need to add <strong><code>#![feature(const_mut_refs)]</code></strong> to the top of your <code>lib.rs</code>. The reason is that any use of mutable reference types in const functions is still unstable, including the <code>Option&lt;&amp;'static mut ListNode&gt;</code> array element type of the <code>list_heads</code> field (even if we set it to <code>None</code>).</p>
+<p>The unsafe <code>init</code> function only calls the <a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html#method.init"><code>init</code></a> function of the <code>fallback_allocator</code> without doing any additional initialization of the <code>list_heads</code> array. Instead, we will initialize the lists lazily on <code>alloc</code> and <code>dealloc</code> calls.</p>
+<p>For convenience, we also create a private <code>fallback_alloc</code> method that allocates using the <code>fallback_allocator</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::Layout;
+</span><span style="color:#569cd6;">use </span><span>core::ptr;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>FixedSizeBlockAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Allocates using the fallback allocator.
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>fallback_alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        </span><span style="color:#569cd6;">match </span><span>self.fallback_allocator.allocate_first_fit(layout) {
+</span><span>            Ok(ptr) </span><span style="color:#569cd6;">=&gt;</span><span> ptr.as_ptr(),
+</span><span>            Err(</span><span style="color:#569cd6;">_</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>ptr::null_mut(),
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html"><code>Heap</code></a> type of the <code>linked_list_allocator</code> crate does not implement <a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html"><code>GlobalAlloc</code></a> (as it’s <a href="index.html#globalalloc-and-mutability">not possible without locking</a>). Instead, it provides an <a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html#method.allocate_first_fit"><code>allocate_first_fit</code></a> method that has a slightly different interface. Instead of returning a <code>*mut u8</code> and using a null pointer to signal an error, it returns a <code>Result&lt;NonNull&lt;u8&gt;, ()&gt;</code>. The <a href="https://doc.rust-lang.org/nightly/core/ptr/struct.NonNull.html"><code>NonNull</code></a> type is an abstraction for a raw pointer that is guaranteed to not be a null pointer. By mapping the <code>Ok</code> case to the <a href="https://doc.rust-lang.org/nightly/core/ptr/struct.NonNull.html#method.as_ptr"><code>NonNull::as_ptr</code></a> method and the <code>Err</code> case to a null pointer, we can easily translate this back to a <code>*mut u8</code> type.</p>
+<h4 id="calculating-the-list-index"><a class="zola-anchor" href="index.html#calculating-the-list-index" aria-label="Anchor link for: calculating-the-list-index">🔗</a>Calculating the List Index</h4>
+<p>Before we implement the <code>GlobalAlloc</code> trait, we define a <code>list_index</code> helper function that returns the lowest possible block size for a given <a href="https://doc.rust-lang.org/alloc/alloc/struct.Layout.html"><code>Layout</code></a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Choose an appropriate block size for the given layout.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// Returns an index into the `BLOCK_SIZES` array.
+</span><span style="color:#569cd6;">fn </span><span>list_index(layout: </span><span style="color:#569cd6;">&amp;</span><span>Layout) -&gt; Option&lt;</span><span style="color:#569cd6;">usize</span><span>&gt; {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> required_block_size = layout.size().max(layout.align());
+</span><span>    </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>.iter().position(|</span><span style="color:#569cd6;">&amp;</span><span>s| s &gt;= required_block_size)
+</span><span>}
+</span></code></pre>
+<p>The block must have at least the size and alignment required by the given <code>Layout</code>. Since we defined that the block size is also its alignment, this means that the <code>required_block_size</code> is the <a href="https://doc.rust-lang.org/core/cmp/trait.Ord.html#method.max">maximum</a> of the layout’s <a href="https://doc.rust-lang.org/core/alloc/struct.Layout.html#method.size"><code>size()</code></a> and <a href="https://doc.rust-lang.org/core/alloc/struct.Layout.html#method.align"><code>align()</code></a> attributes. To find the next-larger block in the <code>BLOCK_SIZES</code> slice, we first use the <a href="https://doc.rust-lang.org/std/primitive.slice.html#method.iter"><code>iter()</code></a> method to get an iterator and then the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.position"><code>position()</code></a> method to find the index of the first block that is at least as large as the <code>required_block_size</code>.</p>
+<p>Note that we don’t return the block size itself, but the index into the <code>BLOCK_SIZES</code> slice. The reason is that we want to use the returned index as an index into the <code>list_heads</code> array.</p>
+<h4 id="implementing-globalalloc-2"><a class="zola-anchor" href="index.html#implementing-globalalloc-2" aria-label="Anchor link for: implementing-globalalloc-2">🔗</a>Implementing <code>GlobalAlloc</code></h4>
+<p>The last step is to implement the <code>GlobalAlloc</code> trait:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::Locked;
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::GlobalAlloc;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>Locked&lt;FixedSizeBlockAllocator&gt; {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        todo!();
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>        todo!();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Like for the other allocators, we don’t implement the <code>GlobalAlloc</code> trait directly for our allocator type, but use the <a href="index.html#a-locked-wrapper-type"><code>Locked</code> wrapper</a> to add synchronized interior mutability. Since the <code>alloc</code> and <code>dealloc</code> implementations are relatively large, we introduce them one by one in the following.</p>
+<h5 id="alloc"><a class="zola-anchor" href="index.html#alloc" aria-label="Anchor link for: alloc">🔗</a><code>alloc</code></h5>
+<p>The implementation of the <code>alloc</code> method looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl` block in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> allocator = self.lock();
+</span><span>    </span><span style="color:#569cd6;">match </span><span>list_index(</span><span style="color:#569cd6;">&amp;</span><span>layout) {
+</span><span>        Some(index) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>            </span><span style="color:#569cd6;">match</span><span> allocator.list_heads[index].take() {
+</span><span>                Some(node) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                    allocator.list_heads[index] = node.next.take();
+</span><span>                    node </span><span style="color:#569cd6;">as *mut</span><span> ListNode </span><span style="color:#569cd6;">as *mut u8
+</span><span>                }
+</span><span>                None </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                    </span><span style="color:#608b4e;">// no block exists in list =&gt; allocate new block
+</span><span>                    </span><span style="color:#569cd6;">let</span><span> block_size = </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>[index];
+</span><span>                    </span><span style="color:#608b4e;">// only works if all block sizes are a power of 2
+</span><span>                    </span><span style="color:#569cd6;">let</span><span> block_align = block_size;
+</span><span>                    </span><span style="color:#569cd6;">let</span><span> layout = Layout::from_size_align(block_size, block_align)
+</span><span>                        .unwrap();
+</span><span>                    allocator.fallback_alloc(layout)
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>        None </span><span style="color:#569cd6;">=&gt;</span><span> allocator.fallback_alloc(layout),
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Let’s go through it step by step:</p>
+<p>First, we use the <code>Locked::lock</code> method to get a mutable reference to the wrapped allocator instance. Next, we call the <code>list_index</code> function we just defined to calculate the appropriate block size for the given layout and get the corresponding index into the <code>list_heads</code> array. If this index is <code>None</code>, no block size fits for the allocation, therefore we use the <code>fallback_allocator</code> using the <code>fallback_alloc</code> function.</p>
+<p>If the list index is <code>Some</code>, we try to remove the first node in the corresponding list started by <code>list_heads[index]</code> using the <a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.take"><code>Option::take</code></a> method. If the list is not empty, we enter the <code>Some(node)</code> branch of the <code>match</code> statement, where we point the head pointer of the list to the successor of the popped <code>node</code> (by using <a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.take"><code>take</code></a> again). Finally, we return the popped <code>node</code> pointer as a <code>*mut u8</code>.</p>
+<p>If the list head is <code>None</code>, it indicates that the list of blocks is empty. This means that we need to construct a new block as <a href="index.html#creating-new-blocks">described above</a>. For that, we first get the current block size from the <code>BLOCK_SIZES</code> slice and use it as both the size and the alignment for the new block. Then we create a new <code>Layout</code> from it and call the <code>fallback_alloc</code> method to perform the allocation. The reason for adjusting the layout and alignment is that the block will be added to the block list on deallocation.</p>
+<h4 id="dealloc"><a class="zola-anchor" href="index.html#dealloc" aria-label="Anchor link for: dealloc">🔗</a><code>dealloc</code></h4>
+<p>The implementation of the <code>dealloc</code> method looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator/fixed_size_block.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::{mem, ptr::NonNull};
+</span><span>
+</span><span style="color:#608b4e;">// inside the `unsafe impl GlobalAlloc` block
+</span><span>
+</span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> allocator = self.lock();
+</span><span>    </span><span style="color:#569cd6;">match </span><span>list_index(</span><span style="color:#569cd6;">&amp;</span><span>layout) {
+</span><span>        Some(index) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>            </span><span style="color:#569cd6;">let</span><span> new_node = ListNode {
+</span><span>                next: allocator.list_heads[index].take(),
+</span><span>            };
+</span><span>            </span><span style="color:#608b4e;">// verify that block has size and alignment required for storing node
+</span><span>            assert!(mem::size_of::&lt;ListNode&gt;() &lt;= </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>[index]);
+</span><span>            assert!(mem::align_of::&lt;ListNode&gt;() &lt;= </span><span style="color:#b4cea8;">BLOCK_SIZES</span><span>[index]);
+</span><span>            </span><span style="color:#569cd6;">let</span><span> new_node_ptr = ptr </span><span style="color:#569cd6;">as *mut</span><span> ListNode;
+</span><span>            new_node_ptr.write(new_node);
+</span><span>            allocator.list_heads[index] = Some(</span><span style="color:#569cd6;">&amp;mut </span><span>*new_node_ptr);
+</span><span>        }
+</span><span>        None </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>            </span><span style="color:#569cd6;">let</span><span> ptr = NonNull::new(ptr).unwrap();
+</span><span>            allocator.fallback_allocator.deallocate(ptr, layout);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Like in <code>alloc</code>, we first use the <code>lock</code> method to get a mutable allocator reference and then the <code>list_index</code> function to get the block list corresponding to the given <code>Layout</code>. If the index is <code>None</code>, no fitting block size exists in <code>BLOCK_SIZES</code>, which indicates that the allocation was created by the fallback allocator. Therefore, we use its <a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html#method.deallocate"><code>deallocate</code></a> to free the memory again. The method expects a <a href="https://doc.rust-lang.org/nightly/core/ptr/struct.NonNull.html"><code>NonNull</code></a> instead of a <code>*mut u8</code>, so we need to convert the pointer first. (The <code>unwrap</code> call only fails when the pointer is null, which should never happen when the compiler calls <code>dealloc</code>.)</p>
+<p>If <code>list_index</code> returns a block index, we need to add the freed memory block to the list. For that, we first create a new <code>ListNode</code> that points to the current list head (by using <a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.take"><code>Option::take</code></a> again). Before we write the new node into the freed memory block, we first assert that the current block size specified by <code>index</code> has the required size and alignment for storing a <code>ListNode</code>. Then we perform the write by converting the given <code>*mut u8</code> pointer to a <code>*mut ListNode</code> pointer and then calling the unsafe <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.write"><code>write</code></a> method on it. The last step is to set the head pointer of the list, which is currently <code>None</code> since we called <code>take</code> on it, to our newly written <code>ListNode</code>. For that, we convert the raw <code>new_node_ptr</code> to a mutable reference.</p>
+<p>There are a few things worth noting:</p>
+<ul>
+<li>We don’t differentiate between blocks allocated from a block list and blocks allocated from the fallback allocator. This means that new blocks created in <code>alloc</code> are added to the block list on <code>dealloc</code>, thereby increasing the number of blocks of that size.</li>
+<li>The <code>alloc</code> method is the only place where new blocks are created in our implementation. This means that we initially start with empty block lists and only fill these lists lazily when allocations of their block size are performed.</li>
+<li>We don’t need <code>unsafe</code> blocks in <code>alloc</code> and <code>dealloc</code>, even though we perform some <code>unsafe</code> operations. The reason is that Rust currently treats the complete body of unsafe functions as one large <code>unsafe</code> block. Since using explicit <code>unsafe</code> blocks has the advantage that it’s obvious which operations are unsafe and which are not, there is a <a href="https://github.com/rust-lang/rfcs/pull/2585">proposed RFC</a> to change this behavior.</li>
+</ul>
+<h3 id="using-it-2"><a class="zola-anchor" href="index.html#using-it-2" aria-label="Anchor link for: using-it-2">🔗</a>Using it</h3>
+<p>To use our new <code>FixedSizeBlockAllocator</code>, we need to update the <code>ALLOCATOR</code> static in the <code>allocator</code> module:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>fixed_size_block::FixedSizeBlockAllocator;
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: Locked&lt;FixedSizeBlockAllocator&gt; = Locked::new(
+</span><span>    FixedSizeBlockAllocator::new());
+</span></code></pre>
+<p>Since the <code>init</code> function behaves the same for all allocators we implemented, we don’t need to modify the <code>init</code> call in <code>init_heap</code>.</p>
+<p>When we now run our <code>heap_allocation</code> tests again, all tests should still pass:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --test heap_allocation
+</span><span>simple_allocation... [ok]
+</span><span>large_vec... [ok]
+</span><span>many_boxes... [ok]
+</span><span>many_boxes_long_lived... [ok]
+</span></code></pre>
+<p>Our new allocator seems to work!</p>
+<h3 id="discussion-2"><a class="zola-anchor" href="index.html#discussion-2" aria-label="Anchor link for: discussion-2">🔗</a>Discussion</h3>
+<p>While the fixed-size block approach has much better performance than the linked list approach, it wastes up to half of the memory when using powers of 2 as block sizes. Whether this tradeoff is worth it heavily depends on the application type. For an operating system kernel, where performance is critical, the fixed-size block approach seems to be the better choice.</p>
+<p>On the implementation side, there are various things that we could improve in our current implementation:</p>
+<ul>
+<li>Instead of only allocating blocks lazily using the fallback allocator, it might be better to pre-fill the lists to improve the performance of initial allocations.</li>
+<li>To simplify the implementation, we only allowed block sizes that are powers of 2 so that we could also use them as the block alignment. By storing (or calculating) the alignment in a different way, we could also allow arbitrary other block sizes. This way, we could add more block sizes, e.g., for common allocation sizes, in order to minimize the wasted memory.</li>
+<li>We currently only create new blocks, but never free them again. This results in fragmentation and might eventually result in allocation failure for large allocations. It might make sense to enforce a maximum list length for each block size. When the maximum length is reached, subsequent deallocations are freed using the fallback allocator instead of being added to the list.</li>
+<li>Instead of falling back to a linked list allocator, we could have a special allocator for allocations greater than 4 KiB. The idea is to utilize <a href="../paging-introduction/index.html">paging</a>, which operates on 4 KiB pages, to map a continuous block of virtual memory to non-continuous physical frames. This way, fragmentation of unused memory is no longer a problem for large allocations.</li>
+<li>With such a page allocator, it might make sense to add block sizes up to 4 KiB and drop the linked list allocator completely. The main advantages of this would be reduced fragmentation and improved performance predictability, i.e., better worst-case performance.</li>
+</ul>
+<p>It’s important to note that the implementation improvements outlined above are only suggestions. Allocators used in operating system kernels are typically highly optimized for the specific workload of the kernel, which is only possible through extensive profiling.</p>
+<h3 id="variations"><a class="zola-anchor" href="index.html#variations" aria-label="Anchor link for: variations">🔗</a>Variations</h3>
+<p>There are also many variations of the fixed-size block allocator design. Two popular examples are the <em>slab allocator</em> and the <em>buddy allocator</em>, which are also used in popular kernels such as Linux. In the following, we give a short introduction to these two designs.</p>
+<h4 id="slab-allocator"><a class="zola-anchor" href="index.html#slab-allocator" aria-label="Anchor link for: slab-allocator">🔗</a>Slab Allocator</h4>
+<p>The idea behind a <a href="https://en.wikipedia.org/wiki/Slab_allocation">slab allocator</a> is to use block sizes that directly correspond to selected types in the kernel. This way, allocations of those types fit a block size exactly and no memory is wasted. Sometimes, it might be even possible to preinitialize type instances in unused blocks to further improve performance.</p>
+<p>Slab allocation is often combined with other allocators. For example, it can be used together with a fixed-size block allocator to further split an allocated block in order to reduce memory waste. It is also often used to implement an <a href="https://en.wikipedia.org/wiki/Object_pool_pattern">object pool pattern</a> on top of a single large allocation.</p>
+<h4 id="buddy-allocator"><a class="zola-anchor" href="index.html#buddy-allocator" aria-label="Anchor link for: buddy-allocator">🔗</a>Buddy Allocator</h4>
+<p>Instead of using a linked list to manage freed blocks, the <a href="https://en.wikipedia.org/wiki/Buddy_memory_allocation">buddy allocator</a> design uses a <a href="https://en.wikipedia.org/wiki/Binary_tree">binary tree</a> data structure together with power-of-2 block sizes. When a new block of a certain size is required, it splits a larger sized block into two halves, thereby creating two child nodes in the tree. Whenever a block is freed again, its neighbor block in the tree is analyzed. If the neighbor is also free, the two blocks are joined back together to form a block of twice the size.</p>
+<p>The advantage of this merge process is that <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)#External_fragmentation">external fragmentation</a> is reduced so that small freed blocks can be reused for a large allocation. It also does not use a fallback allocator, so the performance is more predictable. The biggest drawback is that only power-of-2 block sizes are possible, which might result in a large amount of wasted memory due to <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)#Internal_fragmentation">internal fragmentation</a>. For this reason, buddy allocators are often combined with a slab allocator to further split an allocated block into multiple smaller blocks.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>This post gave an overview of different allocator designs. We learned how to implement a basic <a href="index.html#bump-allocator">bump allocator</a>, which hands out memory linearly by increasing a single <code>next</code> pointer. While bump allocation is very fast, it can only reuse memory after all allocations have been freed. For this reason, it is rarely used as a global allocator.</p>
+<p>Next, we created a <a href="index.html#linked-list-allocator">linked list allocator</a> that uses the freed memory blocks itself to create a linked list, the so-called <a href="https://en.wikipedia.org/wiki/Free_list">free list</a>. This list makes it possible to store an arbitrary number of freed blocks of different sizes. While no memory waste occurs, the approach suffers from poor performance because an allocation request might require a complete traversal of the list. Our implementation also suffers from <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)#External_fragmentation">external fragmentation</a> because it does not merge adjacent freed blocks back together.</p>
+<p>To fix the performance problems of the linked list approach, we created a <a href="index.html#fixed-size-block-allocator">fixed-size block allocator</a> that predefines a fixed set of block sizes. For each block size, a separate <a href="https://en.wikipedia.org/wiki/Free_list">free list</a> exists so that allocations and deallocations only need to insert/pop at the front of the list and are thus very fast. Since each allocation is rounded up to the next larger block size, some memory is wasted due to <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)#Internal_fragmentation">internal fragmentation</a>.</p>
+<p>There are many more allocator designs with different tradeoffs. <a href="index.html#slab-allocator">Slab allocation</a> works well to optimize the allocation of common fixed-size structures, but is not applicable in all situations. <a href="index.html#buddy-allocator">Buddy allocation</a> uses a binary tree to merge freed blocks back together, but wastes a large amount of memory because it only supports power-of-2 block sizes. It’s also important to remember that each kernel implementation has a unique workload, so there is no “best” allocator design that fits all cases.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>With this post, we conclude our memory management implementation for now. Next, we will start exploring <a href="https://en.wikipedia.org/wiki/Computer_multitasking"><em>multitasking</em></a>, starting with cooperative multitasking in the form of <a href="https://rust-lang.github.io/async-book/01_getting_started/04_async_await_primer.html"><em>async/await</em></a>. In subsequent posts, we will then explore <a href="https://en.wikipedia.org/wiki/Thread_(computing)"><em>threads</em></a>, <a href="https://en.wikipedia.org/wiki/Multiprocessing"><em>multiprocessing</em></a>, and <a href="https://en.wikipedia.org/wiki/Process_(computing)"><em>processes</em></a>.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../heap-allocation/index.html">&laquo; Heap Allocation</a>
+        
+        
+            <a class="next" href="../async-await/index.html">Async&#x2F;Await &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Allocator%20Designs%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Allocator Designs"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Allocator%20Designs%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

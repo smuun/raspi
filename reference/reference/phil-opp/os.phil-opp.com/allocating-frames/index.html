@@ -1,0 +1,680 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Allocating Frames | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Allocating Frames</h1>
+    <time datetime="2015-11-15" class="post-date">
+        Nov 15, 2015
+        
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#preparation">Preparation</a>
+                
+            </li><li>
+                <a href="index.html#the-multiboot-information-structure">The Multiboot Information Structure</a>
+                <ol>
+                    <li>
+                        <a href="index.html#available-memory">Available Memory</a>
+                    </li><li>
+                        <a href="index.html#handling-panics">Handling Panics</a>
+                    </li><li>
+                        <a href="index.html#kernel-elf-sections">Kernel ELF Sections</a>
+                    </li><li>
+                        <a href="index.html#start-and-end-of-kernel">Start and End of Kernel</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#a-frame-allocator">A frame allocator</a>
+                <ol>
+                    <li>
+                        <a href="index.html#a-memory-module">A Memory Module</a>
+                    </li><li>
+                        <a href="index.html#the-allocator">The Allocator</a>
+                    </li><li>
+                        <a href="index.html#testing-it">Testing it</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#conclusion">Conclusion</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li><li>
+                <a href="index.html#recommended-posts">Recommended Posts</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In this post we create an allocator that provides free physical frames for a future paging module. To get the required information about available and used memory we use the Multiboot information structure. Additionally, we improve the <code>panic</code> handler to print the corresponding message and source line.</p>
+<span id="continue-reading"></span>
+<p>The full source code is available on <a href="https://github.com/phil-opp/blog_os/tree/first_edition_post_5">GitHub</a>. Feel free to open issues there if you have any problems or improvements. You can also leave a comment at the bottom.</p>
+<h2 id="preparation"><a class="zola-anchor" href="index.html#preparation" aria-label="Anchor link for: preparation">🔗</a>Preparation</h2>
+<p>We still have a really tiny stack of 64 bytes, which won’t suffice for this post. So we increase it to 16kB (four pages) in <code>boot.asm</code>:</p>
+<pre data-lang="asm" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-asm "><code class="language-asm" data-lang="asm"><span>section .bss
+</span><span>...
+</span><span>stack_bottom:
+</span><span>    resb </span><span style="color:#b4cea8;">4096 </span><span>* </span><span style="color:#b4cea8;">4
+</span><span>stack_top:
+</span></code></pre>
+<h2 id="the-multiboot-information-structure"><a class="zola-anchor" href="index.html#the-multiboot-information-structure" aria-label="Anchor link for: the-multiboot-information-structure">🔗</a>The Multiboot Information Structure</h2>
+<p>When a Multiboot compliant bootloader loads a kernel, it passes a pointer to a boot information structure in the <code>ebx</code> register. We can use it to get information about available memory and loaded kernel sections.</p>
+<p>First, we need to pass this pointer to our kernel as an argument to <code>rust_main</code>. To find out how arguments are passed to functions, we can look at the <a href="https://en.wikipedia.org/wiki/X86_calling_conventions#System_V_AMD64_ABI">calling convention of Linux</a>:</p>
+<blockquote>
+<p>The first six integer or pointer arguments are passed in registers RDI, RSI, RDX, RCX, R8, and R9</p>
+</blockquote>
+<p>So to pass the pointer to our kernel, we need to move it to <code>rdi</code> before calling the kernel. Since we’re not using the <code>rdi</code>/<code>edi</code> register in our bootstrap code, we can simply set the <code>edi</code> register right after booting (in <code>boot.asm</code>):</p>
+<pre data-lang="nasm" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-nasm "><code class="language-nasm" data-lang="nasm"><span>start:
+</span><span>    </span><span style="color:#569cd6;">mov </span><span>esp, stack_top
+</span><span>    </span><span style="color:#569cd6;">mov </span><span>edi, ebx</span><span style="color:#608b4e;">       ; Move Multiboot info pointer to edi
+</span></code></pre>
+<p>Now we can add the argument to our <code>rust_main</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub extern fn </span><span>rust_main(multiboot_information_address: </span><span style="color:#569cd6;">usize</span><span>) { </span><span style="color:#569cd6;">... </span><span>}
+</span></code></pre>
+<p>Instead of writing an own Multiboot module, we use the <a href="https://docs.rs/multiboot2">multiboot2</a> crate. It gives us some basic information about mapped kernel sections and available memory. I just wrote it for this blog post since I could not find any other Multiboot 2 crate. It’s still incomplete, but it does its job.</p>
+<p>So let’s add a dependency on the git repository:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#ff3333;">...
+</span><span style="color:#569cd6;">multiboot2 </span><span>= </span><span style="color:#d69d85;">&quot;0.1.0&quot;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">extern crate</span><span> multiboot2;
+</span></code></pre>
+<p>Now we can use it to print available memory areas.</p>
+<h3 id="available-memory"><a class="zola-anchor" href="index.html#available-memory" aria-label="Anchor link for: available-memory">🔗</a>Available Memory</h3>
+<p>The boot information structure consists of various <em>tags</em>. See section 3.4 of the Multiboot specification (<a href="https://nongnu.askapache.com/grub/phcoder/multiboot.pdf">PDF</a>) for a complete list. The <em>memory map</em> tag contains a list of all available RAM areas. Special areas such as the VGA text buffer at <code>0xb8000</code> are not available. Note that some of the available memory is already used by our kernel and by the multiboot information structure itself.</p>
+<p>To print all available memory areas, we can use the <code>multiboot2</code> crate in our <code>rust_main</code> as follows:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let</span><span> boot_info = </span><span style="color:#569cd6;">unsafe</span><span>{ multiboot2::load(multiboot_information_address) };
+</span><span style="color:#569cd6;">let</span><span> memory_map_tag = boot_info.memory_map_tag()
+</span><span>    .expect(</span><span style="color:#d69d85;">&quot;Memory map tag required&quot;</span><span>);
+</span><span>
+</span><span>println!(</span><span style="color:#d69d85;">&quot;memory areas:&quot;</span><span>);
+</span><span style="color:#569cd6;">for</span><span> area </span><span style="color:#569cd6;">in</span><span> memory_map_tag.memory_areas() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;    start: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">, length: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        area.base_addr, area.length);
+</span><span>}
+</span></code></pre>
+<p>The <code>load</code> function is <code>unsafe</code> because it relies on a valid address. Since the memory tag is not required by the Multiboot specification, the <code>memory_map_tag()</code> function returns an <code>Option</code>. The <code>memory_areas()</code> function returns the desired memory area iterator.</p>
+<p>The output looks like this:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>Hello World!
+</span><span>memory areas:
+</span><span>    start: 0x0, length: 0x9fc00
+</span><span>    start: 0x100000, length: 0x7ee0000
+</span></code></pre>
+<p>So we have one area from <code>0x0</code> to <code>0x9fc00</code>, which is a bit below the 1MiB mark. The second, bigger area starts at 1MiB and contains the rest of available memory. The area from <code>0x9fc00</code> to 1MiB is not available since it contains for example the VGA text buffer at <code>0xb8000</code>. This is the reason for putting our kernel at 1MiB and not somewhere below.</p>
+<p>If you give QEMU more than 4GiB of memory by passing <code>-m 5G</code>, you get another unusable area below the 4GiB mark. This memory is normally mapped to some hardware devices. See the <a href="https://wiki.osdev.org/Memory_Map_(x86)">OSDev Wiki</a> for more information.</p>
+<h3 id="handling-panics"><a class="zola-anchor" href="index.html#handling-panics" aria-label="Anchor link for: handling-panics">🔗</a>Handling Panics</h3>
+<p>We used <code>expect</code> in the code above, which will panic if there is no memory map tag. But our current panic handler just loops without printing any error message. Of course we could replace <code>expect</code> by a <code>match</code>, but we should fix the panic handler nonetheless:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[lang </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;panic_fmt&quot;</span><span>]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>panic_fmt() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;PANIC&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Now we get a <code>PANIC</code> message. But we can do even better. The <code>panic_fmt</code> function has actually some arguments:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[lang </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;panic_fmt&quot;</span><span>]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>panic_fmt(fmt: core::fmt::Arguments, file: </span><span style="color:#569cd6;">&amp;&#39;static str</span><span>,
+</span><span>    line: </span><span style="color:#569cd6;">u32</span><span>) -&gt; </span><span style="color:#569cd6;">!
+</span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n\n</span><span style="color:#d69d85;">PANIC in </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> at line </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">:&quot;</span><span>, file, line);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;    </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, fmt);
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Be careful with these arguments as the compiler does not check the function signature for <code>lang_items</code>.</p>
+<p>Now we get the panic message and the causing source line. You can try it by inserting a <code>panic</code> somewhere.</p>
+<h3 id="kernel-elf-sections"><a class="zola-anchor" href="index.html#kernel-elf-sections" aria-label="Anchor link for: kernel-elf-sections">🔗</a>Kernel ELF Sections</h3>
+<p>To read and print the sections of our kernel ELF file, we can use the <em>Elf-sections</em> tag:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let</span><span> elf_sections_tag = boot_info.elf_sections_tag()
+</span><span>    .expect(</span><span style="color:#d69d85;">&quot;Elf-sections tag required&quot;</span><span>);
+</span><span>
+</span><span>println!(</span><span style="color:#d69d85;">&quot;kernel sections:&quot;</span><span>);
+</span><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> elf_sections_tag.sections() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;    addr: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">, size: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">, flags: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        section.addr, section.size, section.flags);
+</span><span>}
+</span></code></pre>
+<p>This should print out the start address and size of all kernel sections. If the section is writable, the <code>0x1</code> bit is set in <code>flags</code>. The <code>0x4</code> bit marks an executable section and the <code>0x2</code> bit indicates that the section was loaded in memory. For example, the <code>.text</code> section is executable but not writable and the <code>.data</code> section just the opposite.</p>
+<p>But when we execute it, tons of really small sections are printed. We can use the <code>objdump -h build/kernel-x86_64.bin</code> command to list the sections with name. There seem to be over 200 sections and many of them start with <code>.text.*</code> or <code>.data.rel.ro.local.*</code>. This is because the Rust compiler puts e.g. each function in its own <code>.text</code> subsection. That way, unused functions are removed when the linker omits unused sections.</p>
+<p>To merge these subsections, we need to update our linker script:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>ENTRY(start)
+</span><span>
+</span><span>SECTIONS {
+</span><span>    . = 1M;
+</span><span>
+</span><span>    .boot :
+</span><span>    {
+</span><span>        KEEP(*(.multiboot_header))
+</span><span>    }
+</span><span>
+</span><span>    .text :
+</span><span>    {
+</span><span>        *(.text .text.*)
+</span><span>    }
+</span><span>
+</span><span>    .rodata : {
+</span><span>        *(.rodata .rodata.*)
+</span><span>    }
+</span><span>
+</span><span>    .data.rel.ro : {
+</span><span>        *(.data.rel.ro.local*) *(.data.rel.ro .data.rel.ro.*)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>These lines are taken from the default linker script of <code>ld</code>, which can be obtained through <code>ld ‑verbose</code>. The <code>.text</code> <em>output</em> section contains now all <code>.text.*</code> <em>input</em> sections of the static library (and the same applies for the <code>.rodata</code> and <code>.data.rel.ro</code> sections).</p>
+<p>Now there are only 12 sections left and we get a much more useful output:</p>
+<p><img src="qemu-memory-areas-and-kernel-sections.png" alt="qemu output" /></p>
+<p>If you like, you can compare this output to the <code>objdump -h build/kernel-x86_64.bin</code> output. You will see that the start addresses and sizes match exactly for each section. The sections with flags <code>0x0</code> are mostly debug sections, so they don’t need to be loaded. And the last few sections of the QEMU output aren’t in the <code>objdump</code> output because they are special sections such as string tables.</p>
+<h3 id="start-and-end-of-kernel"><a class="zola-anchor" href="index.html#start-and-end-of-kernel" aria-label="Anchor link for: start-and-end-of-kernel">🔗</a>Start and End of Kernel</h3>
+<p>We can now use the ELF section tag to calculate the start and end address of our loaded kernel:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let</span><span> kernel_start = elf_sections_tag.sections().map(|s| s.addr)
+</span><span>    .min().unwrap();
+</span><span style="color:#569cd6;">let</span><span> kernel_end = elf_sections_tag.sections().map(|s| s.addr + s.size)
+</span><span>    .max().unwrap();
+</span></code></pre>
+<p>The other used memory area is the Multiboot Information structure:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let</span><span> multiboot_start = multiboot_information_address;
+</span><span style="color:#569cd6;">let</span><span> multiboot_end = multiboot_start + (boot_info.total_size </span><span style="color:#569cd6;">as usize</span><span>);
+</span></code></pre>
+<p>Printing these numbers gives us:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>kernel_start: 0x100000, kernel_end: 0x11a168
+</span><span>multiboot_start: 0x11d400, multiboot_end: 0x11d9c8
+</span></code></pre>
+<p>So the kernel starts at 1MiB (like expected) and is about 105 KiB in size. The multiboot information structure was placed at <code>0x11d400</code> by GRUB and needs 1480 bytes. Of course your numbers could be a bit different due to different versions of Rust or GRUB (or some differences in the source code).</p>
+<h2 id="a-frame-allocator"><a class="zola-anchor" href="index.html#a-frame-allocator" aria-label="Anchor link for: a-frame-allocator">🔗</a>A frame allocator</h2>
+<p>When using paging, the physical memory is split into equally sized chunks (normally 4096 bytes) Such a chunk is called “physical page” or “frame”. These frames can be mapped to any virtual page through page tables. For more information about paging take a peek at the <a href="../page-tables/index.html">next post</a>.</p>
+<p>We will need a free frame in many cases. For example when want to increase the size of our future kernel heap. Or when we create a new page table. Or when we add a new kernel thread and thus need to allocate a new stack. So we need some kind of allocator that keeps track of physical frames and gives us a free one when needed.</p>
+<p>There are various ways to write such a frame allocator:</p>
+<p>We could create some kind of linked list from the free frames. For example, each frame could begin with a pointer to the next free frame. Since the frames are free, this would not overwrite any data. Our allocator would just save the head of the list and could easily allocate and deallocate frames by updating pointers. Unfortunately, this approach has a problem: It requires reading and writing these free frames. So we would need to map all physical frames to some virtual address, at least temporary. Another disadvantage is that we need to create this linked list at startup. That implies that we need to set over one million pointers at startup if the machine has 4GiB of RAM.</p>
+<p>Another approach is to create some kind of data structure such as a <a href="https://wiki.osdev.org/Page_Frame_Allocation#Physical_Memory_Allocators">bitmap or a stack</a> to manage free frames. We could place it in the already identity mapped area right behind the kernel or multiboot structure. That way we would not need to (temporary) map each free frame. But it has the same problem of the slow initial creating/filling. In fact, we will use this approach in a future post to manage frames that are freed again. But for the initial management of free frames, we use a different method.</p>
+<p>In the following, we will use Multiboot’s memory map directly. The idea is to maintain a simple counter that starts at frame 0 and is increased constantly. If the current frame is available (part of an available area in the memory map) and not used by the kernel or the multiboot structure (we know their start and end addresses), we know that it’s free and return it. Else, we increase the counter to the next possibly free frame. That way, we don’t need to create a data structure when booting and the physical frames can remain unmapped. The only problem is that we cannot reasonably free frames again, but we will solve that problem in a future post (by adding an intermediate frame stack that saves freed frames).</p>
+<!--- TODO link future post -->
+<p>So let’s start implementing our memory map based frame allocator.</p>
+<h3 id="a-memory-module"><a class="zola-anchor" href="index.html#a-memory-module" aria-label="Anchor link for: a-memory-module">🔗</a>A Memory Module</h3>
+<p>First we create a memory module with a <code>Frame</code> type (<code>src/memory/mod.rs</code>):</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+</span><span style="color:#569cd6;">pub struct </span><span>Frame {
+</span><span>    number: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span></code></pre>
+<p>(Don’t forget to add the <code>mod memory</code> line to <code>src/lib.rs</code>.) Instead of e.g. the start address, we just store the frame number. We use <code>usize</code> here since the number of frames depends on the memory size. The long <code>derive</code> line makes frames printable and comparable.</p>
+<p>To make it easy to get the corresponding frame for a physical address, we add a <code>containing_address</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">PAGE_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">4096</span><span>;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Frame {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>containing_address(address: </span><span style="color:#569cd6;">usize</span><span>) -&gt; Frame {
+</span><span>        Frame{ number: address / </span><span style="color:#b4cea8;">PAGE_SIZE </span><span>}
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We also add a <code>FrameAllocator</code> trait:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub trait </span><span>FrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Frame&gt;;
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deallocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self, frame: Frame);
+</span><span>}
+</span></code></pre>
+<p>This allows us to create another, more advanced frame allocator in the future.</p>
+<h3 id="the-allocator"><a class="zola-anchor" href="index.html#the-allocator" aria-label="Anchor link for: the-allocator">🔗</a>The Allocator</h3>
+<p>Now we can put everything together and create the actual frame allocator. Therefor we create a <code>src/memory/area_frame_allocator.rs</code> submodule. The allocator struct looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>memory::{Frame, FrameAllocator};
+</span><span style="color:#569cd6;">use </span><span>multiboot2::{MemoryAreaIter, MemoryArea};
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>AreaFrameAllocator {
+</span><span>    next_free_frame: Frame,
+</span><span>    current_area: Option&lt;</span><span style="color:#569cd6;">&amp;&#39;static</span><span> MemoryArea&gt;,
+</span><span>    areas: MemoryAreaIter,
+</span><span>    kernel_start: Frame,
+</span><span>    kernel_end: Frame,
+</span><span>    multiboot_start: Frame,
+</span><span>    multiboot_end: Frame,
+</span><span>}
+</span></code></pre>
+<p>The <code>next_free_frame</code> field is a simple counter that is increased every time we return a frame. It’s initialized to <code>0</code> and every frame below it counts as used. The <code>current_area</code> field holds the memory area that contains <code>next_free_frame</code>. If <code>next_free_frame</code> leaves this area, we will look for the next one in <code>areas</code>. When there are no areas left, all frames are used and <code>current_area</code> becomes <code>None</code>. The <code>{kernel, multiboot}_{start, end}</code> fields are used to avoid returning already used fields.</p>
+<p>To implement the <code>FrameAllocator</code> trait, we need to implement the allocation and deallocation methods:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">impl </span><span>FrameAllocator </span><span style="color:#569cd6;">for </span><span>AreaFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Frame&gt; {
+</span><span>        </span><span style="color:#608b4e;">// TODO (see below)
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deallocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self, frame: Frame) {
+</span><span>        </span><span style="color:#608b4e;">// TODO (see below)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>allocate_frame</code> method looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `allocate_frame` in `impl FrameAllocator for AreaFrameAllocator`
+</span><span>
+</span><span style="color:#569cd6;">if let </span><span>Some(area) = self.current_area {
+</span><span>    </span><span style="color:#608b4e;">// &quot;Clone&quot; the frame to return it if it&#39;s free. Frame doesn&#39;t
+</span><span>    </span><span style="color:#608b4e;">// implement Clone, but we can construct an identical frame.
+</span><span>    </span><span style="color:#569cd6;">let</span><span> frame = Frame{ number: self.next_free_frame.number };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// the last frame of the current area
+</span><span>    </span><span style="color:#569cd6;">let</span><span> current_area_last_frame = {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> address = area.base_addr + area.length - </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        Frame::containing_address(address </span><span style="color:#569cd6;">as usize</span><span>)
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">if</span><span> frame &gt; current_area_last_frame {
+</span><span>        </span><span style="color:#608b4e;">// all frames of current area are used, switch to next area
+</span><span>        self.choose_next_area();
+</span><span>    } </span><span style="color:#569cd6;">else if</span><span> frame &gt;= self.kernel_start </span><span style="color:#569cd6;">&amp;&amp;</span><span> frame &lt;= self.kernel_end {
+</span><span>        </span><span style="color:#608b4e;">// `frame` is used by the kernel
+</span><span>        self.next_free_frame = Frame {
+</span><span>            number: self.kernel_end.number + </span><span style="color:#b5cea8;">1
+</span><span>        };
+</span><span>    } </span><span style="color:#569cd6;">else if</span><span> frame &gt;= self.multiboot_start </span><span style="color:#569cd6;">&amp;&amp;</span><span> frame &lt;= self.multiboot_end {
+</span><span>        </span><span style="color:#608b4e;">// `frame` is used by the multiboot information structure
+</span><span>        self.next_free_frame = Frame {
+</span><span>            number: self.multiboot_end.number + </span><span style="color:#b5cea8;">1
+</span><span>        };
+</span><span>    } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// frame is unused, increment `next_free_frame` and return it
+</span><span>        self.next_free_frame.number += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        </span><span style="color:#569cd6;">return </span><span>Some(frame);
+</span><span>    }
+</span><span>    </span><span style="color:#608b4e;">// `frame` was not valid, try it again with the updated `next_free_frame`
+</span><span>    self.allocate_frame()
+</span><span>} </span><span style="color:#569cd6;">else </span><span>{
+</span><span>    None </span><span style="color:#608b4e;">// no free frames left
+</span><span>}
+</span></code></pre>
+<p>The <code>choose_next_area</code> method isn’t part of the trait and thus goes into a new <code>impl AreaFrameAllocator</code> block:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl AreaFrameAllocator`
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>choose_next_area(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {
+</span><span>    self.current_area = self.areas.clone().filter(|area| {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> address = area.base_addr + area.length - </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        Frame::containing_address(address </span><span style="color:#569cd6;">as usize</span><span>) &gt;= self.next_free_frame
+</span><span>    }).min_by_key(|area| area.base_addr);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>Some(area) = self.current_area {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> start_frame = Frame::containing_address(area.base_addr </span><span style="color:#569cd6;">as usize</span><span>);
+</span><span>        </span><span style="color:#569cd6;">if </span><span>self.next_free_frame &lt; start_frame {
+</span><span>            self.next_free_frame = start_frame;
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This function chooses the area with the minimal base address that still has free frames, i.e. <code>next_free_frame</code> is smaller than its last frame. Note that we need to clone the iterator because the <a href="https://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.min_by_key">min_by_key</a> function consumes it. If there are no areas with free frames left, <code>min_by_key</code> automatically returns the desired <code>None</code>.</p>
+<p>If the <code>next_free_frame</code> is below the new <code>current_area</code>, it needs to be updated to the area’s start frame. Else, the <code>allocate_frame</code> call could return an unavailable frame.</p>
+<p>We don’t have a data structure to store free frames, so we can’t implement <code>deallocate_frame</code> reasonably. Thus we use the <code>unimplemented</code> macro, which just panics when the method is called:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">impl </span><span>FrameAllocator </span><span style="color:#569cd6;">for </span><span>AreaFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Frame&gt; {
+</span><span>        </span><span style="color:#608b4e;">// described above
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deallocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self, _frame: Frame) {
+</span><span>        unimplemented!()
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Now we only need a constructor function to make the allocator usable:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub fn </span><span>new(kernel_start: </span><span style="color:#569cd6;">usize</span><span>, kernel_end: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>      multiboot_start: </span><span style="color:#569cd6;">usize</span><span>, multiboot_end: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>      memory_areas: MemoryAreaIter) -&gt; AreaFrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> allocator = AreaFrameAllocator {
+</span><span>        next_free_frame: Frame::containing_address(</span><span style="color:#b5cea8;">0</span><span>),
+</span><span>        current_area: None,
+</span><span>        areas: memory_areas,
+</span><span>        kernel_start: Frame::containing_address(kernel_start),
+</span><span>        kernel_end: Frame::containing_address(kernel_end),
+</span><span>        multiboot_start: Frame::containing_address(multiboot_start),
+</span><span>        multiboot_end: Frame::containing_address(multiboot_end),
+</span><span>    };
+</span><span>    allocator.choose_next_area();
+</span><span>    allocator
+</span><span>}
+</span></code></pre>
+<p>Note that we call <code>choose_next_area</code> manually here because <code>allocate_frame</code> returns <code>None</code> as soon as <code>current_area</code> is <code>None</code>. So by calling <code>choose_next_area</code> we initialize it to the area with the minimal base address.</p>
+<h3 id="testing-it"><a class="zola-anchor" href="index.html#testing-it" aria-label="Anchor link for: testing-it">🔗</a>Testing it</h3>
+<p>In order to test it in main, we need to <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/crates-and-modules.html#re-exporting-with-pub-use">re-export</a> the <code>AreaFrameAllocator</code> in the <code>memory</code> module. Then we can create a new allocator:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let mut</span><span> frame_allocator = memory::AreaFrameAllocator::new(
+</span><span>    kernel_start </span><span style="color:#569cd6;">as usize</span><span>, kernel_end </span><span style="color:#569cd6;">as usize</span><span>, multiboot_start,
+</span><span>    multiboot_end, memory_map_tag.memory_areas());
+</span></code></pre>
+<p>Now we can test it by adding some frame allocations:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, frame_allocator.allocate_frame());
+</span></code></pre>
+<p>You will see that the frame number starts at <code>0</code> and increases steadily, but the kernel and Multiboot frames are left out (you need to allocate many frames to see this since the kernel starts at frame 256).</p>
+<p>The following <code>for</code> loop allocates all frames and prints out the total number of allocated frames:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">.. </span><span>{
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>None = frame_allocator.allocate_frame() {
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;allocated </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> frames&quot;</span><span>, i);
+</span><span>        </span><span style="color:#569cd6;">break</span><span>;
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>You can try different amounts of memory by passing e.g. <code>-m 500M</code> to QEMU. To compare these numbers, <a href="https://www.wolframalpha.com/input/?i=%2832605+*+4096%29+bytes+in+MiB">WolframAlpha</a> can be very helpful.</p>
+<h2 id="conclusion"><a class="zola-anchor" href="index.html#conclusion" aria-label="Anchor link for: conclusion">🔗</a>Conclusion</h2>
+<p>Now we have a working frame allocator. It is a bit rudimentary and cannot free frames, but it also is very fast since it reuses the Multiboot memory map and does not need any costly initialization. A future post will build upon this allocator and add a stack-like data structure for freed frames.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>The <a href="../page-tables/index.html">next post</a> will be about paging again. We will use the frame allocator to create a safe module that allows us to switch page tables and map pages. Then we will use this module and the information from the Elf-sections tag to remap the kernel correctly.</p>
+<h2 id="recommended-posts"><a class="zola-anchor" href="index.html#recommended-posts" aria-label="Anchor link for: recommended-posts">🔗</a>Recommended Posts</h2>
+<p>Eric Kidd started the <a href="http://www.randomhacks.net/bare-metal-rust/">Bare Metal Rust</a> series last week. Like this post, it builds upon the code from <a href="../printing-to-screen/index.html">Printing to Screen</a>, but tries to support keyboard input instead of wrestling through memory management details.</p>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../printing-to-screen/index.html">&laquo; Printing to Screen</a>
+        
+        
+            <a class="next" href="../page-tables/index.html">Page Tables &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-32" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-32" class="permalink"><time title="Mon Nov 16 2015 01:26:09 GMT+0100 (Central European Standard Time)" datetime="2015-10-01T00:26:09Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>There is some interesting discussion on <a rel="nofollow" href="https://www.reddit.com/r/rust/comments/3sw52x/writing_an_os_in_rust_allocating_frames/">reddit</a>.</p></div><div class="isso-comment-footer"><span class="votes">-1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-33" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="0bc2df00636d"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="36" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Tobias Schottdorf</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-33" class="permalink"><time title="Mon Nov 16 2015 02:31:18 GMT+0100 (Central European Standard Time)" datetime="2015-10-01T01:31:18Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>&gt; Note that we need to clone the iterator because the order of areas in the memory map isn't specified.</p><p>Could you elaborate on that? I'm probably getting something wrong, but I can't reproduce issues omitting the clone:</p><p>https://gist.github.com/tschottdorf/e1e0a4091136dd281ab3</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-34" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-34" class="permalink"><time title="Mon Nov 16 2015 14:18:18 GMT+0100 (Central European Standard Time)" datetime="2015-10-01T13:18:18Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>The `clone` is required because the <a rel="nofollow" href="https://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.min_by">min_by</a> function consumes the iterator. I updated that sentence. My initial reasoning was that we can't just use the next area in the iterator because Multiboot doesn't specify an increasing ordering. Thus we need to use `min_by` and clone the iterator.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-35" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="3c7600465bac"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Vikas Reddy</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-35" class="permalink"><time title="Tue Apr 05 2016 17:20:19 GMT+0200 (Central European Summer Time)" datetime="2016-03-02T15:20:19Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Later you are identity mapping the VGA buffer address..but in the frame allocator allocate_frame() function you are not pointing that out...may be some time later when you allocate more frames...it may be allocated to some other page...</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-36" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-36" class="permalink"><time title="Tue Apr 05 2016 17:48:07 GMT+0200 (Central European Summer Time)" datetime="2016-03-02T15:48:07Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Good catch! Fortunately it is part of the <a rel="nofollow" href="../allocating-frames.html#available-memory">memory hole</a> below the 1MiB mark. Thus it is never allocated by the frame allocator.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-37" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="2246f825942c"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Errma Gerrd</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-37" class="permalink"><time title="Wed Jun 15 2016 15:42:52 GMT+0200 (Central European Summer Time)" datetime="2016-05-03T13:42:52Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>if let Some(area) = self.current_area {</p><p>produces a `if let` arms have incompatible types [E0308] for me. (expected type `_` found type `()`.</p><p>is this due to my rust version (rustc 1.11.0-nightly (0554abac6 2016-06-10)? :o</p><p>EDIT:</p><p>i found my error!<br>// `frame` was not valid, try it again with the updated `next_free_frame`<br>self.allocate_frame();</p><p>should be -&gt;</p><p>// `frame` was not valid, try it again with the updated `next_free_frame`<br>return self.allocate_frame();</p><p>in my own code of course :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-38" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f3d5b0e5e954"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Gerald King</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-38" class="permalink"><time title="Fri Jun 17 2016 10:11:56 GMT+0200 (Central European Summer Time)" datetime="2016-05-05T08:11:56Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>You can write simply `self.allocate_frame()` without `return`, but also without trailing semicolon (it's important). In Rust, it is considered better practice than using `return` as the last statement.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-39" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="2246f825942c"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Errma Gerrd</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-39" class="permalink"><time title="Fri Jun 17 2016 10:14:44 GMT+0200 (Central European Summer Time)" datetime="2016-05-05T08:14:44Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>yes... that semicolon killed me :D</p><p>I think I'll stick with `return expression;` because it looks alot more explicit :o<br>but thanks for the clue anyway! :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-40" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f3d5b0e5e954"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Gerald King</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-40" class="permalink"><time title="Fri Jun 17 2016 10:31:59 GMT+0200 (Central European Summer Time)" datetime="2016-05-05T08:31:59Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Not at all :) I'm a Rust newbie too, and that syntax seems a bit unfamiliar for C++, Java, Python etc. programmers. (But Ruby has such a feature.) </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-41" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="2246f825942c"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Errma Gerrd</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-41" class="permalink"><time title="Fri Jun 17 2016 10:38:05 GMT+0200 (Central European Summer Time)" datetime="2016-05-05T08:38:05Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>I use CoffeeScript at work which has this feature too. But I merely use it<br>using return IMHO has the advantage that it gets syntax highlighted in another color and you can scan easier for function return points :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-42" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f3d5b0e5e954"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Gerald King</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-42" class="permalink"><time title="Fri Jun 17 2016 10:41:34 GMT+0200 (Central European Summer Time)" datetime="2016-05-05T08:41:34Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>You are probably right about this :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-43" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="991d55c50857"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Gabriel Eiseman</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-43" class="permalink"><time title="Sat Jul 23 2016 07:02:09 GMT+0200 (Central European Summer Time)" datetime="2016-06-06T05:02:09Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>These articles of yours are very good: I'm following them in C because they are better than any C tutorial I have yet found.  However, I ran into a small problem with this one.  In your Multiboot crate you define the ELF symbols tag as having 3 32 bit integers where the multiboot specification pdf you link to specifies 4 16 bit integers.  The layout in your crate seems to be correct though, because I defined a struct in C (using __attribute__((packed))) according to the pdf and it did not work, but when I mirrored your layout it did.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-44" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-44" class="permalink"><time title="Sat Jul 23 2016 13:13:30 GMT+0200 (Central European Summer Time)" datetime="2016-06-06T11:13:30Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for the nice words :). Honestly, I'm not quite sure about this. It's been a while since I wrote this code…</p><p>The multiboot specification (<a rel="nofollow" href="http://nongnu.askapache.com/grub/phcoder/multiboot.pdf">PDF</a>) says:</p><p></p><blockquote>This tag contains section header table from an ELF kernel, the size of each entry, number of entries, and the string table used as the index of names. They correspond to the ‘shdr_*’ entries (‘shdr_num’, etc.) in the Executable and Linkable Format (elf) specification in the program header.</blockquote><p></p><p>So the `shdr_` entries are just the entries of the ELF header. The problem is that the multiboot specification uses 32-bit elf files implicitly, but our kernel is a 64-bit elf. There seem to be some format differences… However, the ELF64 specification (<a rel="nofollow" href="https://www.uclibc.org/docs/elf-64-gen.pdf">PDF</a>) uses u16s too…</p><p><a rel="nofollow" href="https://github.com/phil-opp/multiboot2-elf64#the-elf-symbols-tag">In the Readme</a> of the multiboot2 crate I wrote:</p><p></p><blockquote>Note that this format differs from the description in the Multiboot specification because if seems to be wrong for ELF 64 kernels: The number of entries, entry size, and string table fields seem to be u32 instead of u16 (but I'm not sure on this).</blockquote><p></p><p>So I wasn't even sure on this when I wrote it :D.</p><p>I did some digging in the GRUB2 source and found the definition of <a rel="nofollow" href="https://github.com/josefbacik/grub2/blob/96695ad84ce9c93f057ba53ae77d04d8561586e9/include/multiboot2.h#L298-L300">`multiboot_tag_elf_sections`</a>. Like the multiboot2 crate, it uses 3 u32s. So it seems like the crate is correct.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-46" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5abac2da368c"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Redrield</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-46" class="permalink"><time title="Thu Nov 03 2016 23:02:09 GMT+0100 (Central European Standard Time)" datetime="2016-10-04T22:02:09Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>When I get to the part when we're getting the kernel start and end, I'm getting a triple fault and the OS is stuck in a bootloop. This is my Bochs log <a rel="nofollow" href="https://gist.github.com/Redrield/0634cb13260d743afc828c62fa5c102c">https://gist.github.com/Red...</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-47" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-47" class="permalink"><time title="Mon Nov 07 2016 09:38:20 GMT+0100 (Central European Standard Time)" datetime="2016-10-01T08:38:20Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Hmm, I don't use Bochs, but according to <a rel="nofollow" href="http://bochs.sourceforge.net/doc/docbook/user/bios-tips.html">this page</a> of the Bochs user manual it seems to be a “no atapi cdrom found“ error. I have no idea why it occurs though… Does it work in QEMU?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-325" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8c9119b1b577"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Johan Montelius</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-325" class="permalink"><time title="Wed Oct 11 2017 11:47:32 GMT+0200 (Central European Summer Time)" datetime="2017-09-03T09:47:32Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Could we not use the start_address() and end_address() that are available in the BootInformation instead of doing the address calculation ourselves?</p>
+
+  <p>let multiboot_start = boot_info.start_address();</p>
+
+  <p>let multiboot_end = boot_info.end_address();</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-326" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="b865bd725108"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-326" class="permalink"><time title="Wed Oct 11 2017 12:52:54 GMT+0200 (Central European Summer Time)" datetime="2017-09-03T10:52:54Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Sure! I think they were introduced after this post was written and I forgot to update this post.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-346" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c409a273b137"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Madeleine Berner</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-346" class="permalink"><time title="Sun Dec 03 2017 16:48:23 GMT+0100 (Central European Standard Time)" datetime="2017-11-00T15:48:23Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Hi!
+  Your link for "re-export" under the section "Testing it" is broken.</p>
+
+  <p>Are you supposed to do something with the instruction "In order to test it in main, we need to re-export the AreaFrameAllocator in the memorymodule." ?
+  I keep getting this error:
+  "Could not find <code>AreaFrameAllocator</code> in <code>memory</code> "</p>
+
+  <p>in src/lib.rs on this row:</p>
+
+  <p>let mut frame_allocator = memory::AreaFrameAllocator::new(...</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-347" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c409a273b137"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Madeleine Berner</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-347" class="permalink"><time title="Sun Dec 03 2017 17:20:19 GMT+0100 (Central European Standard Time)" datetime="2017-11-00T16:20:19Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Hi (again)!
+  I just found the code to add to fix my problem.
+  Perhaps you can add it to your blog post?</p>
+
+  <p>From this commit I added the new lines from the file mod.rs:</p>
+
+  <p><a rel="nofollow" href="https://github.com/phil-opp/blog_os/commit/9f1a69cafa8a1b09dd71cbf3bf7493e388576391#diff-8c6f6418d9ea96c33ce93b05462bfd65">https://github.com/phil-opp/blog_os/commit/9f1a69cafa8a1b09dd71cbf3bf7493e388576391#diff-8c6f6418d9ea96c33ce93b05462bfd65</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

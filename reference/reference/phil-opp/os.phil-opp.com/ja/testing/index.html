@@ -1,0 +1,1035 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事では、no_stdな実行環境における単体テスト (unit test) と結合テスト (integration test) について学びます。Rustではカスタムテストフレームワークがサポートされているので、これを使ってカーネルの中でテスト関数を実行します。QEMUの外へとテストの結果を通知…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>テスト | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#konoji-shi-wodu-muqian-ni">この記事を読む前に</a>
+            
+        </li><li>
+            <a href="index.html#rustniokerutesuto">Rustにおけるテスト</a>
+            <ol>
+                <li>
+                    <a href="index.html#du-zi-notesutohuremuwaku">独自のテストフレームワーク</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#qemuwozhong-liao-suru">QEMUを終了する</a>
+            <ol>
+                <li>
+                    <a href="index.html#i-opoto">I/Oポート</a>
+                </li><li>
+                    <a href="index.html#zhong-liao-debaisu-woshi-u">「終了デバイス」を使う</a>
+                </li><li>
+                    <a href="index.html#cheng-gong-nozhong-liao-kodo">成功の終了コード</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#konsorunichu-li-suru">コンソールに出力する</a>
+            <ol>
+                <li>
+                    <a href="index.html#siriarupoto">シリアルポート</a>
+                </li><li>
+                    <a href="index.html#qemunoyin-shu">QEMUの引数</a>
+                </li><li>
+                    <a href="index.html#panitukushi-noerametuseziwochu-li-suru">パニック時のエラーメッセージを出力する</a>
+                </li><li>
+                    <a href="index.html#qemuwoyin-su">QEMUを隠す</a>
+                </li><li>
+                    <a href="index.html#taimuauto">タイムアウト</a>
+                </li><li>
+                    <a href="index.html#chu-li-ji-neng-wozi-dong-decha-ru-suru">出力機能を自動で挿入する</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#vgabatuhuawotesutosuru">VGAバッファをテストする</a>
+            
+        </li><li>
+            <a href="index.html#jie-he-tesuto">結合テスト</a>
+            <ol>
+                <li>
+                    <a href="index.html#raiburariwozuo-ru">ライブラリを作る</a>
+                </li><li>
+                    <a href="index.html#jie-he-tesutowowan-cheng-saseru">結合テストを完成させる</a>
+                </li><li>
+                    <a href="index.html#jin-hou-notesuto">今後のテスト</a>
+                </li><li>
+                    <a href="index.html#panitukusinakerebanaranaitesuto">パニックしなければならないテスト</a>
+                </li><li>
+                    <a href="index.html#hanesu-harness-nonaitesuto">ハーネス (harness) のないテスト</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>テスト</h1>
+    <time datetime="2019-04-27" class="post-date">
+        Apr 27, 2019
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../testing/index.html">Testing</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/woodyZootopia">@woodyZootopia</a> 及び <a href="https://github.com/JohnTitor">@JohnTitor</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事では、<code>no_std</code>な実行環境における<ruby>単体テスト<rp> (</rp><rt>unit test</rt><rp>) </rp></ruby>と<ruby>結合テスト<rp> (</rp><rt>integration test</rt><rp>) </rp></ruby>について学びます。Rustではカスタムテストフレームワークがサポートされているので、これを使ってカーネルの中でテスト関数を実行します。QEMUの外へとテストの結果を通知するため、QEMUと<code>bootimage</code>の様々な機能を使います。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-04"><code>post-04</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#konoji-shi-wodu-muqian-ni">この記事を読む前に</a>
+                
+            </li><li>
+                <a href="index.html#rustniokerutesuto">Rustにおけるテスト</a>
+                <ul>
+                    <li>
+                        <a href="index.html#du-zi-notesutohuremuwaku">独自のテストフレームワーク</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#qemuwozhong-liao-suru">QEMUを終了する</a>
+                <ul>
+                    <li>
+                        <a href="index.html#i-opoto">I/Oポート</a>
+                    </li><li>
+                        <a href="index.html#zhong-liao-debaisu-woshi-u">「終了デバイス」を使う</a>
+                    </li><li>
+                        <a href="index.html#cheng-gong-nozhong-liao-kodo">成功の終了コード</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#konsorunichu-li-suru">コンソールに出力する</a>
+                <ul>
+                    <li>
+                        <a href="index.html#siriarupoto">シリアルポート</a>
+                    </li><li>
+                        <a href="index.html#qemunoyin-shu">QEMUの引数</a>
+                    </li><li>
+                        <a href="index.html#panitukushi-noerametuseziwochu-li-suru">パニック時のエラーメッセージを出力する</a>
+                    </li><li>
+                        <a href="index.html#qemuwoyin-su">QEMUを隠す</a>
+                    </li><li>
+                        <a href="index.html#taimuauto">タイムアウト</a>
+                    </li><li>
+                        <a href="index.html#chu-li-ji-neng-wozi-dong-decha-ru-suru">出力機能を自動で挿入する</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#vgabatuhuawotesutosuru">VGAバッファをテストする</a>
+                
+            </li><li>
+                <a href="index.html#jie-he-tesuto">結合テスト</a>
+                <ul>
+                    <li>
+                        <a href="index.html#raiburariwozuo-ru">ライブラリを作る</a>
+                    </li><li>
+                        <a href="index.html#jie-he-tesutowowan-cheng-saseru">結合テストを完成させる</a>
+                    </li><li>
+                        <a href="index.html#jin-hou-notesuto">今後のテスト</a>
+                    </li><li>
+                        <a href="index.html#panitukusinakerebanaranaitesuto">パニックしなければならないテスト</a>
+                    </li><li>
+                        <a href="index.html#hanesu-harness-nonaitesuto">ハーネス (harness) のないテスト</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="konoji-shi-wodu-muqian-ni"><a class="zola-anchor" href="index.html#konoji-shi-wodu-muqian-ni" aria-label="Anchor link for: konoji-shi-wodu-muqian-ni">🔗</a>この記事を読む前に</h2>
+<p>この記事は、（古い版の）<a href="../../unit-testing/index.html">単体テスト</a>と<a href="../../integration-tests/index.html">結合テスト</a>の記事を置き換えるものです。この記事は、あなたが<a href="../minimal-rust-kernel/index.html">最小のカーネル</a>の記事を2019-04-27以降に読んだことを前提にしています。主に、あなたの<code>.cargo/config.toml</code>ファイルが<a href="../minimal-rust-kernel/index.html#biao-zhun-notagetutowosetutosuru">標準のターゲットを設定して</a>おり、<a href="../minimal-rust-kernel/index.html#cargo-runwoshi-u">ランナー実行ファイルを定義している</a>ことが条件となります。</p>
+<div class="note">
+<p><strong>訳注:</strong>  <a href="../minimal-rust-kernel/index.html">最小のカーネル</a>の記事が日本語に翻訳されたのはこの日より後なので、あなたがこのサイトを日本語で閲覧している場合は特に問題はありません。</p>
+</div>
+<h2 id="rustniokerutesuto"><a class="zola-anchor" href="index.html#rustniokerutesuto" aria-label="Anchor link for: rustniokerutesuto">🔗</a>Rustにおけるテスト</h2>
+<p>Rustには<a href="https://doc.rust-jp.rs/book-ja/ch11-00-testing.html">テストフレームワークが組み込まれて</a>おり、特別な設定なしに単体テストを走らせることができます。何らかの結果をアサーションを使って確認する関数を作り、その関数のヘッダに<code>#[test]</code>属性をつけるだけです。その上で<code>cargo test</code>を実行すると、あなたのクレートのすべてのテスト関数を自動で見つけて実行してくれます。</p>
+<p>残念なことに、私達のカーネルのような<code>no_std</code>のアプリケーションにとっては、テストは少しややこしくなります。問題なのは、Rustのテストフレームワークは組み込みの<a href="https://doc.rust-lang.org/test/index.html"><code>test</code></a>ライブラリを内部で使っており、これは標準ライブラリに依存しているということです。つまり、私達の<code>#[no_std]</code>のカーネルには標準のテストフレームワークは使えないのです。</p>
+<p>私達のプロジェクト内で<code>cargo test</code>を実行しようとすればそれがわかります：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>error[E0463]: can&#39;t find crate for `test`
+</span></code></pre>
+<p><code>test</code>クレートは標準ライブラリに依存しているので、私達のベアメタルのターゲットでは使えません。<code>test</code>クレートを<code>#[no_std]</code>環境に持ってくるということは<a href="https://github.com/japaric/utest">不可能ではない</a>のですが、非常に不安定であり、また<code>panic</code>マクロの再定義といった<ruby>技巧<rp> (</rp><rt>ハック</rt><rp>) </rp></ruby>が必要になってしまいます。</p>
+<h3 id="du-zi-notesutohuremuwaku"><a class="zola-anchor" href="index.html#du-zi-notesutohuremuwaku" aria-label="Anchor link for: du-zi-notesutohuremuwaku">🔗</a>独自のテストフレームワーク</h3>
+<p>ありがたいことに、Rustでは、不安定な<a href="https://doc.rust-lang.org/unstable-book/language-features/custom-test-frameworks.html"><ruby><code>custom_test_frameworks</code><rp> (</rp><rt>独自のテストフレームワーク</rt><rp>) </rp></ruby></a>機能を使えば標準のテストフレームワークを置き換えることができます。この機能には外部ライブラリは必要なく、したがって<code>#[no_std]</code>環境でも動きます。これは、<code>#[test_case]</code>属性をつけられたすべての関数のリストを引数としてユーザの指定した実行関数を呼び出すことで働きます。こうすることで、（実行関数の）実装内容によってテストプロセスを最大限コントロールできるようにしているのです。</p>
+<p>標準のテストフレームワークと比べた欠点は、<a href="https://doc.rust-jp.rs/book-ja/ch11-01-writing-tests.html#should_panic%E3%81%A7%E3%83%91%E3%83%8B%E3%83%83%E3%82%AF%E3%82%92%E7%A2%BA%E8%AA%8D%E3%81%99%E3%82%8B"><code>should_panic</code>テスト</a>のような多くの高度な機能が利用できないということです。それらの機能が必要なら、自分で実装して提供してください、というわけです。これは私達にとって全く申し分のないことで、というのも、私達の非常に特殊な実行環境では、それらの高度な機能の標準の実装はいずれにせようまく働かないだろうからです。例えば、<code>#[should_panic]</code>属性はパニックを検知するためにスタックアンワインドを使いますが、これは私達のカーネルでは無効化しています。</p>
+<p>私達のカーネルのための独自テストフレームワークを実装するため、以下を<code>main.rs</code>に追記します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Running </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>このランナーは短いデバッグメッセージを表示し、リスト内のそれぞれの関数を呼び出すだけです。引数の型である<code>&amp;[&amp;dyn Fn()]</code>は、<a href="https://doc.rust-lang.org/std/ops/trait.Fn.html">Fn()</a>トレイトの<a href="https://doc.rust-jp.rs/book-ja/ch17-02-trait-objects.html">トレイトオブジェクト</a>参照の<a href="https://doc.rust-lang.org/std/primitive.slice.html">スライス</a>です。これは要するに、関数のように呼び出せる型への参照のリストです。この (test_runner) 関数はテストでない実行のときには意味がないので、<code>#[cfg(test)]</code>属性を使って、テスト時にのみこれがインクルードされるようにします。</p>
+<p><code>cargo test</code>を実行すると、今度は成功しているはずです（もし失敗したなら、下の補足を読んでください）。しかし、依然として、<code>test_runner</code>からのメッセージではなく “Hello World” が表示されてしまっています。この理由は、<code>_start</code>関数がまだエントリポイントとして使われているからです。「独自のテストフレームワーク」機能は<code>test_runner</code>を呼び出す<code>main</code>関数を生成するのですが、私達は<code>#[no_main]</code>属性を使っており、独自のエントリポイントを与えてしまっているため、このmain関数は無視されてしまうのです。</p>
+<div class = "warning">
+<p><strong>補足:</strong> 現在、cargoには<code>cargo test</code>を実行すると、いくらかのケースにおいて “duplicate lang item” エラーになってしまうバグが存在します。これは、<code>Cargo.toml</code>内のプロファイルにおいて<code>panic = &quot;abort&quot;</code>を設定していたときに起こります。これを取り除けば<code>cargo test</code>はうまくいくはずです。これについて、より詳しく知りたい場合は<a href="https://github.com/rust-lang/cargo/issues/7359">cargoのissue</a>を読んでください。</p>
+</div>
+<p>これを修正するために、まず生成される関数の名前を<code>reexport_test_harness_main</code>属性を使って<code>main</code>とは違うものに変える必要があります。そして、その<ruby>改名<rp> (</rp><rt>リネーム</rt><rp>) </rp></ruby>された関数を<code>_start</code>関数から呼び出せばよいです。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>テストフレームワークのエントリ関数の名前を<code>test_main</code>に設定し、私達の<code>_start</code>エントリポイントから呼び出しています。<code>test_main</code>関数は通常の実行時には生成されていないので、<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/conditional-compilation.html">条件付きコンパイル</a>を用いて、テスト時にのみこの関数への呼び出しが追記されるようにしています。</p>
+<p><code>cargo test</code>を実行すると、 <code>test_runner</code>からの “Running 0 tests” というメッセージが画面に表示されます。これで、テスト関数を作り始める準備ができました：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>); </span><span style="color:#608b4e;">// &quot;些末なアサーション……&quot;
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p><code>cargo test</code>を実行すると、以下の出力を得ます：</p>
+<p><img src="qemu-test-runner-output.png" alt="QEMU printing “Hello World!”, “Running 1 tests”, and “trivial assertion… [ok]”" /></p>
+<p>今、<code>test_runner</code>関数に渡される<code>test</code>のスライスは、<code>trivial_assertion</code>関数への参照を保持しています。<code>trivial assertion... [ok]</code>という画面の出力から、テストが呼び出され成功したことがわかります。</p>
+<p>テストを実行したあとは、<code>test_runner</code>から<code>test_main</code>関数へとリターンし、さらに<code>_start</code>エントリポイント関数へとリターンします。エントリポイント関数がリターンすることは認められていないので、<code>_start</code>の最後では無限ループに入ります。しかし、<code>cargo test</code>にはすべてのテストを実行し終わった後に終了してほしいので、これは問題です。</p>
+<h2 id="qemuwozhong-liao-suru"><a class="zola-anchor" href="index.html#qemuwozhong-liao-suru" aria-label="Anchor link for: qemuwozhong-liao-suru">🔗</a>QEMUを終了する</h2>
+<p>今の所、<code>_start</code>関数の最後で無限ループがあるので、<code>cargo test</code>を実行するたびにQEMUを手動で終了しないといけません。ユーザによる入力などのないスクリプトでも<code>cargo test</code>を実行したいので、これは不都合です。これに対する綺麗な解決法はOSをシャットダウンする適切な方法を実装することでしょう。これは<a href="https://wiki.osdev.org/APM">APM</a>か<a href="https://wiki.osdev.org/ACPI">ACPI</a>というパワーマネジメント標準規格へのサポートを実装する必要があるので、残念なことに比較的複雑です。</p>
+<p>しかし嬉しいことに、ある「脱出口」があるのです。QEMUは特殊な<code>isa-debug-exit</code>デバイスをサポートしており、これを使うとゲストシステムから簡単にQEMUを終了できます。これを有効化するためには、QEMUに<code>-device</code>引数を渡す必要があります。これは<code>Cargo.toml</code>に<code>package.metadata.bootimage.test-args</code>設定キーを追加することで行えます。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [</span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>]
+</span></code></pre>
+<p><code>bootimage runner</code>は、<code>test-args</code>をすべてのテスト実行可能ファイルの標準QEMUコマンドに追加します。通常の<code>cargo run</code>のとき、これらの引数は無視されます。</p>
+<p>デバイス名 (<code>isa-debug-exit</code>) に加え、カーネルからそのデバイスにたどり着くための <strong>I/Oポート</strong> を指定する<code>iobase</code>と<code>iosize</code>という2つのパラメータを渡しています。</p>
+<h3 id="i-opoto"><a class="zola-anchor" href="index.html#i-opoto" aria-label="Anchor link for: i-opoto">🔗</a>I/Oポート</h3>
+<p>CPUと<ruby>周辺機器<rp> (</rp><rt>ペリフェラル</rt><rp>) </rp></ruby>が通信するやり方には、 <strong><ruby>memory-mapped<rp> (</rp><rt>メモリマップされた</rt><rp>) </rp></ruby> I/O</strong> と <strong><ruby>port-mapped<rp> (</rp><rt>ポートマップされた</rt><rp>) </rp></ruby> I/O</strong> の2つがあります。memory-mapped I/Oについては、すでに<a href="../vga-text-mode/index.html">VGAテキストバッファ</a>にメモリアドレス<code>0xb8000</code>を使ってアクセスしたときに使っています。このアドレスはRAMではなく、VGAデバイス上にあるメモリにマップされているのです。</p>
+<p>一方、port-mapped I/Oは通信に別個のI/Oバスを使います。接続されたそれぞれの周辺機器は1つ以上のポート番号を持っています。それらのI/Oポートと通信するために、<code>in</code>と<code>out</code>という特別なCPU命令があり、これらはポート番号と1バイトのデータを受け取ります（<code>u16</code>や<code>u32</code>を送信できる、これらの亜種も存在します）。</p>
+<p><code>isa-debug-exit</code>はこのport-mapped I/Oを使います。<code>iobase</code>パラメータはどのポートにこのデバイスが繋がれているのか（<code>0xf4</code>はx86のI/Oバスにおいて<a href="https://wiki.osdev.org/I/O_Ports#The_list">普通使われない</a>ポートです）を、<code>iosize</code>はポートの大きさ（<code>0x04</code>は4バイトを意味します）を指定します。</p>
+<h3 id="zhong-liao-debaisu-woshi-u"><a class="zola-anchor" href="index.html#zhong-liao-debaisu-woshi-u" aria-label="Anchor link for: zhong-liao-debaisu-woshi-u">🔗</a>「終了デバイス」を使う</h3>
+<p><code>isa-debug-exit</code>の機能は非常に単純です。値<code>value</code>が<code>iobase</code>により指定されたI/Oポートに書き込まれたら、QEMUは<a href="https://ja.wikipedia.org/wiki/%E7%B5%82%E4%BA%86%E3%82%B9%E3%83%86%E3%83%BC%E3%82%BF%E3%82%B9">終了ステータス</a>を<code>(value &lt;&lt; 1) | 1</code>にして終了します。なので、このポートに<code>0</code>を書き込むと、QEMUは終了ステータス<code>(0 &lt;&lt; 1) | 1 = 1</code>で、<code>1</code>を書き込むと終了ステータス<code>(1 &lt;&lt; 1) | 1 = 3</code>で終了します。</p>
+<p><code>in</code>と<code>out</code>のアセンブリ命令を手動で呼び出す代わりに、<a href="https://docs.rs/x86_64/0.14.2/x86_64/"><code>x86_64</code></a>クレートによって提供される<ruby>abstraction<rp> (</rp><rt>抽象化されたもの</rt><rp>) </rp></ruby>を使います。このクレートへの依存を追加するため、<code>Cargo.toml</code>の<code>dependencies</code>セクションにこれを追加しましょう：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">x86_64 </span><span>= </span><span style="color:#d69d85;">&quot;0.14.2&quot;
+</span></code></pre>
+<p>これで、このクレートによって提供される<a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/port/struct.Port.html"><code>Port</code></a>型を使って<code>exit_qemu</code>関数を作ることができます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u32)]
+</span><span style="color:#569cd6;">pub enum </span><span>QemuExitCode {
+</span><span>    Success = </span><span style="color:#b5cea8;">0x10</span><span>,
+</span><span>    Failed = </span><span style="color:#b5cea8;">0x11</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>exit_qemu(exit_code: QemuExitCode) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>        port.write(exit_code </span><span style="color:#569cd6;">as u32</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>この関数は新しい<a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/port/struct.Port.html"><code>Port</code></a>を<code>0xf4</code>（<code>isa-debug-exit</code>デバイスの<code>iobase</code>です）に作ります。そして、渡された終了コードをポートに書き込みます。<code>isa-device-exit</code>デバイスの<code>iosize</code>に4バイトを指定していたので、<code>u32</code>を使うことにします。I/Oポートへの書き込みは一般にあらゆる振る舞いを引き起こしうるので、これらの命令は両方unsafeです。</p>
+<p>終了ステータスを指定するために、<code>QemuExitCode</code>enumを作ります。成功したら成功（<code>Success</code>）の終了コードで、そうでなければ失敗（<code>Failed</code>）の終了コードで終了しようというわけです。enumは<code>#[repr(u32)]</code>をつけることで、それぞれのヴァリアントが<code>u32</code>の整数として表されるようにしています。終了コード<code>0x10</code>を成功に、<code>0x11</code>を失敗に使います。終了コードの実際の値は、QEMUの標準の終了コードと被ってしまわない限りはなんでも構いません。例えば、成功の終了コードに<code>0</code>を使うと、変換後<code>(0 &lt;&lt; 1) | 1 = 1</code>になってしまい、これはQEMUが実行に失敗したときの標準終了コードなのでよくありません。QEMUのエラーとテスト実行の成功が区別できなくなります。</p>
+<p>というわけで、<code>test_runner</code>を更新して、すべてのテストが実行されたあとでQEMUを終了するようにできますね：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Running </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>    }
+</span><span>    </span><span style="color:#608b4e;">/// new
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p><code>cargo test</code>を実行すると、QEMUはテスト実行後即座に閉じるのがわかります。しかし、問題は、<code>Success</code>の終了コードを渡したのに、<code>cargo test</code>はテストが失敗したと解釈することです：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.03s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-5804fc7d2dd4c9be
+</span><span>Building bootloader
+</span><span>   Compiling bootloader v0.5.3 (/home/philipp/Documents/bootloader)
+</span><span>    Finished release [optimized + debuginfo] target(s) in 1.07s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-5804fc7d2dd4c9be.bin -device isa-debug-exit,iobase=0xf4,
+</span><span>    iosize=0x04`
+</span><span>error: test failed, to rerun pass &#39;--bin blog_os&#39;
+</span></code></pre>
+<p>問題は、<code>cargo test</code>が<code>0</code>でないすべてのエラーコードを失敗と解釈してしまうことです。</p>
+<h3 id="cheng-gong-nozhong-liao-kodo"><a class="zola-anchor" href="index.html#cheng-gong-nozhong-liao-kodo" aria-label="Anchor link for: cheng-gong-nozhong-liao-kodo">🔗</a>成功の終了コード</h3>
+<p>これを解決するために、<code>bootimage</code>は指定された終了コードを<code>0</code>へとマップする設定キー、<code>test-success-exit-code</code>を提供しています：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [</span><span style="color:#ff3333;">…</span><span>]
+</span><span style="color:#569cd6;">test-success-exit-code </span><span>= </span><span style="color:#b5cea8;">33         </span><span style="color:#608b4e;"># (0x10 &lt;&lt; 1) | 1
+</span></code></pre>
+<p>この設定を使うと、<code>bootimage</code>は私達の出した成功の終了コードを、終了コード0へとマップするので、<code>cargo test</code>は正しく成功を認識し、テストを失敗したと見做さなくなります。</p>
+<p>これで私達のテストランナーは、自動でQEMUを閉じ、結果を報告するようになりました。しかし、QEMUの画面が非常に短い時間開くのは見えますが、短すぎて結果が読めません。QEMUが終了したあともテストの結果が見られるように、コンソールに出力できたら良さそうです。</p>
+<h2 id="konsorunichu-li-suru"><a class="zola-anchor" href="index.html#konsorunichu-li-suru" aria-label="Anchor link for: konsorunichu-li-suru">🔗</a>コンソールに出力する</h2>
+<p>テストの結果をコンソールで見るためには、カーネルからホストシステムにどうにかしてデータを送る必要があります。これを達成する方法は色々あり、例えばTCPネットワークインターフェースを通じてデータを送るというのが考えられます。しかし、ネットワークスタックを設定するのは非常に複雑なタスクなので、より簡単な解決策を取ることにしましょう。</p>
+<h3 id="siriarupoto"><a class="zola-anchor" href="index.html#siriarupoto" aria-label="Anchor link for: siriarupoto">🔗</a>シリアルポート</h3>
+<p>データを送る簡単な方法とは、<a href="https://ja.wikipedia.org/wiki/%E3%82%B7%E3%83%AA%E3%82%A2%E3%83%AB%E3%83%9D%E3%83%BC%E3%83%88">シリアルポート</a>という、最近のコンピュータにはもはや見られない古いインターフェース標準を使うことです。これはプログラムするのが簡単で、QEMUはシリアルを通じて送られたデータをホストの標準出力やファイルにリダイレクトすることができます。</p>
+<p>シリアルインターフェースを実装しているチップは<a href="https://ja.wikipedia.org/wiki/UART">UART</a>と呼ばれています。x86には<a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter#UART_models">多くのUARTのモデルがありますが</a>、幸運なことに、それらの違いは私達の必要としないような高度な機能だけです。今日よく見られるUARTはすべて<a href="https://ja.wikipedia.org/wiki/16550_UART">16550 UART</a>に互換性があるので、このモデルを私達のテストフレームワークに使いましょう。</p>
+<p><a href="https://docs.rs/uart_16550"><code>uart_16550</code></a>クレートを使ってUARTを初期化しデータをシリアルポートを使って送信しましょう。これを依存先として追加するため、<code>Cargo.toml</code>と<code>main.rs</code>を書き換えます：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">uart_16550 </span><span>= </span><span style="color:#d69d85;">&quot;0.2.0&quot;
+</span></code></pre>
+<p><code>uart_16550</code>クレートにはUARTレジスタを表現する<code>SerialPort</code>構造体が含まれていますが、これのインスタンスは私達自身で作らなくてはいけません。そのため、以下の内容で新しい<code>serial</code>モジュールを作りましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>serial;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>uart_16550::SerialPort;
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">SERIAL1</span><span>: Mutex&lt;SerialPort&gt; = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> serial_port = </span><span style="color:#569cd6;">unsafe </span><span>{ SerialPort::new(</span><span style="color:#b5cea8;">0x3F8</span><span>) };
+</span><span>        serial_port.init();
+</span><span>        Mutex::new(serial_port)
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p><a href="../../vga-text-mode/index.html#lazy-statics">VGAテキストバッファ</a>のときのように、<code>lazy_static</code>とスピンロックを使って<code>static</code>なwriterインスタンスを作ります。<code>lazy_static</code>を使うことで、<code>init</code>メソッドが初回使用時にのみ呼び出されることを保証できます。</p>
+<p><code>isa-debug-exit</code>デバイスのときと同じように、UARTはport I/Oを使ってプログラムされています。UARTはより複雑で、様々なデバイスレジスタ群をプログラムするために複数のI/Oポートを使います。unsafeな<code>SerialPort::new</code>関数はUARTの最初のI/Oポートを引数とします。この引数から、すべての必要なポートのアドレスを計算することができます。ポートアドレス<code>0x3F8</code>を渡していますが、これは最初のシリアルインターフェースの標準のポート番号です。</p>
+<p>シリアルポートを簡単に使えるようにするために、<code>serial_print!</code>と<code>serial_println!</code>マクロを追加します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: ::core::fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">SERIAL1</span><span>.lock().write_fmt(args).expect(</span><span style="color:#d69d85;">&quot;Printing to serial failed&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// シリアルインターフェースを通じてホストに出力する。
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        $crate::serial::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// シリアルインターフェースを通じてホストに出力し、改行を末尾に追加する。
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>)));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>, </span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(
+</span><span>        concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>), </span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>}
+</span></code></pre>
+<p>この実装は私達の<code>print</code>および<code>println</code>マクロとよく似ています。<code>SerialPort</code>型はすでに<a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>fmt::Write</code></a>トレイトを実装しているので、自前の実装を提供する必要はありません。</p>
+<p>これで、テストコードにおいてVGAテキストバッファの代わりにシリアルインターフェースに出力することができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    […]
+</span><span>}
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p><code>#[macro_export]</code>属性を使うことで、<code>serial_println</code>マクロはルート<ruby>名前空間<rp> (</rp><rt>namespace</rt><rp>) </rp></ruby>の直下に置かれるので、<code>use crate::serial::serial_println</code>とインポートするとうまくいかないということに注意してください。</p>
+<h3 id="qemunoyin-shu"><a class="zola-anchor" href="index.html#qemunoyin-shu" aria-label="Anchor link for: qemunoyin-shu">🔗</a>QEMUの引数</h3>
+<p>QEMUからのシリアル出力を見るために、出力を標準出力にリダイレクトしたいので、<code>-serial</code>引数を使う必要があります。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [
+</span><span>    </span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>, </span><span style="color:#d69d85;">&quot;-serial&quot;</span><span>, </span><span style="color:#d69d85;">&quot;stdio&quot;
+</span><span>]
+</span></code></pre>
+<p>これで<code>cargo test</code>を実行すると、テスト出力がコンソールに直接出力されているのが見えるでしょう：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-7b7c37b4ad62551a
+</span><span>Building bootloader
+</span><span>    Finished release [optimized + debuginfo] target(s) in 0.02s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-7b7c37b4ad62551a.bin -device
+</span><span>    isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio`
+</span><span>Running 1 tests
+</span><span>trivial assertion... [ok]
+</span></code></pre>
+<p>しかし、テストが失敗したときは、私達のパニックハンドラはまだ<code>println</code>を使っているので、出力がQEMUの中に出てしまいます。これをシミュレートするには、<code>trivial_assertion</code>テストの中のアサーションを<code>assert_eq!(0, 1)</code>に変えればよいです：</p>
+<p><img src="qemu-failed-test.png" alt="QEMU printing “Hello World!” and “panicked at ‘assertion failed: (left == right) left: 0, right: 1’, src/main.rs:55:5" /></p>
+<p>他のテスト出力がシリアルポートに出力されている一方、パニックメッセージはまだVGAバッファに出力されているのがわかります。このパニックメッセージは非常に役に立つので、コンソールでこのメッセージも見られたら非常に便利でしょう。</p>
+<h3 id="panitukushi-noerametuseziwochu-li-suru"><a class="zola-anchor" href="index.html#panitukushi-noerametuseziwochu-li-suru" aria-label="Anchor link for: panitukushi-noerametuseziwochu-li-suru">🔗</a>パニック時のエラーメッセージを出力する</h3>
+<p>パニック時にQEMUをエラーメッセージとともに終了するためには、<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/conditional-compilation.html">条件付きコンパイル</a>を使うことで、テスト時に異なるパニックハンドラを使うことができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// 前からあるパニックハンドラ
+</span><span>#[cfg(not(test))] </span><span style="color:#608b4e;">// 新しく追加した属性
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// テストモードで使うパニックハンドラ
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>テストパニックハンドラには<code>println</code>の代わりに<code>serial_println</code>を使い、そのあと失敗の終了コードでQEMUを終了します。コンパイラには、<code>exit_qemu</code>の呼び出しのあと<code>isa-debug-exit</code>デバイスがプログラムを終了させているということはわからないので、やはり最後に無限ループを入れないといけないことに注意してください。</p>
+<p>これでQEMUはテストが失敗したときも終了し、コンソールに役に立つエラーメッセージを表示するようになります：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-7b7c37b4ad62551a
+</span><span>Building bootloader
+</span><span>    Finished release [optimized + debuginfo] target(s) in 0.02s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-7b7c37b4ad62551a.bin -device
+</span><span>    isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio`
+</span><span>Running 1 tests
+</span><span>trivial assertion... [failed]
+</span><span>
+</span><span>Error: panicked at &#39;assertion failed: `(left == right)`
+</span><span>  left: `0`,
+</span><span> right: `1`&#39;, src/main.rs:65:5
+</span></code></pre>
+<p>これですべてのテスト出力がコンソールで見られるようになったので、一瞬出てくるQEMUウィンドウはもはや必要ありません。ですので、これを完全に見えなくしてしまいましょう。</p>
+<h3 id="qemuwoyin-su"><a class="zola-anchor" href="index.html#qemuwoyin-su" aria-label="Anchor link for: qemuwoyin-su">🔗</a>QEMUを隠す</h3>
+<p>すべてのテスト結果を<code>isa-debug-exit</code>デバイスとシリアルポートを使って通知できるので、QEMUのウィンドウはもはや必要ありません。これは、QEMUに<code>-display none</code>引数を渡すことで隠すことができます：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [
+</span><span>    </span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>, </span><span style="color:#d69d85;">&quot;-serial&quot;</span><span>, </span><span style="color:#d69d85;">&quot;stdio&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;-display&quot;</span><span>, </span><span style="color:#d69d85;">&quot;none&quot;
+</span><span>]
+</span></code></pre>
+<p>これでQEMUは完全にバックグラウンドで実行するようになり、ウィンドウはもう開きません。これで、ジャマが減っただけでなく、私達のテストフレームワークがグラフィカルユーザーインターフェースのない環境――たとえばCIサービスや<a href="https://ja.wikipedia.org/wiki/Secure_Shell">SSH</a>接続――でも使えるようになりました。</p>
+<h3 id="taimuauto"><a class="zola-anchor" href="index.html#taimuauto" aria-label="Anchor link for: taimuauto">🔗</a>タイムアウト</h3>
+<p><code>cargo test</code>はテストランナーが終了するまで待つので、絶対に終了しないテストがあるとテストランナーを永遠にブロックしかねません。これは悲しいですが、普通<ruby>エンドレス<rp> (</rp><rt>終了しない</rt><rp>) </rp></ruby>ループを回避するのは簡単なので、実際は大きな問題ではありません。しかしながら、私達のケースでは、様々な状況でエンドレスループが発生しうるのです：</p>
+<ul>
+<li>ブートローダーが私達のカーネルを読み込むのに失敗し、これによりシステムが延々と再起動し続ける。</li>
+<li>BIOS/UEFIファームウェアがブートローダーの読み込みに失敗し、同様に延々と再起動し続ける。</li>
+<li>私達の関数のどれかの最後で、CPUが<code>loop {}</code>文に入ってしまう（例えば、QEMU終了デバイスがうまく動かなかったなどの理由で）。</li>
+<li>CPU例外（今後説明します）がうまく捕捉されなかった場合などに、ハードウェアがシステムリセットを行う。</li>
+</ul>
+<p>エンドレスループは非常に多くの状況で発生しうるので、<code>bootimage</code>はそれぞれのテスト実行ファイルに対し標準で5分のタイムアウトを設定しています。テストがこの時間内に終了しなかった場合は失敗したとみなされ、“Timed Out” エラーがコンソールに出力されます。この機能により、エンドレスループで詰まったテストが<code>cargo test</code>を永遠にブロックしてしまうことがないことが保証されます。</p>
+<p>これを自分で試すこともできます。<code>trivial_assertion</code>テストに<code>loop {}</code>文を追加してください。<code>cargo test</code>を実行すると、5分後にテストがタイムアウトしたことが表示されるでしょう。タイムアウトまでの時間は<code>Cargo.toml</code>の<code>test-timeout</code>キーで<a href="https://github.com/rust-osdev/bootimage#configuration">設定可能</a>です：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-timeout </span><span>= </span><span style="color:#b5cea8;">300          </span><span style="color:#608b4e;"># (単位は秒)
+</span></code></pre>
+<p><code>trivial_assertion</code>テストがタイムアウトするのを待ちたくない場合は、上の値を一時的に下げても良いでしょう。</p>
+<h3 id="chu-li-ji-neng-wozi-dong-decha-ru-suru"><a class="zola-anchor" href="index.html#chu-li-ji-neng-wozi-dong-decha-ru-suru" aria-label="Anchor link for: chu-li-ji-neng-wozi-dong-decha-ru-suru">🔗</a>出力機能を自動で挿入する</h3>
+<p>現在、私達の<code>trivial_assertion</code>テストは、自分のステータス情報を<code>serial_print!</code>/<code>serial_println!</code>を使って出力する必要があります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>私達の書くすべてのテストにこれらのprint文を手動で追加するのは煩わしいので、私達の<code>test_runner</code>を変更して、これらのメッセージを自動で出力するようにしましょう。そうするためには、<code>Testable</code>トレイトを作る必要があります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">pub trait </span><span>Testable {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; ();
+</span><span>}
+</span></code></pre>
+<p>ここで、<a href="https://doc.rust-lang.org/stable/core/ops/trait.Fn.html"><code>Fn()</code>トレイト</a>を持つ型<code>T</code>すべてにこのトレイトを実装してやるのがミソです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;T&gt; Testable </span><span style="color:#569cd6;">for </span><span>T
+</span><span style="color:#569cd6;">where
+</span><span>    T: Fn(),
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) {
+</span><span>        serial_print!(</span><span style="color:#d69d85;">&quot;{}...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>, core::any::type_name::&lt;T&gt;());
+</span><span>        self();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>run</code>関数を実装するに当たり、まず<a href="https://doc.rust-lang.org/stable/core/any/fn.type_name.html"><code>any::type_name</code></a>を使って関数の名前を出力します。この関数はコンパイラの中に直接実装されており、すべての型の文字列による説明を返すことができます。関数の型はその名前なので、今回の場合まさに私達のやりたいことができています。文字<code>\t</code>は<a href="https://ja.wikipedia.org/wiki/%E3%82%BF%E3%83%96%E3%82%AD%E3%83%BC#%E3%82%BF%E3%83%96%E6%96%87%E5%AD%97">タブ文字</a>であり、メッセージ<code>[ok]</code>の前にちょっとしたアラインメント（幅を整えるための空白）をつけます。</p>
+<p>関数名を出力したあとは、テスト関数を<code>self()</code>を使って呼び出します。これは、<code>self</code>が<code>Fn()</code>トレイトを実装していることが要求されているからこそ可能です。テスト関数がリターンしたら、<code>[ok]</code>を出力してこの関数がパニックしなかったことを示します。</p>
+<p>最後に、<code>test_runner</code>をこの<code>Testable</code>トレイトを使うように更新します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Testable]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test.run(); </span><span style="color:#608b4e;">// ここを変更
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p>変更点は2つだけで、<code>tests</code>引数の型を<code>&amp;[&amp;dyn Fn()]</code>から<code>&amp;[&amp;dyn Testable]</code>に変えたことと、<code>test()</code>の変わりに<code>test.run()</code>を呼ぶようにしたことです。</p>
+<p>また、<code>trivial_assertion</code>のprint文は今や自動で出力されるようになったので、これを取り除きましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span></code></pre>
+<p>これで<code>cargo test</code>の出力は以下のようになるはずです：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>Running 1 tests
+</span><span>blog_os::trivial_assertion...	[ok]
+</span></code></pre>
+<p>いま、関数名には関数までのフルパスが含まれていますが、これは異なるモジュールのテスト関数が同じ名前を持っているときに便利です。それ以外の点において出力は前と同じですが、もう手動でテストにprint文を付け加える必要はありません。</p>
+<h2 id="vgabatuhuawotesutosuru"><a class="zola-anchor" href="index.html#vgabatuhuawotesutosuru" aria-label="Anchor link for: vgabatuhuawotesutosuru">🔗</a>VGAバッファをテストする</h2>
+<p>私達のテストフレームワークがうまく動くようになったので、私達のVGAバッファに関する実装のテストをいくつか作ってみましょう。まず、<code>println</code>がパニックすることなく成功することを確かめる非常に単純なテストを作ります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_simple() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;test_println_simple output&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>このテストは、適当な文字列をVGAバッファにただ出力するだけです。このテストがパニックすることなく終了したなら、<code>println</code>の呼び出しもまたパニックしなかったということです。</p>
+<p>たくさんの行が出力され、行がスクリーンから押し出されたとしてもパニックが起きないことを確かめるために、もう一つテストを作ってみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_many() {
+</span><span>    </span><span style="color:#569cd6;">for _ in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">200 </span><span>{
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;test_println_many output&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>出力された行が本当に画面に映っているのかを確かめるテスト関数も作ることができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s);
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> screen_char = </span><span style="color:#b4cea8;">WRITER</span><span>.lock().buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>        assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>この関数はテスト用文字列を定義し、<code>println</code>を使って出力し、静的な<code>WRITER</code>――VGAテキストバッファを表現しています――上の表示文字を<ruby>走査<rp> (</rp><rt>イテレート</rt><rp>) </rp></ruby>しています。<code>println</code>は最後に出力された行につづけて出力し、即座に改行するので、<code>BUFFER_HEIGHT - 2</code>行目にこの文字列は現れるはずです。</p>
+<p><a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a>を使うことで、変数<code>i</code>によって反復の回数を数え、これを<code>c</code>に対応する画面上の文字を読み込むのに使っています。画面の文字の<code>ascii_character</code>を<code>c</code>と比較することで、文字列のそれぞれの文字がVGAテキストバッファに確実に現れていることを確かめることができます。</p>
+<p>ご想像の通り、もっとたくさんテストを作っても良いです。例えば、非常に長い行を出力しても、うまく折り返され、パニックしないことをテストする関数や、改行・出力不可能な文字・非ユニコード文字などが適切に処理されることを確かめるような関数を作ることもできます。</p>
+<p>ですが、この記事の残りでは、 <strong>結合テスト</strong> を作って、異なる<ruby>構成要素<rp> (</rp><rt>コンポーネント</rt><rp>) </rp></ruby>の相互作用をテストする方法を説明しましょう。</p>
+<h2 id="jie-he-tesuto"><a class="zola-anchor" href="index.html#jie-he-tesuto" aria-label="Anchor link for: jie-he-tesuto">🔗</a>結合テスト</h2>
+<p>Rustにおける<a href="https://doc.rust-jp.rs/book-ja/ch11-03-test-organization.html#%E7%B5%90%E5%90%88%E3%83%86%E3%82%B9%E3%83%88">結合テスト</a>では、慣習としてプロジェクトのルートにおいた<code>tests</code>ディレクトリ (つまり<code>src</code>ディレクトリと同じ階層ですね) にテストプログラムを入れます。標準のテストフレームワークも、独自のテストフレームワークも、自動的にこのディレクトリにあるすべてのテストを実行します。</p>
+<p>すべての結合テストは、独自の実行可能ファイルを持っており、私達の<code>main.rs</code>とは完全に独立しています。つまり、それぞれのテストに独自のエントリポイント関数を定義しないといけないということです。どのような仕組みになっているのかを詳しく見るために、<code>basic_boot</code>という名前で試しに結合テストを作ってみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// この関数の名前を変えない
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>結合テストは独立した実行ファイルであるので、クレート属性（<code>no_std</code>、<code>no_main</code>、<code>test_runner</code>など）をすべてもう一度与えないといけません。また、新しいエントリポイント関数<code>_start</code>も作らないといけません。これはテストエントリポイント関数<code>test_main</code>を呼び出します。結合テストの実行可能ファイルは、テストモードでないときはビルドされないので、<code>cfg(test)</code>属性は必要ありません。</p>
+<p>今のところ、<code>test_runner</code>関数の中身として、常にパニックする<a href="https://doc.rust-lang.org/core/macro.unimplemented.html"><code>unimplemented</code></a>マクロを代わりに入れており、そして<code>panic</code>ハンドラにはただの<code>loop</code>を入れています。本当は、<code>serial_println</code>マクロと<code>exit_qemu</code>関数を使って、これらの関数を<code>main.rs</code>と全く同じように実装したいです。しかし問題は、テストが私達の<code>main.rs</code>実行ファイルとは完全に別にビルドされているので、これらの関数にアクセスすることができないということです。</p>
+<p>この段階で<code>cargo test</code>を実行したら、パニックハンドラによってエンドレスループに入ってしまうでしょう。QEMUを終了するキーボードショートカットである<code>Ctrl+c</code>を使わないといけません。</p>
+<h3 id="raiburariwozuo-ru"><a class="zola-anchor" href="index.html#raiburariwozuo-ru" aria-label="Anchor link for: raiburariwozuo-ru">🔗</a>ライブラリを作る</h3>
+<p>結合テストに必要な関数を利用できるようにするために、<code>main.rs</code>からライブラリを分離してやる必要があります。こうすると、他のクレートや結合テスト実行ファイルがこれをインクルードできるようになります。これをするために、新しい<code>src/lib.rs</code>ファイルを作りましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/lib.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>
+</span></code></pre>
+<p><code>main.rs</code>と同じく、<code>lib.rs</code>は自動的にcargoに認識される特別なファイルです。ライブラリは別のコンパイル単位なので、<code>#![no_std]</code>属性を再び指定する必要があります。</p>
+<p><code>cargo test</code>がライブラリにも使えるようにするために、テストのための関数や属性を<code>main.rs</code>から<code>lib.rs</code>へと移す必要もあります。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#![cfg_attr(test, no_main)]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#569cd6;">pub trait </span><span>Testable {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; ();
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;T&gt; Testable </span><span style="color:#569cd6;">for </span><span>T
+</span><span style="color:#569cd6;">where
+</span><span>    T: Fn(),
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) {
+</span><span>        serial_print!(</span><span style="color:#d69d85;">&quot;{}...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>, core::any::type_name::&lt;T&gt;());
+</span><span>        self();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Testable]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test.run();
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_panic_handler(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// `cargo test`のときのエントリポイント
+</span><span>#[cfg(test)]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p><code>test_runner</code>を（<code>main.rs</code>の）実行可能ファイルと結合テストの両方から利用可能にするために、<code>cfg(test)</code>属性をこれに適用せず、また、publicにします。パニックハンドラの実装もpublicな<code>test_panic_handler</code>関数へと分離することで、実行可能ファイルからも使えるようにしています。</p>
+<p><code>lib.rs</code>は<code>main.rs</code>とは独立にコンパイルされるので、ライブラリがテストモードでコンパイルされるときは<code>_start</code>エントリポイントとパニックハンドラを追加する必要があります。このような場合、<a href="https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg_attr-attribute"><code>cfg_attr</code></a>クレート属性を使うことで、<code>no_main</code>属性を条件付きで有効化することができます。</p>
+<p><code>QemuExitCode</code>enumと<code>exit_qemu</code>関数も移動し、publicにします：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u32)]
+</span><span style="color:#569cd6;">pub enum </span><span>QemuExitCode {
+</span><span>    Success = </span><span style="color:#b5cea8;">0x10</span><span>,
+</span><span>    Failed = </span><span style="color:#b5cea8;">0x11</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>exit_qemu(exit_code: QemuExitCode) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>        port.write(exit_code </span><span style="color:#569cd6;">as u32</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>これで、実行ファイルも結合テストもこれらの関数をライブラリからインポートでき、自前の実装を定義する必要はありません。<code>println</code>と<code>serial_println</code>も利用可能にするために、モジュールの宣言も移動させましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>serial;
+</span><span style="color:#569cd6;">pub mod </span><span>vga_buffer;
+</span></code></pre>
+<p>モジュールをpublicにすることで、ライブラリの外からも使えるようにしています。<code>println</code>と<code>serial_println</code>マクロは、これらのモジュールの<code>_print</code>関数を使っているため、これらのマクロを使うためにも、この変更は必要です。</p>
+<p>では、<code>main.rs</code>をこのライブラリを使うように更新しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(blog_os::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::println;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// この関数はパニック時に呼ばれる。
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>ライブラリは通常の外部クレートと同じように使うことができます。名前は、私達のクレート名――今回なら<code>blog_os</code>――になります。上のコードでは、<code>blog_os::test_runner</code>関数を<code>test_runner</code>属性で、<code>blog_os::test_panic_handler</code>関数を<code>cfg(test)</code>のパニックハンドラで使っています。また、<code>println</code>マクロをインポートすることで、<code>_start</code>と<code>panic</code>関数で使えるようにもしています。</p>
+<p>この時点で、<code>cargo run</code>と<code>cargo test</code>は再びうまく実行できるようになっているはずです。もちろん、<code>cargo test</code>は依然エンドレスループするはずですが（<code>ctrl+c</code>で終了できます）。結合テストに必要な関数を使ってこれを修正しましょう。</p>
+<h3 id="jie-he-tesutowowan-cheng-saseru"><a class="zola-anchor" href="index.html#jie-he-tesutowowan-cheng-saseru" aria-label="Anchor link for: jie-he-tesutowowan-cheng-saseru">🔗</a>結合テストを完成させる</h3>
+<p><code>src/main.rs</code>と同じように、<code>tests/basic_boot.rs</code>実行ファイルは新しいライブラリから型をインポートできます。これで、テストを完成させるのに足りない要素をインポートすることができます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span>#![test_runner(blog_os::test_runner)]
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>テストランナーを再実装することはせず、ライブラリの<code>test_runner</code>関数を使います。<code>panic</code>ハンドラとしては、<code>main.rs</code>でやったように<code>blog_os::test_panic_handler</code>関数を呼びます。</p>
+<p>これで、<code>cargo test</code>は再び通常通り終了するはずです。実行すると、<code>lib.rs</code>、<code>main.rs</code>、そして<code>basic_boot.rs</code>を順にそれぞれビルドし、テストを実行するのが見えるはずです。<code>main.rs</code>と<code>basic_boot</code>結合テストに関しては、これらには<code>#[test_case]</code>のつけられた関数はないため、“Running 0 tests“と報告されるはずです。</p>
+<p>これで、<code>basic_boot.rs</code>にテストを追加していくことができます。例えば、<code>println</code>がパニックすることなくうまく行くことを、VGAバッファのときのようにテストすることができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::println;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;test_println output&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p><code>cargo test</code>を実行すると、テスト関数を見つけ出して実行しているのがわかるでしょう。</p>
+<p>このテストは、VGAバッファのテストとほとんど同じであるため、今のところあまり意味がないように思われるかもしれません。しかし、将来的に<code>main.rs</code>の<code>_start</code>関数と<code>lib.rs</code>はどんどん大きくなり、<code>test_main</code>関数を実行する前に様々な初期化ルーチンを呼ぶようになるかもしれないので、これらの2つのテストは全然違う環境で実行されるようになるかもしれないのです。</p>
+<p><code>println</code>を<code>basic_boot</code>環境で（<code>_start</code>で初期化ルーチンを一切呼ぶことなく）テストすることにより、起動の直後に<code>println</code>が使えることが保証されます。私達は、例えばパニックメッセージの出力などを<code>println</code>に依存しているので、これは重要です。</p>
+<h3 id="jin-hou-notesuto"><a class="zola-anchor" href="index.html#jin-hou-notesuto" aria-label="Anchor link for: jin-hou-notesuto">🔗</a>今後のテスト</h3>
+<p>結合テストの魅力は、これらが完全に独立した実行ファイルとして扱われることです。これにより、実行環境を完全にコントロールすることができるので、コードがCPUやハードウェアデバイスと正しく相互作用していることをテストすることができるのです。</p>
+<p><code>basic_boot</code>テストは結合テストの非常に簡単な例でした。今後、私達のカーネルは機能がより豊富になり、そして様々な方法でハードウェアと相互作用するようになります。結合テストを追加することにより、それらの相互作用が期待通り動く（また、期待通り動きつづけている）ことを確かめることができるのです。今後追加できるテストの例としては、以下があります：</p>
+<ul>
+<li><strong>CPU<ruby>例外<rp> (</rp><rt>exception</rt><rp>) </rp></ruby></strong>: プログラムが不正な操作（例えばゼロで割るなど）を行った場合、CPUは例外を投げます（訳注：例外を発することを、英語でthrow an exceptionというのにちなんで、慣例的に「投げる」と表現します）。カーネルはそのような例外に対するハンドラ関数を登録しておくことができます。結合テストで、CPU例外が起こったときに、例外ハンドラが呼ばれていることや、例外が解決可能だった場合に実行が継続することを確かめることができるでしょう。</li>
+<li><strong>ページテーブル</strong>: ページテーブルは、どのメモリ領域が有効でアクセスできるかを定義しています。例えばプログラムを立ち上げるとき、このページテーブルを変更することで、新しいメモリ領域を割り当てることが可能です。結合テストで、ページテーブルに<code>_start</code>関数内で何らかの変更を施して、その変更が期待通りの効果を起こしているかを<code>#[test_case]</code>関数で確かめることができるでしょう。</li>
+<li><strong>ユーザー<ruby>空間<rp> (</rp><rt>スペース</rt><rp>) </rp></ruby>プログラム</strong>: ユーザー空間プログラムは、システムの<ruby>資源<rp> (</rp><rt>リソース</rt><rp>) </rp></ruby>に限られたアクセスしか持たないプログラムのことです。これらは例えば、カーネルのデータ構造や、他のプログラムのメモリにアクセスすることはできません。結合テストで、禁止された操作を実行するようなユーザー空間プログラムを起動し、カーネルがそれらをすべて防ぐことを確かめることができるでしょう。</li>
+</ul>
+<p>ご想像のとおり、もっと多くのテストが可能です。このようなテストを追加することで、カーネルに新しい機能を追加したときや、コードをリファクタリングしたときに、これらを壊してしまっていないことを保証できます。これは、私達のカーネルがより大きく、より複雑になったときに特に重要になります。</p>
+<h3 id="panitukusinakerebanaranaitesuto"><a class="zola-anchor" href="index.html#panitukusinakerebanaranaitesuto" aria-label="Anchor link for: panitukusinakerebanaranaitesuto">🔗</a>パニックしなければならないテスト</h3>
+<p>標準ライブラリのテストフレームワークは、<a href="https://doc.rust-jp.rs/rust-by-example-ja/testing/unit_testing.html#testing-panics"><code>#[should_panic]</code>属性</a>をサポートしています。これを使うと、失敗しなければならないテストを作ることができます。これは、例えば、関数が無効な引数を渡されたときに失敗することを確かめる場合などに便利です。残念なことに、この機能は標準ライブラリのサポートを必要とするため、<code>#[no_std]</code>クレートではこの属性はサポートされていません。</p>
+<p><code>#[should_panic]</code>属性は使えませんが、パニックハンドラから成功のエラーコードで終了するような結合テストを作れば、似たような動きをさせることはできます。そのようなテストを<code>should_panic</code>という名前で作ってみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{QemuExitCode, exit_qemu, serial_println};
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>これは<code>_start</code>関数や、独自テストランナー属性などをまだ定義していないので未完成です。足りない部分を追加しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[test did not panic]&quot;</span><span>);
+</span><span>        exit_qemu(QemuExitCode::Failed);
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p>このテストは、<code>lib.rs</code>の<code>test_runner</code>を使い回さず、自前の、テストがパニックせずリターンしたときに失敗の終了コードを出すような<code>test_runner</code>関数を定義しています（私達はテストにパニックしてほしいわけですから）。もしテスト関数が一つも定義されていなければ、このランナーは成功のエラーコードで終了します。ランナーは一つテストを実行したら必ず終了するので、1つ以上の<code>#[test_case]</code>関数を定義しても意味はありません。</p>
+<p>では、失敗するはずのテストを追加してみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::serial_print;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>should_fail() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;should_panic::should_fail...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">0</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span></code></pre>
+<p>このテストは<code>assert_eq</code>を使って<code>0</code>と<code>1</code>が等しいことをアサートしています。これはもちろん失敗するので、私達のテストは望み通りパニックします。ここで、<code>Testable</code>トレイトは使っていないので、関数名は<code>serial_print!</code>を使って自分で出力しないといけないことに注意してください。</p>
+<p><code>cargo test --test should_panic</code>を使ってテストすると、テストが期待通りパニックし、成功したことがわかるでしょう。アサーションをコメントアウトしテストをもう一度実行すると、“test did not panic“というメッセージとともに、テストが確かに失敗することがわかります。</p>
+<p>この方法の無視できない欠点は、テスト関数を一つしか使えないことです。<code>#[test_case]</code>関数が複数ある場合、パニックハンドラが呼び出された後で（プログラムの）実行を続けることはできないので、最初の関数のみが実行されます。この問題を解決するいい方法を私は知らないので、もしなにかアイデアがあったら教えてください！</p>
+<h3 id="hanesu-harness-nonaitesuto"><a class="zola-anchor" href="index.html#hanesu-harness-nonaitesuto" aria-label="Anchor link for: hanesu-harness-nonaitesuto">🔗</a><ruby>ハーネス<rp> (</rp><rt>harness</rt><rp>) </rp></ruby>のないテスト</h3>
+<div class="note">
+<p><strong>訳注:</strong> ハーネスとは、もともとは馬具の一種を意味する言葉です。転じて「制御する道具」一般を指し、また<a href="https://en.wikipedia.org/wiki/Test_harness">テストハーネス</a>というと（<code>test_runner</code>のように）複数のテストケースを処理し、その振る舞い・出力などを適切に処理・整形してくれるプログラムのことを指します。</p>
+</div>
+<p>（私達の<code>should_panic</code>テストのように）一つしかテスト関数を持たない結合テストでは、テストランナーは必ずしも必要というわけではありません。このような場合、テストランナーは完全に無効化してしまって、<code>_start</code>関数からテストを直接実行することができます。</p>
+<p>このためには、<code>Cargo.toml</code>でこのテストの<code>harness</code>フラグを無効化することがカギとなります。これは、結合テストにテストランナーが使われるかを定義しています。これが<code>false</code>に設定されると、標準のテストランナーと独自のテストランナーの両方が無効化され、通常の実行ファイルのように扱われるようになります。</p>
+<p><code>should_panic</code>テストの<code>harness</code>フラグを無効化してみましょう：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[[</span><span style="color:#808080;">test</span><span>]]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;should_panic&quot;
+</span><span style="color:#569cd6;">harness </span><span>= </span><span style="color:#569cd6;">false
+</span></code></pre>
+<p>これで、テストランナーに関係するコードを取り除いて、<code>should_panic</code>テストを大幅に簡略化することができます。結果として以下のようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, serial_print, serial_println, QemuExitCode};
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    should_fail();
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[test did not panic]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>should_fail() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;should_panic::should_fail...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">0</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p><code>should_fail</code>関数を<code>_start</code>関数から直接呼び出して、もしリターンしたら失敗の終了コードで終了するようにしました。今<code>cargo test --test should_panic</code>を実行しても、以前と全く同じように振る舞います。</p>
+<p><code>should_panic</code>なテストを作るとき以外にも<code>harness</code>属性は有用なことがあります。例えば、それぞれのテスト関数が副作用を持っており、指定された順番で実行されないといけないときなどです。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>テストは、ある要素が望み通りの振る舞いをしていることを保証するのにとても便利なテクニックです。バグが存在しないことを証明することはできないとはいえ、バグを発見したり、特にリグレッションを防ぐのに便利な方法であることは間違いありません。</p>
+<p>この記事では、私達のRust製カーネルでテストフレームワークを組み立てる方法を説明しました。Rustの<ruby>独自<rp> (</rp><rt>カスタム</rt><rp>) </rp></ruby>テストフレームワーク機能を使って、私達のベアメタル環境における、シンプルな<code>#[test_case]</code>属性のサポートを実装しました。私達のテストランナーは、QEMUの<code>isa-debug-exit</code>デバイスを使うことで、QEMUをテスト実行後に終了し、テストステータスを報告することができます。エラーメッセージを、VGAバッファの代わりにコンソールに出力するために、シリアルポートの単純なドライバを作りました。</p>
+<p><code>println</code>マクロのテストをいくつか作った後、記事の後半では結合テストについて見ました。結合テストは<code>tests</code>ディレクトリに置かれ、完全に独立した実行ファイルとして扱われることを学びました。結合テストから<code>exit_qemu</code>関数と<code>serial_println</code>マクロにアクセスできるようにするために、コードのほとんどをライブラリに移し、すべての実行ファイルと結合テストがインポートできるようにしました。結合テストはそれぞれ独自の環境で実行されるため、ハードウェアとの相互作用や、パニックするべきテストを作るといったことが可能になります。</p>
+<p>QEMU内で現実に近い環境で実行できるテストフレームワークを手に入れました。今後の記事でより多くのテストを作っていくことで、カーネルがより複雑になってもメンテナンスし続けられるでしょう。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>次の記事では、<strong>CPU例外</strong>を見ていきます。この例外というのは、CPUによってなにか「不法行為」――例えば、ゼロ除算やマップされていないメモリページへのアクセス（いわゆる「ページフォルト」）――が行われたときに投げられます。これらの例外を捕捉してテストできるようにしておくことは、将来エラーをデバッグするときに非常に重要です。例外の処理はまた、キーボードをサポートするのに必要になる、ハードウェア割り込みの処理に非常に似てもいます。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../vga-text-mode/index.html">&laquo; VGAテキストモード</a>
+        
+        
+            <a class="next" href="../cpu-exceptions/index.html">CPU例外 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Testing%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Testing (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Testing%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../testing/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/testing/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/testing/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/testing/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

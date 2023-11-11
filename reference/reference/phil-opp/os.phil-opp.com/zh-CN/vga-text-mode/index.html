@@ -1,0 +1,759 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="VGA 字符模式（VGA text mode）是打印字符到屏幕的一种简单方式。在这篇文章中，为了包装这个模式为一个安全而简单的接口，我们将包装 unsafe 代码到独立的模块。我们还将实现对 Rust 语言格式化宏（formatting macros）的支持。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>VGA 字符模式 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#vga-zi-fu-huan-chong-qu">VGA 字符缓冲区</a>
+            
+        </li><li>
+            <a href="index.html#bao-zhuang-dao-rust-mo-kuai">包装到 Rust 模块</a>
+            <ol>
+                <li>
+                    <a href="index.html#yan-se">颜色</a>
+                </li><li>
+                    <a href="index.html#zi-fu-huan-chong-qu">字符缓冲区</a>
+                </li><li>
+                    <a href="index.html#da-yin-zi-fu">打印字符</a>
+                </li><li>
+                    <a href="index.html#yi-shi-cao-zuo">易失操作</a>
+                </li><li>
+                    <a href="index.html#ge-shi-hua-hong">格式化宏</a>
+                </li><li>
+                    <a href="index.html#huan-xing">换行</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#quan-ju-jie-kou">全局接口</a>
+            <ol>
+                <li>
+                    <a href="index.html#yan-chi-chu-shi-hua">延迟初始化</a>
+                </li><li>
+                    <a href="index.html#spinlock">spinlock</a>
+                </li><li>
+                    <a href="index.html#an-quan-xing">安全性</a>
+                </li><li>
+                    <a href="index.html#println-hong">println! 宏</a>
+                </li><li>
+                    <a href="index.html#shi-yong-println-de-hello-world">使用 println! 的 Hello World</a>
+                </li><li>
+                    <a href="index.html#da-yin-panic-xin-xi">打印 panic 信息</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#xiao-jie">小结</a>
+            
+        </li><li>
+            <a href="index.html#xia-pian-yu-gao">下篇预告</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>VGA 字符模式</h1>
+    <time datetime="2018-02-26" class="post-date">
+        Feb 26, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../vga-text-mode/index.html">VGA Text Mode</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/luojia65">@luojia65</a> 和 <a href="https://github.com/Rustin-Liu">@Rustin-Liu</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/liuyuran">@liuyuran</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p><strong>VGA 字符模式</strong>（<a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGA text mode</a>）是打印字符到屏幕的一种简单方式。在这篇文章中，为了包装这个模式为一个安全而简单的接口，我们将包装 unsafe 代码到独立的模块。我们还将实现对 Rust 语言<strong>格式化宏</strong>（<a href="https://doc.rust-lang.org/std/fmt/#related-macros">formatting macros</a>）的支持。</p>
+<span id="continue-reading"></span>
+<p>此博客在 <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上公开开发. 如果您有任何问题或疑问，请在此处打开一个 issue。 您也可以在<a href="index.html#comments">底部</a>发表评论. 这篇文章的完整源代码可以在 [<code>post-03</code>] <a href="https://github.com/phil-opp/blog_os/tree/post-03">post branch</a> 分支中找到。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#vga-zi-fu-huan-chong-qu">VGA 字符缓冲区</a>
+                
+            </li><li>
+                <a href="index.html#bao-zhuang-dao-rust-mo-kuai">包装到 Rust 模块</a>
+                <ul>
+                    <li>
+                        <a href="index.html#yan-se">颜色</a>
+                    </li><li>
+                        <a href="index.html#zi-fu-huan-chong-qu">字符缓冲区</a>
+                    </li><li>
+                        <a href="index.html#da-yin-zi-fu">打印字符</a>
+                    </li><li>
+                        <a href="index.html#yi-shi-cao-zuo">易失操作</a>
+                    </li><li>
+                        <a href="index.html#ge-shi-hua-hong">格式化宏</a>
+                    </li><li>
+                        <a href="index.html#huan-xing">换行</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#quan-ju-jie-kou">全局接口</a>
+                <ul>
+                    <li>
+                        <a href="index.html#yan-chi-chu-shi-hua">延迟初始化</a>
+                    </li><li>
+                        <a href="index.html#spinlock">spinlock</a>
+                    </li><li>
+                        <a href="index.html#an-quan-xing">安全性</a>
+                    </li><li>
+                        <a href="index.html#println-hong">println! 宏</a>
+                    </li><li>
+                        <a href="index.html#shi-yong-println-de-hello-world">使用 println! 的 Hello World</a>
+                    </li><li>
+                        <a href="index.html#da-yin-panic-xin-xi">打印 panic 信息</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#xiao-jie">小结</a>
+                
+            </li><li>
+                <a href="index.html#xia-pian-yu-gao">下篇预告</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="vga-zi-fu-huan-chong-qu"><a class="zola-anchor" href="index.html#vga-zi-fu-huan-chong-qu" aria-label="Anchor link for: vga-zi-fu-huan-chong-qu">🔗</a>VGA 字符缓冲区</h2>
+<p>为了在 VGA 字符模式中向屏幕打印字符，我们必须将它写入硬件提供的 <strong>VGA 字符缓冲区</strong>（VGA text buffer）。通常状况下，VGA 字符缓冲区是一个 25 行、80 列的二维数组，它的内容将被实时渲染到屏幕。这个数组的元素被称作<strong>字符单元</strong>（character cell），它使用下面的格式描述一个屏幕上的字符：</p>
+<table><thead><tr><th>Bit(s)</th><th>Value</th></tr></thead><tbody>
+<tr><td>0-7</td><td>ASCII code point</td></tr>
+<tr><td>8-11</td><td>Foreground color</td></tr>
+<tr><td>12-14</td><td>Background color</td></tr>
+<tr><td>15</td><td>Blink</td></tr>
+</tbody></table>
+<p>第一个字节表示了应当输出的 <a href="https://en.wikipedia.org/wiki/ASCII">ASCII 编码</a>，更加准确的说，类似于 <a href="https://en.wikipedia.org/wiki/Code_page_437">437 字符编码表</a> 中字符对应的编码，但又有细微的不同。 这里为了简化表达，我们在文章里将其简称为ASCII字符。</p>
+<p>第二个字节则定义了字符的显示方式，前四个比特定义了前景色，中间三个比特定义了背景色，最后一个比特则定义了该字符是否应该闪烁，以下是可用的颜色列表：</p>
+<table><thead><tr><th>Number</th><th>Color</th><th>Number + Bright Bit</th><th>Bright Color</th></tr></thead><tbody>
+<tr><td>0x0</td><td>Black</td><td>0x8</td><td>Dark Gray</td></tr>
+<tr><td>0x1</td><td>Blue</td><td>0x9</td><td>Light Blue</td></tr>
+<tr><td>0x2</td><td>Green</td><td>0xa</td><td>Light Green</td></tr>
+<tr><td>0x3</td><td>Cyan</td><td>0xb</td><td>Light Cyan</td></tr>
+<tr><td>0x4</td><td>Red</td><td>0xc</td><td>Light Red</td></tr>
+<tr><td>0x5</td><td>Magenta</td><td>0xd</td><td>Pink</td></tr>
+<tr><td>0x6</td><td>Brown</td><td>0xe</td><td>Yellow</td></tr>
+<tr><td>0x7</td><td>Light Gray</td><td>0xf</td><td>White</td></tr>
+</tbody></table>
+<p>每个颜色的第四位称为<strong>加亮位</strong>（bright bit），比如blue加亮后就变成了light blue，但对于背景色，这个比特会被用于标记是否闪烁。</p>
+<p>要修改 VGA 字符缓冲区，我们可以通过<strong>存储器映射输入输出</strong>（<a href="https://en.wikipedia.org/wiki/Memory-mapped_I/O">memory-mapped I/O</a>）的方式，读取或写入地址 <code>0xb8000</code>；这意味着，我们可以像操作普通的内存区域一样操作这个地址。</p>
+<p>需要注意的是，一些硬件虽然映射到存储器，但可能不会完全支持所有的内存操作：可能会有一些设备支持按 <code>u8</code> 字节读取，但在读取 <code>u64</code> 时返回无效的数据。幸运的是，字符缓冲区都<a href="https://web.stanford.edu/class/cs140/projects/pintos/specs/freevga/vga/vgamem.htm#manip">支持标准的读写操作</a>，所以我们不需要用特殊的标准对待它。</p>
+<h2 id="bao-zhuang-dao-rust-mo-kuai"><a class="zola-anchor" href="index.html#bao-zhuang-dao-rust-mo-kuai" aria-label="Anchor link for: bao-zhuang-dao-rust-mo-kuai">🔗</a>包装到 Rust 模块</h2>
+<p>既然我们已经知道 VGA 文字缓冲区如何工作，也是时候创建一个 Rust 模块来处理文字打印了。我们输入这样的代码：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span style="color:#569cd6;">mod </span><span>vga_buffer;
+</span></code></pre>
+<p>我们的模块暂时不需要添加子模块，所以我们将它创建为 <code>src/vga_buffer.rs</code> 文件。除非另有说明，本文中的代码都保存到这个文件中。</p>
+<h3 id="yan-se"><a class="zola-anchor" href="index.html#yan-se" aria-label="Anchor link for: yan-se">🔗</a>颜色</h3>
+<p>首先，我们使用 Rust 的<strong>枚举</strong>（enum）表示特定的颜色：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[allow(dead_code)]
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>Color {
+</span><span>    Black = </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    Blue = </span><span style="color:#b5cea8;">1</span><span>,
+</span><span>    Green = </span><span style="color:#b5cea8;">2</span><span>,
+</span><span>    Cyan = </span><span style="color:#b5cea8;">3</span><span>,
+</span><span>    Red = </span><span style="color:#b5cea8;">4</span><span>,
+</span><span>    Magenta = </span><span style="color:#b5cea8;">5</span><span>,
+</span><span>    Brown = </span><span style="color:#b5cea8;">6</span><span>,
+</span><span>    LightGray = </span><span style="color:#b5cea8;">7</span><span>,
+</span><span>    DarkGray = </span><span style="color:#b5cea8;">8</span><span>,
+</span><span>    LightBlue = </span><span style="color:#b5cea8;">9</span><span>,
+</span><span>    LightGreen = </span><span style="color:#b5cea8;">10</span><span>,
+</span><span>    LightCyan = </span><span style="color:#b5cea8;">11</span><span>,
+</span><span>    LightRed = </span><span style="color:#b5cea8;">12</span><span>,
+</span><span>    Pink = </span><span style="color:#b5cea8;">13</span><span>,
+</span><span>    Yellow = </span><span style="color:#b5cea8;">14</span><span>,
+</span><span>    White = </span><span style="color:#b5cea8;">15</span><span>,
+</span><span>}
+</span></code></pre>
+<p>我们使用<strong>类似于 C 语言的枚举</strong>（C-like enum），为每个颜色明确指定一个数字。在这里，每个用 <code>repr(u8)</code> 注记标注的枚举类型，都会以一个 <code>u8</code> 的形式存储——事实上 4 个二进制位就足够了，但 Rust 语言并不提供 <code>u4</code> 类型。</p>
+<p>通常来说，编译器会对每个未使用的变量发出<strong>警告</strong>（warning）；使用 <code>#[allow(dead_code)]</code>，我们可以对 <code>Color</code> 枚举类型禁用这个警告。</p>
+<p>我们还<strong>生成</strong>（<a href="https://doc.rust-lang.org/rust-by-example/trait/derive.html">derive</a>）了 <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html"><code>Copy</code></a>、<a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html"><code>Clone</code></a>、<a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Debug.html"><code>Debug</code></a>、<a href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html"><code>PartialEq</code></a> 和 <a href="https://doc.rust-lang.org/nightly/core/cmp/trait.Eq.html"><code>Eq</code></a> 这几个 trait：这让我们的类型遵循<strong>复制语义</strong>（<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/ownership.html#copy-types">copy semantics</a>），也让它可以被比较、被调试和打印。</p>
+<p>为了描述包含前景色和背景色的、完整的<strong>颜色代码</strong>（color code），我们基于 <code>u8</code> 创建一个新类型：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>ColorCode(</span><span style="color:#569cd6;">u8</span><span>);
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ColorCode {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new(foreground: Color, background: Color) -&gt; ColorCode {
+</span><span>        ColorCode((background </span><span style="color:#569cd6;">as u8</span><span>) &lt;&lt; </span><span style="color:#b5cea8;">4 </span><span style="color:#569cd6;">| </span><span>(foreground </span><span style="color:#569cd6;">as u8</span><span>))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>这里，<code>ColorCode</code> 类型包装了一个完整的颜色代码字节，它包含前景色和背景色信息。和 <code>Color</code> 类型类似，我们为它生成 <code>Copy</code> 和 <code>Debug</code> 等一系列 trait。为了确保 <code>ColorCode</code> 和 <code>u8</code> 有完全相同的内存布局，我们添加 <a href="https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent">repr(transparent) 标记</a>。</p>
+<h3 id="zi-fu-huan-chong-qu"><a class="zola-anchor" href="index.html#zi-fu-huan-chong-qu" aria-label="Anchor link for: zi-fu-huan-chong-qu">🔗</a>字符缓冲区</h3>
+<p>现在，我们可以添加更多的结构体，来描述屏幕上的字符和整个字符缓冲区：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(C)]
+</span><span style="color:#569cd6;">struct </span><span>ScreenChar {
+</span><span>    ascii_character: </span><span style="color:#569cd6;">u8</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">25</span><span>;
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_WIDTH</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">80</span><span>;
+</span><span>
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>在内存布局层面，Rust 并不保证按顺序布局成员变量。因此，我们需要使用 <code>#[repr(C)]</code> 标记结构体；这将按 C 语言约定的顺序布局它的成员变量，让我们能正确地映射内存片段。对 <code>Buffer</code> 类型，我们再次使用 <code>repr(transparent)</code>，来确保类型和它的单个成员有相同的内存布局。</p>
+<p>为了输出字符到屏幕，我们来创建一个 <code>Writer</code> 类型：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Writer {
+</span><span>    column_position: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>    buffer: </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> Buffer,
+</span><span>}
+</span></code></pre>
+<p>我们将让这个 <code>Writer</code> 类型将字符写入屏幕的最后一行，并在一行写满或接收到换行符 <code>\n</code> 的时候，将所有的字符向上位移一行。<code>column_position</code> 变量将跟踪光标在最后一行的位置。当前字符的前景和背景色将由 <code>color_code</code> 变量指定；另外，我们存入一个 VGA 字符缓冲区的可变借用到<code>buffer</code>变量中。需要注意的是，这里我们对借用使用<strong>显式生命周期</strong>（<a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotation-syntax">explicit lifetime</a>），告诉编译器这个借用在何时有效：我们使用** <code>'static</code> 生命周期 **（<a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#the-static-lifetime">’static lifetime</a>），意味着这个借用应该在整个程序的运行期间有效；这对一个全局有效的 VGA 字符缓冲区来说，是非常合理的。</p>
+<h3 id="da-yin-zi-fu"><a class="zola-anchor" href="index.html#da-yin-zi-fu" aria-label="Anchor link for: da-yin-zi-fu">🔗</a>打印字符</h3>
+<p>现在我们可以使用 <code>Writer</code> 类型来更改缓冲区内的字符了。首先，为了写入一个 ASCII 码字节，我们创建这样的函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">if </span><span>self.column_position &gt;= </span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                    self.new_line();
+</span><span>                }
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> row = </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>                </span><span style="color:#569cd6;">let</span><span> col = self.column_position;
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> color_code = self.color_code;
+</span><span>                self.buffer.chars[row][col] = ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code,
+</span><span>                };
+</span><span>                self.column_position += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>如果这个字节是一个<strong>换行符</strong>（<a href="https://en.wikipedia.org/wiki/Newline">line feed</a>）字节 <code>\n</code>，我们的 <code>Writer</code> 不应该打印新字符，相反，它将调用我们稍后会实现的 <code>new_line</code> 方法；其它的字节应该将在 <code>match</code> 语句的第二个分支中被打印到屏幕上。</p>
+<p>当打印字节时，<code>Writer</code> 将检查当前行是否已满。如果已满，它将首先调用 <code>new_line</code> 方法来将这一行字向上提升，再将一个新的 <code>ScreenChar</code> 写入到缓冲区，最终将当前的光标位置前进一位。</p>
+<p>要打印整个字符串，我们把它转换为字节并依次输出：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_string(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> byte </span><span style="color:#569cd6;">in</span><span> s.bytes() {
+</span><span>            </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>                </span><span style="color:#608b4e;">// 可以是能打印的 ASCII 码字节，也可以是换行符
+</span><span>                </span><span style="color:#b5cea8;">0x20</span><span style="color:#569cd6;">..</span><span>=</span><span style="color:#b5cea8;">0x7e </span><span style="color:#569cd6;">| b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.write_byte(byte),
+</span><span>                </span><span style="color:#608b4e;">// 不包含在上述范围之内的字节
+</span><span>                </span><span style="color:#569cd6;">_ =&gt; </span><span>self.write_byte(</span><span style="color:#b5cea8;">0xfe</span><span>),
+</span><span>            }
+</span><span>
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>VGA 字符缓冲区只支持 ASCII 码字节和<strong>代码页 437</strong>（<a href="https://en.wikipedia.org/wiki/Code_page_437">Code page 437</a>）定义的字节。Rust 语言的字符串默认编码为 <a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a>，也因此可能包含一些 VGA 字符缓冲区不支持的字节：我们使用 <code>match</code> 语句，来区别可打印的 ASCII 码或换行字节，和其它不可打印的字节。对每个不可打印的字节，我们打印一个 <code>■</code> 符号；这个符号在 VGA 硬件中被编码为十六进制的 <code>0xfe</code>。</p>
+<p>我们可以亲自试一试已经编写的代码。为了这样做，我们可以临时编写一个函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello &quot;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;Wörld!&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>这个函数首先创建一个指向 <code>0xb8000</code> 地址VGA缓冲区的 <code>Writer</code>。实现这一点，我们需要编写的代码可能看起来有点奇怪：首先，我们把整数 <code>0xb8000</code> 强制转换为一个可变的<strong>裸指针</strong>（<a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#dereferencing-a-raw-pointer">raw pointer</a>）；之后，通过运算符<code>*</code>，我们将这个裸指针解引用；最后，我们再通过 <code>&amp;mut</code>，再次获得它的可变借用。这些转换需要 <strong><code>unsafe</code> 语句块</strong>（<a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html">unsafe block</a>），因为编译器并不能保证这个裸指针是有效的。</p>
+<p>然后它将字节 <code>b'H'</code> 写入缓冲区内. 前缀 <code>b</code> 创建了一个字节常量（<a href="https://doc.rust-lang.org/reference/tokens.html#byte-literals">byte literal</a>），表示单个 ASCII 码字符；通过尝试写入 <code>&quot;ello &quot;</code> 和 <code>&quot;Wörld!&quot;</code>，我们可以测试 <code>write_string</code> 方法和其后对无法打印字符的处理逻辑。为了观察输出，我们需要在 <code>_start</code> 函数中调用 <code>print_something</code> 方法：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    vga_buffer::print_something();
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>编译运行后，黄色的 <code>Hello W■■rld!</code> 字符串将会被打印在屏幕的左下角：</p>
+<p><img src="../../vga-text-mode/vga-hello.png" alt="QEMU output with a yellow Hello W■■rld! in the lower left corner" /></p>
+<p>需要注意的是，<code>ö</code> 字符被打印为两个 <code>■</code> 字符。这是因为在 <a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a> 编码下，字符 <code>ö</code> 是由两个字节表述的——而这两个字节并不处在可打印的 ASCII 码字节范围之内。事实上，这是 UTF-8 编码的基本特点之一：<strong>如果一个字符占用多个字节，那么每个组成它的独立字节都不是有效的 ASCII 码字节</strong>（the individual bytes of multi-byte values are never valid ASCII）。</p>
+<h3 id="yi-shi-cao-zuo"><a class="zola-anchor" href="index.html#yi-shi-cao-zuo" aria-label="Anchor link for: yi-shi-cao-zuo">🔗</a>易失操作</h3>
+<p>我们刚才看到，自己想要输出的信息被正确地打印到屏幕上。然而，未来 Rust 编译器更暴力的优化可能让这段代码不按预期工作。</p>
+<p>产生问题的原因在于，我们只向 <code>Buffer</code> 写入，却不再从它读出数据。此时，编译器不知道我们事实上已经在操作 VGA 缓冲区内存，而不是在操作普通的 RAM——因此也不知道产生的<strong>副效应</strong>（side effect），即会有几个字符显示在屏幕上。这时，编译器也许会认为这些写入操作都没有必要，甚至会选择忽略这些操作！所以，为了避免这些并不正确的优化，这些写入操作应当被指定为<a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">易失操作</a>。这将告诉编译器，这些写入可能会产生副效应，不应该被优化掉。</p>
+<p>为了在我们的 VGA 缓冲区中使用易失的写入操作，我们使用 <a href="https://docs.rs/volatile">volatile</a> 库。这个<strong>包</strong>（crate）提供一个名为 <code>Volatile</code> 的<strong>包装类型</strong>（wrapping type）和它的 <code>read</code>、<code>write</code> 方法；这些方法包装了 <code>core::ptr</code> 内的 <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.read_volatile.html">read_volatile</a> 和 <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.write_volatile.html">write_volatile</a> 函数，从而保证读操作或写操作不会被编译器优化。</p>
+<p>要添加 <code>volatile</code> 包为项目的<strong>依赖项</strong>（dependency），我们可以在 <code>Cargo.toml</code> 文件的 <code>dependencies</code> 中添加下面的代码：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">volatile </span><span>= </span><span style="color:#d69d85;">&quot;0.2.6&quot;
+</span></code></pre>
+<p><code>0.2.6</code> 表示一个<strong>语义版本号</strong>（<a href="https://semver.org/">semantic version number</a>），在 cargo 文档的<a href="https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html">《指定依赖项》章节</a>可以找到与它相关的使用指南。</p>
+<p>现在，我们使用它来完成 VGA 缓冲区的 volatile 写入操作。我们将 <code>Buffer</code> 类型的定义修改为下列代码：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>volatile::Volatile;
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[Volatile&lt;ScreenChar&gt;; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>在这里，我们不使用 <code>ScreenChar</code> ，而选择使用 <code>Volatile&lt;ScreenChar&gt;</code> ——在这里，<code>Volatile</code> 类型是一个<strong>泛型</strong>（<a href="https://doc.rust-lang.org/book/ch10-01-syntax.html">generic</a>），可以包装几乎所有的类型——这确保了我们不会通过普通的写入操作，意外地向它写入数据；我们转而使用提供的 <code>write</code> 方法。</p>
+<p>这意味着，我们必须要修改我们的 <code>Writer::write_byte</code> 方法：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>
+</span><span>                self.buffer.chars[row][col].write(ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code: color_code,
+</span><span>                });
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p>正如代码所示，我们不再使用普通的 <code>=</code> 赋值，而使用了 <code>write</code> 方法：这能确保编译器不再优化这个写入操作。</p>
+<h3 id="ge-shi-hua-hong"><a class="zola-anchor" href="index.html#ge-shi-hua-hong" aria-label="Anchor link for: ge-shi-hua-hong">🔗</a>格式化宏</h3>
+<p>支持 Rust 提供的<strong>格式化宏</strong>（formatting macros）也是一个很好的思路。通过这种途径，我们可以轻松地打印不同类型的变量，如整数或浮点数。为了支持它们，我们需要实现 <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>core::fmt::Write</code></a> trait；要实现它，唯一需要提供的方法是 <code>write_str</code>，它和我们先前编写的 <code>write_string</code> 方法差别不大，只是返回值类型变成了 <code>fmt::Result</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::fmt;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>fmt::Write </span><span style="color:#569cd6;">for </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_str(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) -&gt; fmt::Result {
+</span><span>        self.write_string(s);
+</span><span>        Ok(())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>这里，<code>Ok(())</code> 属于 <code>Result</code> 枚举类型中的 <code>Ok</code>，包含一个值为 <code>()</code> 的变量。</p>
+<p>现在我们就可以使用 Rust 内置的格式化宏 <code>write!</code> 和 <code>writeln!</code> 了：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello! &quot;</span><span>);
+</span><span>    write!(writer, </span><span style="color:#d69d85;">&quot;The numbers are </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> and </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.0</span><span>/</span><span style="color:#b5cea8;">3.0</span><span>).unwrap();
+</span><span>}
+</span></code></pre>
+<p>现在，你应该在屏幕下端看到一串 <code>Hello! The numbers are 42 and 0.3333333333333333</code>。<code>write!</code> 宏返回的 <code>Result</code> 类型必须被使用，所以我们调用它的 <a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.unwrap"><code>unwrap</code></a> 方法，它将在错误发生时 panic。这里的情况下应该不会发生这样的问题，因为写入 VGA 字符缓冲区并没有可能失败。</p>
+<h3 id="huan-xing"><a class="zola-anchor" href="index.html#huan-xing" aria-label="Anchor link for: huan-xing">🔗</a>换行</h3>
+<p>在之前的代码中，我们忽略了换行符，因此没有处理超出一行字符的情况。当换行时，我们想要把每个字符向上移动一行——此时最顶上的一行将被删除——然后在最后一行的起始位置继续打印。要做到这一点，我们要为 <code>Writer</code> 实现一个新的 <code>new_line</code> 方法：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> row </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">1</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>{
+</span><span>            </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                </span><span style="color:#569cd6;">let</span><span> character = self.buffer.chars[row][col].read();
+</span><span>                self.buffer.chars[row - </span><span style="color:#b5cea8;">1</span><span>][col].write(character);
+</span><span>            }
+</span><span>        }
+</span><span>        self.clear_row(</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>        self.column_position = </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>我们遍历每个屏幕上的字符，把每个字符移动到它上方一行的相应位置。这里，<code>..</code> 符号是<strong>区间标号</strong>（range notation）的一种；它表示左闭右开的区间，因此不包含它的上界。在外层的枚举中，我们从第 1 行开始，省略了对第 0 行的枚举过程——因为这一行应该被移出屏幕，即它将被下一行的字符覆写。</p>
+<p>所以我们实现的 <code>clear_row</code> 方法代码如下：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> blank = ScreenChar {
+</span><span>            ascii_character: </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>,
+</span><span>            color_code: self.color_code,
+</span><span>        };
+</span><span>        </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>            self.buffer.chars[row][col].write(blank);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>通过向对应的缓冲区写入空格字符，这个方法能清空一整行的字符位置。</p>
+<h2 id="quan-ju-jie-kou"><a class="zola-anchor" href="index.html#quan-ju-jie-kou" aria-label="Anchor link for: quan-ju-jie-kou">🔗</a>全局接口</h2>
+<p>编写其它模块时，我们希望无需随时拥有 <code>Writer</code> 实例，便能使用它的方法。我们尝试创建一个静态的 <code>WRITER</code> 变量：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>    column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>    buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>};
+</span></code></pre>
+<p>我们尝试编译这些代码，却发生了下面的编译错误：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0015]: calls in statics are limited to constant functions, tuple structs and tuple variants
+</span><span> --&gt; src/vga_buffer.rs:7:17
+</span><span>  |
+</span><span>7 |     color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+</span><span>
+</span><span>error[E0396]: raw pointers cannot be dereferenced in statics
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer in constant
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span> --&gt; src/vga_buffer.rs:8:13
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span></code></pre>
+<p>为了明白现在发生了什么，我们需要知道一点：一般的变量在运行时初始化，而静态变量在编译时初始化。Rust编译器规定了一个称为<strong>常量求值器</strong>（<a href="https://rustc-dev-guide.rust-lang.org/const-eval.html">const evaluator</a>）的组件，它应该在编译时处理这样的初始化工作。虽然它目前的功能较为有限，但对它的扩展工作进展活跃，比如允许在常量中 panic 的<a href="https://github.com/rust-lang/rfcs/pull/2345">一篇 RFC 文档</a>。</p>
+<p>关于 <code>ColorCode::new</code> 的问题应该能使用<strong>常函数</strong>（<a href="https://doc.rust-lang.org/reference/const_eval.html#const-functions"><code>const</code> functions</a>）解决，但常量求值器还存在不完善之处，它还不能在编译时直接转换裸指针到变量的引用——也许未来这段代码能够工作，但在那之前，我们需要寻找另外的解决方案。</p>
+<h3 id="yan-chi-chu-shi-hua"><a class="zola-anchor" href="index.html#yan-chi-chu-shi-hua" aria-label="Anchor link for: yan-chi-chu-shi-hua">🔗</a>延迟初始化</h3>
+<p>使用非常函数初始化静态变量是 Rust 程序员普遍遇到的问题。幸运的是，有一个叫做 <a href="https://docs.rs/lazy_static/1.0.1/lazy_static/">lazy_static</a> 的包提供了一个很棒的解决方案：它提供了名为 <code>lazy_static!</code> 的宏，定义了一个<strong>延迟初始化</strong>（lazily initialized）的静态变量；这个变量的值将在第一次使用时计算，而非在编译时计算。这时，变量的初始化过程将在运行时执行，任意的初始化代码——无论简单或复杂——都是能够使用的。</p>
+<p>现在，我们将 <code>lazy_static</code> 包导入到我们的项目：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies.lazy_static</span><span>]
+</span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;1.0&quot;
+</span><span style="color:#569cd6;">features </span><span>= [</span><span style="color:#d69d85;">&quot;spin_no_std&quot;</span><span>]
+</span></code></pre>
+<p>在这里，由于程序不连接标准库，我们需要启用 <code>spin_no_std</code> 特性。</p>
+<p>使用 <code>lazy_static</code> 我们就可以定义一个不出问题的 <code>WRITER</code> 变量：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>然而，这个 <code>WRITER</code> 可能没有什么用途，因为它目前还是<strong>不可变变量</strong>（immutable variable）：这意味着我们无法向它写入数据，因为所有与写入数据相关的方法都需要实例的可变引用 <code>&amp;mut self</code>。一种解决方案是使用<strong>可变静态</strong>（<a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#accessing-or-modifying-a-mutable-static-variable">mutable static</a>）的变量，但所有对它的读写操作都被规定为不安全的（unsafe）操作，因为这很容易导致数据竞争或发生其它不好的事情——使用 <code>static mut</code> 极其不被赞成，甚至有一些提案认为<a href="https://internals.rust-lang.org/t/pre-rfc-remove-static-mut/1437">应该将它删除</a>。也有其它的替代方案，比如可以尝试使用比如 <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html#keeping-track-of-borrows-at-runtime-with-refcellt">RefCell</a> 或甚至 <a href="https://doc.rust-lang.org/nightly/core/cell/struct.UnsafeCell.html">UnsafeCell</a> 等类型提供的<strong>内部可变性</strong>（<a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">interior mutability</a>）；但这些类型都被设计为非同步类型，即不满足 <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html">Sync</a> 约束，所以我们不能在静态变量中使用它们。</p>
+<h3 id="spinlock"><a class="zola-anchor" href="index.html#spinlock" aria-label="Anchor link for: spinlock">🔗</a>spinlock</h3>
+<p>要定义同步的内部可变性，我们往往使用标准库提供的互斥锁类 <a href="https://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html">Mutex</a>，它通过提供当资源被占用时将线程<strong>阻塞</strong>（block）的<strong>互斥条件</strong>（mutual exclusion）实现这一点；但我们初步的内核代码还没有线程和阻塞的概念，我们将不能使用这个类。不过，我们还有一种较为基础的互斥锁实现方式——<strong>自旋锁</strong>（<a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a>）。自旋锁并不会调用阻塞逻辑，而是在一个小的无限循环中反复尝试获得这个锁，也因此会一直占用 CPU 时间，直到互斥锁被它的占用者释放。</p>
+<p>为了使用自旋互斥锁，我们添加 <a href="https://crates.io/crates/spin">spin包</a> 到项目的依赖项列表：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">spin </span><span>= </span><span style="color:#d69d85;">&quot;0.5.2&quot;
+</span></code></pre>
+<p>现在，我们能够使用自旋的互斥锁，为我们的 <code>WRITER</code> 类实现安全的<a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">内部可变性</a>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">...
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Mutex&lt;Writer&gt; = Mutex::new(Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>现在我们可以删除 <code>print_something</code> 函数，尝试直接在 <code>_start</code> 函数中打印字符：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_str(</span><span style="color:#d69d85;">&quot;Hello again&quot;</span><span>).unwrap();
+</span><span>    write!(vga_buffer::WRITER.lock(), </span><span style="color:#d69d85;">&quot;, some numbers: </span><span style="color:#b4cea8;">{} {}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.337</span><span>).unwrap();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>在这里，我们需要导入名为 <code>fmt::Write</code> 的 trait，来使用实现它的类的相应方法。</p>
+<h3 id="an-quan-xing"><a class="zola-anchor" href="index.html#an-quan-xing" aria-label="Anchor link for: an-quan-xing">🔗</a>安全性</h3>
+<p>经过上面的努力后，我们现在的代码只剩一个 unsafe 语句块，它用于创建一个指向 <code>0xb8000</code> 地址的 <code>Buffer</code> 类型引用；在这步之后，所有的操作都是安全的。Rust 将为每个数组访问检查边界，所以我们不会在不经意间越界到缓冲区之外。因此，我们把需要的条件编码到 Rust 的类型系统，这之后，我们为外界提供的接口就符合内存安全原则了。</p>
+<h3 id="println-hong"><a class="zola-anchor" href="index.html#println-hong" aria-label="Anchor link for: println-hong">🔗</a><code>println!</code> 宏</h3>
+<p>现在我们有了一个全局的 <code>Writer</code> 实例，我们就可以基于它实现 <code>println!</code> 宏，这样它就能被任意地方的代码使用了。Rust 提供的<a href="https://doc.rust-lang.org/nightly/book/ch19-06-macros.html#declarative-macros-with-macro_rules-for-general-metaprogramming">宏定义语法</a>需要时间理解，所以我们将不从零开始编写这个宏。我们先看看标准库中 <a href="https://doc.rust-lang.org/nightly/std/macro.println!.html"><code>println!</code> 宏的实现源码</a>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>宏是通过一个或多个<strong>规则</strong>（rule）定义的，这就像 <code>match</code> 语句的多个分支。<code>println!</code> 宏有两个规则：第一个规则不要求传入参数——就比如 <code>println!()</code> ——它将被扩展为 <code>print!(&quot;\n&quot;)</code>，因此只会打印一个新行；第二个要求传入参数——好比 <code>println!(&quot;Rust 能够编写操作系统&quot;)</code> 或 <code>println!(&quot;我学习 Rust 已经{}年了&quot;, 3)</code>——它将使用 <code>print!</code> 宏扩展，传入它需求的所有参数，并在输出的字符串最后加入一个换行符 <code>\n</code>。</p>
+<p>这里，<code>#[macro_export]</code> 属性让整个包（crate）和基于它的包都能访问这个宏，而不仅限于定义它的模块（module）。它还将把宏置于包的根模块（crate root）下，这意味着比如我们需要通过 <code>use std::println</code> 来导入这个宏，而不是通过 <code>std::macros::println</code>。</p>
+<p><a href="https://doc.rust-lang.org/nightly/std/macro.print!.html"><code>print!</code> 宏</a>是这样定义的：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    ($($arg:tt)*) =&gt; ($crate::io::_print(format_args!($($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>这个宏将扩展为一个对 <code>io</code> 模块中 <a href="https://github.com/rust-lang/rust/blob/29f5c699b11a6a148f097f82eaa05202f8799bbc/src/libstd/io/stdio.rs#L698"><code>_print</code> 函数</a>的调用。<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/macros.html#the-variable-crate"><code>$crate</code> 变量</a>将在 <code>std</code> 包之外被解析为 <code>std</code> 包，保证整个宏在 <code>std</code> 包之外也可以使用。</p>
+<p><a href="https://doc.rust-lang.org/nightly/std/macro.format_args.html"><code>format_args!</code> 宏</a>将传入的参数搭建为一个 <a href="https://doc.rust-lang.org/nightly/core/fmt/struct.Arguments.html">fmt::Arguments</a> 类型，这个类型将被传入 <code>_print</code> 函数。<code>std</code> 包中的 <a href="https://github.com/rust-lang/rust/blob/29f5c699b11a6a148f097f82eaa05202f8799bbc/src/libstd/io/stdio.rs#L698"><code>_print</code> 函数</a>将调用复杂的私有函数 <code>print_to</code>，来处理对不同 <code>Stdout</code> 设备的支持。我们不需要编写这样的复杂函数，因为我们只需要打印到 VGA 字符缓冲区。</p>
+<p>要打印到字符缓冲区，我们把 <code>println!</code> 和 <code>print!</code> 两个宏复制过来，但修改部分代码，让这些宏使用我们定义的 <code>_print</code> 函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::vga_buffer::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>我们首先修改了 <code>println!</code> 宏，在每个使用的 <code>print!</code> 宏前面添加了 <code>$crate</code> 变量。这样我们在只需要使用 <code>println!</code> 时，不必也编写代码导入 <code>print!</code> 宏。</p>
+<p>就像标准库做的那样，我们为两个宏都添加了 <code>#[macro_export]</code> 属性，这样在包的其它地方也可以使用它们。需要注意的是，这将占用包的<strong>根命名空间</strong>（root namespace），所以我们不能通过 <code>use crate::vga_buffer::println</code> 来导入它们；我们应该使用 <code>use crate::println</code>。</p>
+<p>另外，<code>_print</code> 函数将占有静态变量 <code>WRITER</code> 的锁，并调用它的 <code>write_fmt</code> 方法。这个方法是从名为 <code>Write</code> 的 trait 中获得的，所以我们需要导入这个 trait。额外的 <code>unwrap()</code> 函数将在打印不成功的时候 panic；但既然我们的 <code>write_str</code> 总是返回 <code>Ok</code>，这种情况不应该发生。</p>
+<p>如果这个宏将能在模块外访问，它们也应当能访问 <code>_print</code> 函数，因此这个函数必须是公有的（public）。然而，考虑到这是一个私有的实现细节，我们添加一个 <a href="https://doc.rust-lang.org/nightly/rustdoc/write-documentation/the-doc-attribute.html#hidden"><code>doc(hidden)</code> 属性</a>，防止它在生成的文档中出现。</p>
+<h3 id="shi-yong-println-de-hello-world"><a class="zola-anchor" href="index.html#shi-yong-println-de-hello-world" aria-label="Anchor link for: shi-yong-println-de-hello-world">🔗</a>使用 <code>println!</code> 的 Hello World</h3>
+<p>现在，我们可以在 <code>_start</code> 里使用 <code>println!</code> 了：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>要注意的是，我们在入口函数中不需要导入这个宏——因为它已经被置于包的根命名空间了。</p>
+<p>运行这段代码，和我们预料的一样，一个 <em>“Hello World!”</em> 字符串被打印到了屏幕上：</p>
+<p><img src="../../vga-text-mode/vga-hello-world.png" alt="QEMU printing “Hello World!”" /></p>
+<h3 id="da-yin-panic-xin-xi"><a class="zola-anchor" href="index.html#da-yin-panic-xin-xi" aria-label="Anchor link for: da-yin-panic-xin-xi">🔗</a>打印 panic 信息</h3>
+<p>既然我们已经有了 <code>println!</code> 宏，我们可以在 panic 处理函数中，使用它打印 panic 信息和 panic 产生的位置：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in main.rs
+</span><span>
+</span><span style="color:#608b4e;">/// 这个函数将在 panic 发生时被调用
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>当我们在 <code>_start</code> 函数中插入一行 <code>panic!(&quot;Some panic message&quot;);</code> 后，我们得到了这样的输出：</p>
+<p><img src="../../vga-text-mode/vga-panic.png" alt="QEMU printing “panicked at ‘Some panic message’, src/main.rs:28:5" /></p>
+<p>所以，现在我们不仅能知道 panic 已经发生，还能够知道 panic 信息和产生 panic 的代码。</p>
+<h2 id="xiao-jie"><a class="zola-anchor" href="index.html#xiao-jie" aria-label="Anchor link for: xiao-jie">🔗</a>小结</h2>
+<p>这篇文章中，我们学习了 VGA 字符缓冲区的结构，以及如何在 <code>0xb8000</code> 的内存映射地址访问它。我们将所有的不安全操作包装为一个 Rust 模块，以便在外界安全地访问它。</p>
+<p>我们也发现了——感谢便于使用的 cargo——在 Rust 中使用第三方提供的包是及其容易的。我们添加的两个依赖项，<code>lazy_static</code> 和 <code>spin</code>，都在操作系统开发中及其有用；我们将在未来的文章中多次使用它们。</p>
+<h2 id="xia-pian-yu-gao"><a class="zola-anchor" href="index.html#xia-pian-yu-gao" aria-label="Anchor link for: xia-pian-yu-gao">🔗</a>下篇预告</h2>
+<p>下一篇文章中，我们将会讲述如何配置 Rust 内置的单元测试框架。我们还将为本文编写的 VGA 缓冲区模块添加基础的单元测试项目。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../minimal-rust-kernel/index.html">&laquo; 最小内核</a>
+        
+        
+            <a class="next" href="../testing/index.html">内核测试 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22VGA%20Text%20Mode%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="VGA Text Mode (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22VGA%20Text%20Mode%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../vga-text-mode/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/vga-text-mode/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/vga-text-mode/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/vga-text-mode/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

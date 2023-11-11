@@ -1,0 +1,210 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Updates in February 2020 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Updates in February 2020</h1>
+    <time datetime="2020-03-02" class="post-date">
+        Mar 02, 2020
+        
+    </time>
+    <p>This post gives an overview of the recent updates to the <em>Writing an OS in Rust</em> blog and the corresponding libraries and tools.</p>
+<h2 id="blog-os"><code>blog_os</code></h2>
+<p>The repository of the <em>Writing an OS in Rust</em> blog received the following updates:</p>
+<ul>
+<li><a href="https://github.com/phil-opp/blog_os/pull/722">Mention potential bump allocator extensions</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/738">Don’t panic on overflow in allocator; return null pointer instead</a>
+<ul>
+<li><a href="https://github.com/phil-opp/blog_os/pull/739">Update Allocator Designs post to signal OOM instead of panicking on overflow</a></li>
+</ul>
+</li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/747">Update to Zola 0.10</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/692">Experimental Support for Community Translations</a>
+<ul>
+<li><a href="https://github.com/phil-opp/blog_os/pull/694">Add translations from rustcc/writing-an-os-in-rust</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/748">Some fixes to generated translations</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/749">Add metadata to translations and list translators</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/752">Add a language selector for browser-supported languages</a></li>
+</ul>
+</li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/751">Use zola check to check for dead links; fix all dead links found</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/commit/0619f3a9e766c575ba1a4f2c6825049c177f8c70">Convert all external links to https (if supported)</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/732">Mention in “Paging Introduction” that a CPU with 5-level paging is available now</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/commit/b532c052add9d3eac18663f1836bc9eee11007af">Double Faults: A missing handler leads to a #GP exception (not a #NP)</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/756">Updated pc-keyboard to <code>0.5.0</code></a> by <a href="https://github.com/RKennedy9064">@RKennedy9064</a></li>
+</ul>
+<h2 id="x86-64"><code>x86_64</code></h2>
+<p>The <code>x86_64</code> crate provides support for CPU-specific instructions, registers, and data structures of the <code>x86_64</code> architecture. There were lots of great contributions this month:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/119">Add User Mode registers</a> by <a href="https://github.com/vinaychandra">@vinaychandra</a> <span class="gray">(released together with <a href="https://github.com/rust-osdev/x86_64/pull/118">#118</a> as v0.9.0)</span></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/122">Improve PageTableIndex and PageOffset</a> by <a href="https://github.com/m-ou-se">@m-ou-se</a> <span class="gray">(released as v0.9.1)</span></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/124">Remove the <code>cast</code> dependency</a> by <a href="https://github.com/m-ou-se">@m-ou-se</a> <span class="gray">(released as v0.9.2)</span></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/126">Fix GitHub actions to run latest available rustfmt</a> by <a href="https://github.com/m-ou-se">@m-ou-se</a></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/127">Enable usage with non-nightly rust</a> by <a href="https://github.com/haraldh">@haraldh</a> <span class="gray">(released as v0.9.3)</span>
+<ul>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/128">asm: add target_env = “musl” to pickup the underscore asm names</a> by <a href="https://github.com/haraldh">@haraldh</a> <span class="gray">(released as v0.9.4)</span></li>
+</ul>
+</li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/129">Add <code>#[inline]</code> attribute to small functions</a> by <a href="https://github.com/AntoineSebert">@AntoineSebert</a> <span class="gray">(released as v0.9.5)</span></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/130">Fix clippy warnings</a> by <a href="https://github.com/AntoineSebert">@AntoineSebert</a>
+<ul>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/132">Resolve remaining clippy warnings and add clippy job to CI</a></li>
+</ul>
+</li>
+</ul>
+<h2 id="bootloader"><code>bootloader</code></h2>
+<p>The bootloader crate received two small bugfixes and one new feature this month:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/bootloader/pull/94">Objcopy replaces <code>.</code> chars with <code>_</code> chars</a> <span class="gray">(released as v0.8.6)</span></li>
+<li><a href="https://github.com/rust-osdev/bootloader/commit/af4f1016aa19fec3271226f8bfc2145521cf0c98">Fix docs.rs build by specifying an explicit target</a> <span class="gray">(released as v0.8.7)</span></li>
+<li><a href="https://github.com/rust-osdev/bootloader/pull/96">Add basic support for ELF thread local storage segments</a> <span class="gray">(released as v0.8.8)</span></li>
+</ul>
+<h2 id="bootimage"><code>bootimage</code></h2>
+<p>There were no updates to the <code>bootimage</code> tool this month.</p>
+<h2 id="cargo-xbuild"><code>cargo-xbuild</code></h2>
+<p>The <code>cargo-xbuild</code> crate provides support for cross-compiling <code>libcore</code> and <code>liballoc</code>. It received the following contributions this month:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/56">Added new option to the configuration table</a> by <a href="https://github.com/rust-osdev/cargo-xbuild/pull/56">@parraman</a> <span class="gray">(released an v0.5.22)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/57">Pick up xbuild config from workspace manifest</a> by <a href="https://github.com/ascjones">@ascjones</a> <span class="gray">(released as v0.5.23)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/59">Make <code>fn build</code> and <code>Args</code> public to enable use as lib</a> by <a href="https://github.com/ascjones">@ascjones</a> <span class="gray">(released as v0.5.24)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/61">Fix: Not all projects have a root package</a> <span class="gray">(released as v0.5.25)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/62">Improvements to args and config for lib usage</a> by <a href="https://github.com/ascjones">@ascjones</a> <span class="gray">(released as v0.5.26)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/64">Add <code>cargo xfix</code> command</a> by <a href="https://github.com/tjhu">@tjhu</a> <span class="gray">(released as v0.5.27)</span></li>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/65">Update dependencies</a> by <a href="https://github.com/parasyte">@parasyte</a> <span class="gray">(released as v0.5.28)</span></li>
+</ul>
+<h2 id="uart-16550"><code>uart_16550</code></h2>
+<p>The <code>uart_16550</code> crate, which provides basic support for uart_16550 serial output, received the following updates:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/uart_16550/pull/6">Switch CI to GitHub Actions</a></li>
+<li><a href="https://github.com/rust-osdev/uart_16550/pull/5">Cargo.toml: update x86_64 dependency</a> by <a href="https://github.com/haraldh">@haraldh</a> <span class="gray">(released as v0.2.3)</span></li>
+<li><a href="https://github.com/rust-osdev/uart_16550/pull/7">Enable usage with non-nightly rust</a> by <a href="https://github.com/haraldh">@haraldh</a> <span class="gray">(released as v0.2.4)</span></li>
+</ul>
+<h2 id="multiboot2-elf64"><code>multiboot2-elf64</code></h2>
+<p>The <code>multiboot2-elf64</code> crate provides abstractions for reading the boot information of the multiboot 2 standard, which is implemented by bootloaders like GRUB. There were two updates to the crate in February:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/multiboot2-elf64/pull/61">Add MemoryAreaType, to allow users to access memory area types in a type-safe way</a> by <a href="https://github.com/CWood1">@CWood1</a></li>
+<li><a href="https://github.com/rust-osdev/multiboot2-elf64/pull/62">Add some basic documentation</a> by <a href="https://github.com/rust-osdev/multiboot2-elf64/pull/62">@mental32</a> <span class="gray">(released as v0.8.2)</span></li>
+</ul>
+
+
+    <div>
+        <h2>Thank You!</h2>
+        <p>Thanks a lot to all the contributors this month!</p>
+        <p>I also want to thank all the people who support me on <a href="https://github.com/sponsors/phil-opp">GitHub</a>, <a href="https://www.patreon.com/phil_opp">Patreon</a>, and <a href="https://donorbox.org/phil-opp">Donorbox</a>. It means a lot to me!</p>
+    </div>
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../2020-04-01/index.html">&laquo; Updates in March 2020</a>
+        
+        
+            <a class="next" href="../2020-02-01/index.html">Updates in January 2020 &raquo;</a>
+        
+    </div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20February%202020%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Updates in February 2020"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20February%202020%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

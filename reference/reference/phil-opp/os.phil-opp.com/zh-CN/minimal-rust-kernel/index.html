@@ -1,0 +1,549 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="在这篇文章中，我们将基于 x86架构（the x86 architecture），使用 Rust 语言，编写一个最小化的 64 位内核。我们将从上一章中构建的[独立式可执行程序][freestanding-rust-binary]开始，构建自己的内核；它将向显示器打印字符串，并能被打包为一个能够引导…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>最小内核 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#yin-dao-qi-dong">引导启动</a>
+            <ol>
+                <li>
+                    <a href="index.html#bios-qi-dong">BIOS 启动</a>
+                </li><li>
+                    <a href="index.html#multiboot-biao-zhun">Multiboot 标准</a>
+                </li><li>
+                    <a href="index.html#uefi">UEFI</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#zui-xiao-nei-he">最小内核</a>
+            
+        </li><li>
+            <a href="index.html#an-zhuang-nightly-rust">安装 Nightly Rust</a>
+            <ol>
+                <li>
+                    <a href="index.html#mu-biao-pei-zhi-qing-dan">目标配置清单</a>
+                </li><li>
+                    <a href="index.html#bian-yi-nei-he">编译内核</a>
+                </li><li>
+                    <a href="index.html#xiang-ping-mu-da-yin-zi-fu">向屏幕打印字符</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#qi-dong-nei-he">启动内核</a>
+            <ol>
+                <li>
+                    <a href="index.html#chuang-jian-yin-dao-ying-xiang">创建引导映像</a>
+                </li><li>
+                    <a href="index.html#zai-qemu-zhong-qi-dong-nei-he">在 QEMU 中启动内核</a>
+                </li><li>
+                    <a href="index.html#zai-zhen-ji-shang-yun-xing-nei-he">在真机上运行内核</a>
+                </li><li>
+                    <a href="index.html#shi-yong-cargo-run">使用 cargo run</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#xia-pian-yu-gao">下篇预告</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>最小内核</h1>
+    <time datetime="2018-02-10" class="post-date">
+        Feb 10, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../minimal-rust-kernel/index.html">A Minimal Rust Kernel</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/luojia65">@luojia65</a>, <a href="https://github.com/Rustin-Liu">@Rustin-Liu</a> 和 <a href="https://github.com/liuyuran">@liuyuran</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/JiangengDong">@JiangengDong</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>在这篇文章中，我们将基于 <strong>x86架构</strong>（the x86 architecture），使用 Rust 语言，编写一个最小化的 64 位内核。我们将从上一章中构建的[独立式可执行程序][freestanding-rust-binary]开始，构建自己的内核；它将向显示器打印字符串，并能被打包为一个能够引导启动的<strong>磁盘映像</strong>（disk image）。</p>
+<span id="continue-reading"></span>
+<p>此博客在 <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上公开开发. 如果您有任何问题或疑问，请在此处打开一个 issue。 您也可以在<a href="index.html#comments">底部</a>发表评论. 这篇文章的完整源代码可以在 [<code>post-02</code>] <a href="https://github.com/phil-opp/blog_os/tree/post-02">post branch</a> 分支中找到。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#yin-dao-qi-dong">引导启动</a>
+                <ul>
+                    <li>
+                        <a href="index.html#bios-qi-dong">BIOS 启动</a>
+                    </li><li>
+                        <a href="index.html#multiboot-biao-zhun">Multiboot 标准</a>
+                    </li><li>
+                        <a href="index.html#uefi">UEFI</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#zui-xiao-nei-he">最小内核</a>
+                
+            </li><li>
+                <a href="index.html#an-zhuang-nightly-rust">安装 Nightly Rust</a>
+                <ul>
+                    <li>
+                        <a href="index.html#mu-biao-pei-zhi-qing-dan">目标配置清单</a>
+                    </li><li>
+                        <a href="index.html#bian-yi-nei-he">编译内核</a>
+                    </li><li>
+                        <a href="index.html#xiang-ping-mu-da-yin-zi-fu">向屏幕打印字符</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#qi-dong-nei-he">启动内核</a>
+                <ul>
+                    <li>
+                        <a href="index.html#chuang-jian-yin-dao-ying-xiang">创建引导映像</a>
+                    </li><li>
+                        <a href="index.html#zai-qemu-zhong-qi-dong-nei-he">在 QEMU 中启动内核</a>
+                    </li><li>
+                        <a href="index.html#zai-zhen-ji-shang-yun-xing-nei-he">在真机上运行内核</a>
+                    </li><li>
+                        <a href="index.html#shi-yong-cargo-run">使用 cargo run</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#xia-pian-yu-gao">下篇预告</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="yin-dao-qi-dong"><a class="zola-anchor" href="index.html#yin-dao-qi-dong" aria-label="Anchor link for: yin-dao-qi-dong">🔗</a>引导启动</h2>
+<p>当我们启动电脑时，主板 <a href="https://en.wikipedia.org/wiki/Read-only_memory">ROM</a>内存储的<strong>固件</strong>（firmware）将会运行：它将负责电脑的<strong>加电自检</strong>（<a href="https://en.wikipedia.org/wiki/Power-on_self-test">power-on self test</a>），<strong>可用内存</strong>（available RAM）的检测，以及 CPU 和其它硬件的预加载。这之后，它将寻找一个<strong>可引导的存储介质</strong>（bootable disk），并开始引导启动其中的<strong>内核</strong>（kernel）。</p>
+<p>x86 架构支持两种固件标准： <strong>BIOS</strong>（<a href="https://en.wikipedia.org/wiki/BIOS">Basic Input/Output System</a>）和 <strong>UEFI</strong>（<a href="https://en.wikipedia.org/wiki/Unified_Extensible_Firmware_Interface">Unified Extensible Firmware Interface</a>）。其中，BIOS 标准显得陈旧而过时，但实现简单，并为 1980 年代后的所有 x86 设备所支持；相反地，UEFI 更现代化，功能也更全面，但开发和构建更复杂（至少从我的角度看是如此）。</p>
+<p>在这篇文章中，我们暂时只提供 BIOS 固件的引导启动方式，但是UEFI支持也已经在计划中了。如果你希望帮助我们推进它，请查阅这份 <a href="https://github.com/phil-opp/blog_os/issues/349">Github issue</a>。</p>
+<h3 id="bios-qi-dong"><a class="zola-anchor" href="index.html#bios-qi-dong" aria-label="Anchor link for: bios-qi-dong">🔗</a>BIOS 启动</h3>
+<p>几乎所有的 x86 硬件系统都支持 BIOS 启动，这也包含新型的、基于 UEFI、用<strong>模拟 BIOS</strong>（emulated BIOS）的方式向后兼容的硬件系统。这可以说是一件好事情，因为无论是上世纪还是现在的硬件系统，你都只需编写同样的引导启动逻辑；但这种兼容性有时也是 BIOS 引导启动最大的缺点，因为这意味着在系统启动前，你的 CPU 必须先进入一个 16 位系统兼容的<strong>实模式</strong>（<a href="https://en.wikipedia.org/wiki/Real_mode">real mode</a>），这样 1980 年代古老的引导固件才能够继续使用。</p>
+<p>让我们从头开始，理解一遍 BIOS 启动的过程。</p>
+<p>当电脑启动时，主板上特殊的闪存中存储的 BIOS 固件将被加载。BIOS 固件将会加电自检、初始化硬件，然后它将寻找一个可引导的存储介质。如果找到了，那电脑的控制权将被转交给<strong>引导程序</strong>（bootloader）：一段存储在存储介质的开头的、512字节长度的程序片段。大多数的引导程序长度都大于512字节——所以通常情况下，引导程序都被切分为一段优先启动、长度不超过512字节、存储在介质开头的<strong>第一阶段引导程序</strong>（first stage bootloader），和一段随后由其加载的、长度可能较长、存储在其它位置的<strong>第二阶段引导程序</strong>（second stage bootloader）。</p>
+<p>引导程序必须决定内核的位置，并将内核加载到内存。引导程序还需要将 CPU 从 16 位的实模式，先切换到 32 位的<strong>保护模式</strong>（<a href="https://en.wikipedia.org/wiki/Protected_mode">protected mode</a>），最终切换到 64 位的<strong>长模式</strong>（<a href="https://en.wikipedia.org/wiki/Long_mode">long mode</a>）：此时，所有的 64 位寄存器和整个<strong>主内存</strong>（main memory）才能被访问。引导程序的第三个作用，是从 BIOS 查询特定的信息，并将其传递到内核；如查询和传递<strong>内存映射表</strong>（memory map）。</p>
+<p>编写一个引导程序并不是一个简单的任务，因为这需要使用汇编语言，而且必须经过许多意图并不明显的步骤——比如，把一些<strong>魔术数字</strong>（magic number）写入某个寄存器。因此，我们不会讲解如何编写自己的引导程序，而是推荐 <a href="https://github.com/rust-osdev/bootimage">bootimage 工具</a>——它能够自动并且方便地为你的内核准备一个引导程序。</p>
+<h3 id="multiboot-biao-zhun"><a class="zola-anchor" href="index.html#multiboot-biao-zhun" aria-label="Anchor link for: multiboot-biao-zhun">🔗</a>Multiboot 标准</h3>
+<p>每个操作系统都实现自己的引导程序，而这只对单个操作系统有效。为了避免这样的僵局，1995 年，<strong>自由软件基金会</strong>（<a href="https://en.wikipedia.org/wiki/Free_Software_Foundation">Free Software Foundation</a>）颁布了一个开源的引导程序标准——<a href="https://wiki.osdev.org/Multiboot">Multiboot</a>。这个标准定义了引导程序和操作系统间的统一接口，所以任何适配 Multiboot 的引导程序，都能用来加载任何同样适配了 Multiboot 的操作系统。<a href="https://en.wikipedia.org/wiki/GNU_GRUB">GNU GRUB</a> 是一个可供参考的 Multiboot 实现，它也是最热门的Linux系统引导程序之一。</p>
+<p>要编写一款适配 Multiboot 的内核，我们只需要在内核文件开头，插入被称作 <strong>Multiboot头</strong>（<a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#OS-image-format">Multiboot header</a>）的数据片段。这让 GRUB 很容易引导任何操作系统，但是，GRUB 和 Multiboot 标准也有一些可预知的问题：</p>
+<ol>
+<li>它们只支持 32 位的保护模式。这意味着，在引导之后，你依然需要配置你的 CPU，让它切换到 64 位的长模式；</li>
+<li>它们被设计为精简引导程序，而不是精简内核。举个例子，内核需要以调整过的<strong>默认页长度</strong>（<a href="https://wiki.osdev.org/Multiboot#Multiboot_2">default page size</a>）被链接，否则 GRUB 将无法找到内核的 Multiboot 头。另一个例子是<strong>引导信息</strong>（<a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format">boot information</a>），这个包含着大量与架构有关的数据，会在引导启动时，被直接传到操作系统，而不会经过一层清晰的抽象；</li>
+<li>GRUB 和 Multiboot 标准并没有被详细地解释，阅读相关文档需要一定经验；</li>
+<li>为了创建一个能够被引导的磁盘映像，我们在开发时必须安装 GRUB：这加大了基于 Windows 或 macOS 开发内核的难度。</li>
+</ol>
+<p>出于这些考虑，我们决定不使用 GRUB 或者 Multiboot 标准。然而，Multiboot 支持功能也在 bootimage 工具的开发计划之中，所以从原理上讲，如果选用 bootimage 工具，在未来使用 GRUB 引导你的系统内核是可能的。 如果你对编写一个支持 Mutiboot 标准的内核有兴趣，可以查阅 <a href="../../edition-1">初版文档</a>。</p>
+<h3 id="uefi"><a class="zola-anchor" href="index.html#uefi" aria-label="Anchor link for: uefi">🔗</a>UEFI</h3>
+<p>（截至此时，我们并未提供UEFI相关教程，但我们确实有此意向。如果你愿意提供一些帮助，请在 <a href="https://github.com/phil-opp/blog_os/issues/349">Github issue</a> 告知我们，不胜感谢。）</p>
+<h2 id="zui-xiao-nei-he"><a class="zola-anchor" href="index.html#zui-xiao-nei-he" aria-label="Anchor link for: zui-xiao-nei-he">🔗</a>最小内核</h2>
+<p>现在我们已经明白电脑是如何启动的，那也是时候编写我们自己的内核了。我们的小目标是，创建一个内核的磁盘映像，它能够在启动时，向屏幕输出一行“Hello World!”；我们的工作将基于上一章构建的<a href="../../freestanding-rust-binary/index.html">独立式可执行程序</a>。</p>
+<p>如果读者还有印象的话，在上一章，我们使用 <code>cargo</code> 构建了一个独立的二进制程序；但这个程序依然基于特定的操作系统平台：因平台而异，我们需要定义不同名称的函数，且使用不同的编译指令。这是因为在默认情况下，<code>cargo</code> 会为特定的<strong>宿主系统</strong>（host system）构建源码，比如为你正在运行的系统构建源码。这并不是我们想要的，因为我们的内核不应该基于另一个操作系统——我们想要编写的，就是这个操作系统。确切地说，我们想要的是，编译为一个特定的<strong>目标系统</strong>（target system）。</p>
+<h2 id="an-zhuang-nightly-rust"><a class="zola-anchor" href="index.html#an-zhuang-nightly-rust" aria-label="Anchor link for: an-zhuang-nightly-rust">🔗</a>安装 Nightly Rust</h2>
+<p>Rust 语言有三个<strong>发行频道</strong>（release channel），分别是 stable、beta 和 nightly。《Rust 程序设计语言》中对这三个频道的区别解释得很详细，可以前往<a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html">这里</a>看一看。为了搭建一个操作系统，我们需要一些只有 nightly 会提供的实验性功能，所以我们需要安装一个 nightly 版本的 Rust。</p>
+<p>要管理安装好的 Rust，我强烈建议使用 <a href="https://www.rustup.rs/">rustup</a>：它允许你同时安装 nightly、beta 和 stable 版本的编译器，而且让更新 Rust 变得容易。你可以输入 <code>rustup override add nightly</code> 来选择在当前目录使用 nightly 版本的 Rust。或者，你也可以在项目根目录添加一个名称为 <code>rust-toolchain</code>、内容为 <code>nightly</code> 的文件。要检查你是否已经安装了一个 nightly，你可以运行 <code>rustc --version</code>：返回的版本号末尾应该包含<code>-nightly</code>。</p>
+<p>Nightly 版本的编译器允许我们在源码的开头插入<strong>特性标签</strong>（feature flag），来自由选择并使用大量实验性的功能。举个例子，要使用实验性的<a href="https://doc.rust-lang.org/stable/reference/inline-assembly.html">内联汇编（asm!宏）</a>，我们可以在 <code>main.rs</code> 的顶部添加 <code>#![feature(asm)]</code>。要注意的是，这样的实验性功能<strong>不稳定</strong>（unstable），意味着未来的 Rust 版本可能会修改或移除这些功能，而不会有预先的警告过渡。因此我们只有在绝对必要的时候，才应该使用这些特性。</p>
+<h3 id="mu-biao-pei-zhi-qing-dan"><a class="zola-anchor" href="index.html#mu-biao-pei-zhi-qing-dan" aria-label="Anchor link for: mu-biao-pei-zhi-qing-dan">🔗</a>目标配置清单</h3>
+<p>通过 <code>--target</code> 参数，<code>cargo</code> 支持不同的目标系统。这个目标系统可以使用一个<strong>目标三元组</strong>（<a href="https://clang.llvm.org/docs/CrossCompilation.html#target-triple">target triple</a>）来描述，它描述了 CPU 架构、平台供应者、操作系统和<strong>应用程序二进制接口</strong>（<a href="https://stackoverflow.com/a/2456882">Application Binary Interface, ABI</a>）。比方说，目标三元组<code> x86_64-unknown-linux-gnu</code> 描述一个基于 <code>x86_64</code> 架构 CPU 的、没有明确的平台供应者的 linux 系统，它遵循 GNU 风格的 ABI。Rust 支持<a href="https://forge.rust-lang.org/release/platform-support.html">许多不同的目标三元组</a>，包括安卓系统对应的 <code>arm-linux-androideabi</code> 和 <a href="https://www.hellorust.com/setup/wasm-target/">WebAssembly使用的wasm32-unknown-unknown</a>。</p>
+<p>为了编写我们的目标系统，并且鉴于我们需要做一些特殊的配置（比如没有依赖的底层操作系统），<a href="https://forge.rust-lang.org/release/platform-support.html">已经支持的目标三元组</a>都不能满足我们的要求。幸运的是，只需使用一个 JSON 文件，Rust 便允许我们定义自己的目标系统；这个文件常被称作<strong>目标配置清单</strong>（target specification）。比如，一个描述 <code>x86_64-unknown-linux-gnu</code> 目标系统的配置清单大概长这样：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;linux&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;pre-link-args&quot;</span><span>: [</span><span style="color:#d69d85;">&quot;-m64&quot;</span><span>],
+</span><span>    </span><span style="color:#d69d85;">&quot;morestack&quot;</span><span>: </span><span style="color:#569cd6;">false
+</span><span>}
+</span></code></pre>
+<p>一个配置清单中包含多个<strong>配置项</strong>（field）。大多数的配置项都是 LLVM 需求的，它们将配置为特定平台生成的代码。打个比方，<code>data-layout</code> 配置项定义了不同的整数、浮点数、指针类型的长度；另外，还有一些 Rust 用作条件编译的配置项，如 <code>target-pointer-width</code>。还有一些类型的配置项，定义了这个包该如何被编译，例如，<code>pre-link-args</code> 配置项指定了应该向<strong>链接器</strong>（<a href="https://en.wikipedia.org/wiki/Linker_(computing)">linker</a>）传入的参数。</p>
+<p>我们将把我们的内核编译到 <code>x86_64</code> 架构，所以我们的配置清单将和上面的例子相似。现在，我们来创建一个名为 <code>x86_64-blog_os.json</code> 的文件——当然也可以选用自己喜欢的文件名——里面包含这样的内容：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true
+</span><span>}
+</span></code></pre>
+<p>需要注意的是，因为我们要在<strong>裸机</strong>（bare metal）上运行内核，我们已经修改了 <code>llvm-target</code> 的内容，并将 <code>os</code> 配置项的值改为 <code>none</code>。</p>
+<p>我们还需要添加下面与编译相关的配置项：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span></code></pre>
+<p>在这里，我们不使用平台默认提供的链接器，因为它可能不支持 Linux 目标系统。为了链接我们的内核，我们使用跨平台的 <strong>LLD链接器</strong>（<a href="https://lld.llvm.org/">LLD linker</a>），它是和 Rust 一起打包发布的。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span></code></pre>
+<p>这个配置项的意思是，我们的编译目标不支持 panic 时的<strong>栈展开</strong>（<a href="https://www.bogotobogo.com/cplusplus/stackunwinding.php">stack unwinding</a>），所以我们选择直接<strong>在 panic 时中止</strong>（abort on panic）。这和在 <code>Cargo.toml</code> 文件中添加 <code>panic = &quot;abort&quot;</code> 选项的作用是相同的，所以我们可以不在这里的配置清单中填写这一项。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span></code></pre>
+<p>我们正在编写一个内核，所以我们迟早要处理中断。要安全地实现这一点，我们必须禁用一个与<strong>红区</strong>（redzone）有关的栈指针优化：因为此时，这个优化可能会导致栈被破坏。如果需要更详细的资料，请查阅我们的一篇关于 <a href="../red-zone/index.html">禁用红区</a> 的短文。</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;</span><span>,
+</span></code></pre>
+<p><code>features</code> 配置项被用来启用或禁用某个目标 <strong>CPU 特征</strong>（CPU feature）。通过在它们前面添加<code>-</code>号，我们将 <code>mmx</code> 和 <code>sse</code> 特征禁用；添加前缀<code>+</code>号，我们启用了 <code>soft-float</code> 特征。</p>
+<p><code>mmx</code> 和 <code>sse</code> 特征决定了是否支持<strong>单指令多数据流</strong>（<a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data，SIMD</a>）相关指令，这些指令常常能显著地提高程序层面的性能。然而，在内核中使用庞大的 SIMD 寄存器，可能会造成较大的性能影响：因为每次程序中断时，内核不得不储存整个庞大的 SIMD 寄存器以备恢复——这意味着，对每个硬件中断或系统调用，完整的 SIMD 状态必须存到主存中。由于 SIMD 状态可能相当大（512~1600 个字节），而中断可能时常发生，这些额外的存储与恢复操作可能显著地影响效率。为解决这个问题，我们对内核禁用 SIMD（但这不意味着禁用内核之上的应用程序的 SIMD 支持）。</p>
+<p>禁用 SIMD 产生的一个问题是，<code>x86_64</code> 架构的浮点数指针运算默认依赖于 SIMD 寄存器。我们的解决方法是，启用 <code>soft-float</code> 特征，它将使用基于整数的软件功能，模拟浮点数指针运算。</p>
+<p>为了让读者的印象更清晰，我们撰写了一篇关于 [禁用 SIMD]<a href="../disable-simd/index.html">disabling SIMD</a> 的短文。</p>
+<p>现在，我们将各个配置项整合在一起。我们的目标配置清单应该长这样：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<h3 id="bian-yi-nei-he"><a class="zola-anchor" href="index.html#bian-yi-nei-he" aria-label="Anchor link for: bian-yi-nei-he">🔗</a>编译内核</h3>
+<p>要编译我们的内核，我们将使用 Linux 系统的编写风格（这可能是 LLVM 的默认风格）。这意味着，我们需要把<a href="../../freestanding-rust-binary/index.html">前一篇文章</a>中编写的入口点重命名为 <code>_start</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std] </span><span style="color:#608b4e;">// 不链接 Rust 标准库
+</span><span>#![no_main] </span><span style="color:#608b4e;">// 禁用所有 Rust 层级的入口点
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// 这个函数将在 panic 时被调用
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// 不重整函数名
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// 因为编译器会寻找一个名为 `_start` 的函数，所以这个函数就是入口点
+</span><span>    </span><span style="color:#608b4e;">// 默认命名为 `_start`
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>注意的是，无论你开发使用的是哪类操作系统，你都需要将入口点命名为 <code>_start</code>。前一篇文章中编写的 Windows 系统和 macOS 对应的入口点不应该被保留。</p>
+<p>通过把 JSON 文件名传入 <code>--target</code> 选项，我们现在可以开始编译我们的内核。让我们试试看：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>
+</span><span>error[E0463]: can&#39;t find crate for `core` 
+</span></code></pre>
+<p>毫不意外的编译失败了，错误信息告诉我们编译器没有找到 <a href="https://doc.rust-lang.org/nightly/core/index.html"><code>core</code></a> 这个crate，它包含了Rust语言中的部分基础类型，如 <code>Result</code>、<code>Option</code>、迭代器等等，并且它还会隐式链接到 <code>no_std</code> 特性里面。</p>
+<p>通常状况下，<code>core</code> crate以<strong>预编译库</strong>（precompiled library）的形式与 Rust 编译器一同发布——这时，<code>core</code> crate只对支持的宿主系统有效，而对我们自定义的目标系统无效。如果我们想为其它系统编译代码，我们需要为这些系统重新编译整个 <code>core</code> crate。</p>
+<h4 id="build-std-xuan-xiang"><a class="zola-anchor" href="index.html#build-std-xuan-xiang" aria-label="Anchor link for: build-std-xuan-xiang">🔗</a><code>build-std</code> 选项</h4>
+<p>此时就到了cargo中 <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std"><code>build-std</code> 特性</a> 登场的时刻，该特性允许你按照自己的需要重编译 <code>core</code> 等标准crate，而不需要使用Rust安装程序内置的预编译版本。 但是该特性是全新的功能，到目前为止尚未完全完成，所以它被标记为 “unstable” 且仅被允许在 [nightly Rust 编译器][nightly Rust compilers] 环境下调用。</p>
+<p>[nightly Rust compilers]: #安装 Nightly Rust</p>
+<p>要启用该特性，你需要创建一个 <a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo 配置</a> 文件，即 <code>.cargo/config.toml</code>，并写入以下语句：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>该配置会告知cargo需要重新编译 <code>core</code> 和 <code>compiler_builtins</code> 这两个crate，其中 <code>compiler_builtins</code> 是 <code>core</code> 的必要依赖。 另外重编译需要提供源码，我们可以使用 <code>rustup component add rust-src</code> 命令来下载它们。</p>
+<div class="note">
+<p><strong>Note:</strong> 仅 <code>2020-07-15</code> 之后的Rust nightly版本支持 <code>unstable.build-std</code> 配置项。</p>
+</div>
+<p>在设定 <code>unstable.build-std</code> 配置项并安装 <code>rust-src</code> 组件之后，我们就可以开始编译了：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>   Compiling core v0.0.0 (/…/rust/src/libcore)
+</span><span>   Compiling rustc-std-workspace-core v1.99.0 (/…/rust/src/tools/rustc-std-workspace-core)
+</span><span>   Compiling compiler_builtins v0.1.32
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.29 secs
+</span></code></pre>
+<p>如你所见，在执行 <code>cargo build</code> 之后， <code>core</code>、<code>rustc-std-workspace-core</code> （<code>compiler_builtins</code> 的依赖）和 <code>compiler_builtins</code> crate被重新编译了。</p>
+<h4 id="nei-cun-xiang-guan-han-shu"><a class="zola-anchor" href="index.html#nei-cun-xiang-guan-han-shu" aria-label="Anchor link for: nei-cun-xiang-guan-han-shu">🔗</a>内存相关函数</h4>
+<p>目前来说，Rust编译器假定所有内置函数（<code>built-in functions</code>）在所有系统内都是存在且可用的。事实上这个前提只对了一半，
+绝大多数内置函数都可以被 <code>compiler_builtins</code> 提供，而这个crate刚刚已经被我们重编译过了，然而部分内存相关函数是需要操作系统相关的标准C库提供的。
+比如，<code>memset</code>（该函数可以为一个内存块内的所有比特进行赋值）、<code>memcpy</code>（将一个内存块里的数据拷贝到另一个内存块）以及<code>memcmp</code>（比较两个内存块的数据）。
+好在我们的内核暂时还不需要用到这些函数，但是不要高兴的太早，当我们编写更丰富的功能（比如拷贝数据结构）时就会用到了。</p>
+<p>现在我们当然无法提供操作系统相关的标准C库，所以我们需要使用其他办法提供这些东西。一个显而易见的途径就是自己实现 <code>memset</code> 这些函数，但不要忘记加入 <code>#[no_mangle]</code> 语句，以避免编译时被自动重命名。 当然，这样做很危险，底层函数中最细微的错误也会将程序导向不可预知的未来。比如，你可能在实现 <code>memcpy</code> 时使用了一个 <code>for</code> 循环，然而 <code>for</code> 循环本身又会调用 <a href="https://doc.rust-lang.org/stable/core/iter/trait.IntoIterator.html#tymethod.into_iter"><code>IntoIterator::into_iter</code></a> 这个trait方法，这个方法又会再次调用 <code>memcpy</code>，此时一个无限递归就产生了，所以还是使用经过良好测试的既存实现更加可靠。</p>
+<p>幸运的是，<code>compiler_builtins</code> 事实上自带了所有相关函数的实现，只是在默认情况下，出于避免和标准C库发生冲突的考量被禁用掉了，此时我们需要将 <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std-features"><code>build-std-features</code></a> 配置项设置为 <code>[&quot;compiler-builtins-mem&quot;]</code> 来启用这个特性。如同 <code>build-std</code> 配置项一样，该特性可以使用 <code>-Z</code> 参数启用，也可以在 <code>.cargo/config.toml</code> 中使用 <code>unstable</code> 配置集启用。现在我们的配置文件中的相关部分是这样子的：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std-features </span><span>= [</span><span style="color:#d69d85;">&quot;compiler-builtins-mem&quot;</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>（<code>compiler-builtins-mem</code> 特性是在 <a href="https://github.com/rust-lang/rust/pull/77284">这个PR</a> 中被引入的，所以你的Rust nightly更新时间必须晚于 <code>2020-09-30</code>。）</p>
+<p>该参数为 <code>compiler_builtins</code> 启用了 <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/Cargo.toml#L54-L55"><code>mem</code> 特性</a>，至于具体效果，就是已经在内部通过 <code>#[no_mangle]</code> 向链接器提供了 <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/src/mem.rs#L12-L69"><code>memcpy</code> 等函数的实现</a>。</p>
+<p>经过这些修改，我们的内核已经完成了所有编译所必需的函数，那么让我们继续对代码进行完善。</p>
+<h4 id="she-zhi-mo-ren-bian-yi-mu-biao"><a class="zola-anchor" href="index.html#she-zhi-mo-ren-bian-yi-mu-biao" aria-label="Anchor link for: she-zhi-mo-ren-bian-yi-mu-biao">🔗</a>设置默认编译目标</h4>
+<p>每次调用 <code>cargo build</code> 命令都需要传入 <code>--target</code> 参数很麻烦吧？其实我们可以复写掉默认值，从而省略这个参数，只需要在 <code>.cargo/config.toml</code> 中加入以下 <a href="https://doc.rust-lang.org/cargo/reference/config.html">cargo 配置</a>：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">build</span><span>]
+</span><span style="color:#569cd6;">target </span><span>= </span><span style="color:#d69d85;">&quot;x86_64-blog_os.json&quot;
+</span></code></pre>
+<p>这个配置会告知 <code>cargo</code> 使用 <code>x86_64-blog_os.json</code> 这个文件作为默认的 <code>--target</code> 参数，此时只输入短短的一句 <code>cargo build</code> 就可以编译到指定平台了。如果你对其他配置项感兴趣，亦可以查阅 <a href="https://doc.rust-lang.org/cargo/reference/config.html">官方文档</a>。</p>
+<p>那么现在我们已经可以用 <code>cargo build</code> 完成程序编译了，然而被成功调用的 <code>_start</code> 函数的函数体依然是一个空空如也的循环，是时候往屏幕上输出一点什么了。</p>
+<h3 id="xiang-ping-mu-da-yin-zi-fu"><a class="zola-anchor" href="index.html#xiang-ping-mu-da-yin-zi-fu" aria-label="Anchor link for: xiang-ping-mu-da-yin-zi-fu">🔗</a>向屏幕打印字符</h3>
+<p>要做到这一步，最简单的方式是写入 <strong>VGA 字符缓冲区</strong>（<a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGA text buffer</a>）：这是一段映射到 VGA 硬件的特殊内存片段，包含着显示在屏幕上的内容。通常情况下，它能够存储 25 行、80 列共 2000 个<strong>字符单元</strong>（character cell）；每个字符单元能够显示一个 ASCII 字符，也能设置这个字符的<strong>前景色</strong>（foreground color）和<strong>背景色</strong>（background color）。输出到屏幕的字符大概长这样：</p>
+<p><img src="https://upload.wikimedia.org/wikipedia/commons/6/6d/Codepage-737.png" alt="" /></p>
+<p>我们将在下篇文章中详细讨论 VGA 字符缓冲区的内存布局；目前我们只需要知道，这段缓冲区的地址是 <code>0xb8000</code>，且每个字符单元包含一个 ASCII 码字节和一个颜色字节。</p>
+<p>我们的实现就像这样：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HELLO</span><span>: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">u8</span><span>] = </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&quot;Hello World!&quot;</span><span>;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> vga_buffer = </span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut u8</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, </span><span style="color:#569cd6;">&amp;</span><span>byte) </span><span style="color:#569cd6;">in </span><span style="color:#b4cea8;">HELLO</span><span>.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2</span><span>) = byte;
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2 </span><span>+ </span><span style="color:#b5cea8;">1</span><span>) = </span><span style="color:#b5cea8;">0xb</span><span>;
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>在这段代码中，我们预先定义了一个<strong>字节字符串</strong>（byte string）类型的<strong>静态变量</strong>（static variable），名为 <code>HELLO</code>。我们首先将整数 <code>0xb8000</code> <strong>转换</strong>（cast）为一个<strong>裸指针</strong>（<a href="https://doc.rust-lang.org/1.30.0/book/second-edition/ch19-01-unsafe-rust.html#dereferencing-a-raw-pointer">raw pointer</a>）。这之后，我们迭代 <code>HELLO</code> 的每个字节，使用 <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate">enumerate</a> 获得一个额外的序号变量 <code>i</code>。在 <code>for</code> 语句的循环体中，我们使用 <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.offset">offset</a> 偏移裸指针，解引用它，来将字符串的每个字节和对应的颜色字节——<code>0xb</code> 代表淡青色——写入内存位置。</p>
+<p>要注意的是，所有的裸指针内存操作都被一个 <strong>unsafe 语句块</strong>（<a href="https://doc.rust-lang.org/stable/book/second-edition/ch19-01-unsafe-rust.html">unsafe block</a>）包围。这是因为，此时编译器不能确保我们创建的裸指针是有效的；一个裸指针可能指向任何一个你内存位置；直接解引用并写入它，也许会损坏正常的数据。使用 <code>unsafe</code> 语句块时，程序员其实在告诉编译器，自己保证语句块内的操作是有效的。事实上，<code>unsafe</code> 语句块并不会关闭 Rust 的安全检查机制；它允许你多做的事情<a href="https://doc.rust-lang.org/1.30.0/book/second-edition/ch19-01-unsafe-rust.html#unsafe-superpowers">只有四件</a>。</p>
+<p>使用 <code>unsafe</code> 语句块要求程序员有足够的自信，所以必须强调的一点是，<strong>肆意使用 unsafe 语句块并不是 Rust 编程的一贯方式</strong>。在缺乏足够经验的前提下，直接在 <code>unsafe</code> 语句块内操作裸指针，非常容易把事情弄得很糟糕；比如，在不注意的情况下，我们很可能会意外地操作缓冲区以外的内存。</p>
+<p>在这样的前提下，我们希望最小化 <code>unsafe </code> 语句块的使用。使用 Rust 语言，我们能够将不安全操作将包装为一个安全的抽象模块。举个例子，我们可以创建一个 VGA 缓冲区类型，把所有的不安全语句封装起来，来确保从类型外部操作时，无法写出不安全的代码：通过这种方式，我们只需要最少的 <code>unsafe</code> 语句块来确保我们不破坏<strong>内存安全</strong>（<a href="https://en.wikipedia.org/wiki/Memory_safety">memory safety</a>）。在下一篇文章中，我们将会创建这样的 VGA 缓冲区封装。</p>
+<h2 id="qi-dong-nei-he"><a class="zola-anchor" href="index.html#qi-dong-nei-he" aria-label="Anchor link for: qi-dong-nei-he">🔗</a>启动内核</h2>
+<p>既然我们已经有了一个能够打印字符的可执行程序，是时候把它运行起来试试看了。首先，我们将编译完毕的内核与引导程序链接，来创建一个引导映像；这之后，我们可以在 QEMU 虚拟机中运行它，或者通过 U 盘在真机上运行。</p>
+<h3 id="chuang-jian-yin-dao-ying-xiang"><a class="zola-anchor" href="index.html#chuang-jian-yin-dao-ying-xiang" aria-label="Anchor link for: chuang-jian-yin-dao-ying-xiang">🔗</a>创建引导映像</h3>
+<p>要将可执行程序转换为<strong>可引导的映像</strong>（bootable disk image），我们需要把它和引导程序链接。这里，引导程序将负责初始化 CPU 并加载我们的内核。</p>
+<p>编写引导程序并不容易，所以我们不编写自己的引导程序，而是使用已有的 <a href="https://crates.io/crates/bootloader">bootloader</a> 包；无需依赖于 C 语言，这个包基于 Rust 代码和内联汇编，实现了一个五脏俱全的 BIOS 引导程序。为了用它启动我们的内核，我们需要将它添加为一个依赖项，在 <code>Cargo.toml</code> 中添加下面的代码：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= </span><span style="color:#d69d85;">&quot;0.9.23&quot;
+</span></code></pre>
+<p>只添加引导程序为依赖项，并不足以创建一个可引导的磁盘映像；我们还需要内核编译完成之后，将内核和引导程序组合在一起。然而，截至目前，原生的 cargo 并不支持在编译完成后添加其它步骤（详见<a href="https://github.com/rust-lang/cargo/issues/545">这个 issue</a>）。</p>
+<p>为了解决这个问题，我们建议使用 <code>bootimage</code> 工具——它将会在内核编译完毕后，将它和引导程序组合在一起，最终创建一个能够引导的磁盘映像。我们可以使用下面的命令来安装这款工具：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>cargo install bootimage
+</span></code></pre>
+<p>为了运行 <code>bootimage</code> 以及编译引导程序，我们需要安装 rustup 模块 <code>llvm-tools-preview</code>——我们可以使用 <code>rustup component add llvm-tools-preview</code> 来安装这个工具。</p>
+<p>成功安装 <code>bootimage</code> 后，创建一个可引导的磁盘映像就变得相当容易。我们来输入下面的命令：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; cargo bootimage
+</span></code></pre>
+<p>可以看到的是，<code>bootimage</code> 工具开始使用 <code>cargo build</code> 编译你的内核，所以它将增量编译我们修改后的源码。在这之后，它会编译内核的引导程序，这可能将花费一定的时间；但和所有其它依赖包相似的是，在首次编译后，产生的二进制文件将被缓存下来——这将显著地加速后续的编译过程。最终，<code>bootimage</code> 将把内核和引导程序组合为一个可引导的磁盘映像。</p>
+<p>运行这行命令之后，我们应该能在 <code>target/x86_64-blog_os/debug</code> 目录内找到我们的映像文件 <code>bootimage-blog_os.bin</code>。我们可以在虚拟机内启动它，也可以刻录到 U 盘上以便在真机上启动。（需要注意的是，因为文件格式不同，这里的 bin 文件并不是一个光驱映像，所以将它刻录到光盘不会起作用。）</p>
+<p>事实上，在这行命令背后，<code>bootimage</code> 工具执行了三个步骤：</p>
+<ol>
+<li>编译我们的内核为一个 <strong>ELF</strong>（<a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">Executable and Linkable Format</a>）文件；</li>
+<li>编译引导程序为独立的可执行文件；</li>
+<li>将内核 ELF 文件<strong>按字节拼接</strong>（append by bytes）到引导程序的末端。</li>
+</ol>
+<p>当机器启动时，引导程序将会读取并解析拼接在其后的 ELF 文件。这之后，它将把程序片段映射到<strong>分页表</strong>（page table）中的<strong>虚拟地址</strong>（virtual address），清零 <strong>BSS段</strong>（BSS segment），还将创建一个栈。最终它将读取<strong>入口点地址</strong>（entry point address）——我们程序中 <code>_start</code> 函数的位置——并跳转到这个位置。</p>
+<h3 id="zai-qemu-zhong-qi-dong-nei-he"><a class="zola-anchor" href="index.html#zai-qemu-zhong-qi-dong-nei-he" aria-label="Anchor link for: zai-qemu-zhong-qi-dong-nei-he">🔗</a>在 QEMU 中启动内核</h3>
+<p>现在我们可以在虚拟机中启动内核了。为了在<a href="https://www.qemu.org/"> QEMU</a> 中启动内核，我们使用下面的命令：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin
+</span><span>warning: TCG doesn</span><span style="color:#d69d85;">&#39;t support requested feature: CPUID.01H:ECX.vmx [bit 5]
+</span></code></pre>
+<p>然后就会弹出一个独立窗口：</p>
+<p><img src="qemu.png" alt="QEMU showing “Hello World!”" /></p>
+<p>我们可以看到，屏幕窗口已经显示出 “Hello World!” 字符串。祝贺你！</p>
+<h3 id="zai-zhen-ji-shang-yun-xing-nei-he"><a class="zola-anchor" href="index.html#zai-zhen-ji-shang-yun-xing-nei-he" aria-label="Anchor link for: zai-zhen-ji-shang-yun-xing-nei-he">🔗</a>在真机上运行内核</h3>
+<p>我们也可以使用 dd 工具把内核写入 U 盘，以便在真机上启动。可以输入下面的命令：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; dd if=</span><span style="background-color:#282828;color:#d69d85;">target/x86_64-blog_os/debug/bootimage-blog_os.bin</span><span> of=</span><span style="background-color:#282828;color:#d69d85;">/dev/sdX</span><span> </span><span style="color:#569cd6;">&amp;&amp; </span><span>sync
+</span></code></pre>
+<p>在这里，<code>sdX</code> 是U盘的<strong>设备名</strong>（<a href="https://en.wikipedia.org/wiki/Device_file">device name</a>）。请注意，<strong>在选择设备名的时候一定要极其小心，因为目标设备上已有的数据将全部被擦除</strong>。</p>
+<p>写入到 U 盘之后，你可以在真机上通过引导启动你的系统。视情况而定，你可能需要在 BIOS 中打开特殊的启动菜单，或者调整启动顺序。需要注意的是，<code>bootloader</code> 包暂时不支持 UEFI，所以我们并不能在 UEFI 机器上启动。</p>
+<h3 id="shi-yong-cargo-run"><a class="zola-anchor" href="index.html#shi-yong-cargo-run" aria-label="Anchor link for: shi-yong-cargo-run">🔗</a>使用 <code>cargo run</code></h3>
+<p>要让在 QEMU 中运行内核更轻松，我们可以设置在 cargo 配置文件中设置 <code>runner</code> 配置项：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;none&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">runner </span><span>= </span><span style="color:#d69d85;">&quot;bootimage runner&quot;
+</span></code></pre>
+<p>在这里，<code>target.'cfg(target_os = &quot;none&quot;)'</code> 筛选了三元组中宿主系统设置为 <code>&quot;none&quot;</code> 的所有编译目标——这将包含我们的 <code>x86_64-blog_os.json</code> 目标。另外，<code>runner</code> 的值规定了运行 <code>cargo run</code> 使用的命令；这个命令将在成功编译后执行，而且会传递可执行文件的路径为第一个参数。<a href="https://doc.rust-lang.org/cargo/reference/config.html">官方提供的 cargo 文档</a>讲述了更多的细节。</p>
+<p>命令 <code>bootimage runner</code> 由 <code>bootimage</code> 包提供，参数格式经过特殊设计，可以用于 <code>runner</code> 命令。它将给定的可执行文件与项目的引导程序依赖项链接，然后在 QEMU 中启动它。<code>bootimage</code> 包的 <a href="https://github.com/rust-osdev/bootimage">README文档</a> 提供了更多细节和可以传入的配置参数。</p>
+<p>现在我们可以使用 <code>cargo run</code> 来编译内核并在 QEMU 中启动了。</p>
+<h2 id="xia-pian-yu-gao"><a class="zola-anchor" href="index.html#xia-pian-yu-gao" aria-label="Anchor link for: xia-pian-yu-gao">🔗</a>下篇预告</h2>
+<p>在下篇文章中，我们将细致地探索 VGA 字符缓冲区，并包装它为一个安全的接口。我们还将基于它实现 <code>println!</code> 宏。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../freestanding-rust-binary/index.html">&laquo; 独立式可执行程序</a>
+        
+        
+            <a class="next" href="../vga-text-mode/index.html">VGA 字符模式 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="A Minimal Rust Kernel (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../minimal-rust-kernel/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="fr" class=""><a href="../../fr/minimal-rust-kernel/index.html">
+                        French
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/minimal-rust-kernel/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/minimal-rust-kernel/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ru" class=""><a href="../../ru/minimal-rust-kernel/index.html">
+                        Russian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/minimal-rust-kernel/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

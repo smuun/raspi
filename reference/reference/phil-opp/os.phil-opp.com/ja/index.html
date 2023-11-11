@@ -1,0 +1,303 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+
+
+
+<h1 style="visibility: hidden; height: 0px; margin: 0px; padding: 0px;">RustでOSを書く</h1>
+<div class="front-page-introduction">
+<p>このブログシリーズでは、ちょっとしたオペレーティングシステムを<a href="https://www.rust-lang.org/">Rustプログラミング言語</a>を使って作ります。それぞれの記事が小さなチュートリアルになっており、必要なコードも全て記事内に記されているので、一つずつ読み進めて行けば理解できるでしょう。対応した<a href="https://github.com/phil-opp/blog_os">Githubリポジトリ</a>でソースコードを見ることもできます。</p>
+<p>最新記事: 
+    
+    <strong><a href="../async-await/index.html">Async/Await</a></strong>
+</p>
+</div>
+
+
+<div></div>
+
+<div id="bare-bones" class="post-category bare-bones">Bare Bones</div>
+<div class="posts bare-bones">
+    <div>
+        <h2 class="post-title"><a href="freestanding-rust-binary/index.html">フリースタンディングな Rust バイナリ</a></h2>
+        <div class="post-summary">
+            <p>私達自身のオペレーティングシステム(以下、OS)カーネルを作っていく最初のステップは標準ライブラリとリンクしない Rust の実行可能ファイルをつくることです。これにより、基盤となる OS がない<a href="https://en.wikipedia.org/wiki/Bare_machine">ベアメタル</a>上で Rust のコードを実行することができるようになります。</p>
+
+            <a class="read-more" href="freestanding-rust-binary/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="minimal-rust-kernel/index.html">Rustでつくる最小のカーネル</a></h2>
+        <div class="post-summary">
+            <p>この記事では、Rustで最小限の64bitカーネルを作ります。前の記事で作った<a href="freestanding-rust-binary/index.html">フリースタンディングなRustバイナリ</a>を下敷きにして、何かを画面に出力する、ブータブルディスクイメージを作ります。</p>
+
+            <a class="read-more" href="minimal-rust-kernel/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="vga-text-mode/index.html">VGAテキストモード</a></h2>
+        <div class="post-summary">
+            <p><a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGAテキストモード</a>は画面にテキストを出力するシンプルな方法です。この記事では、すべてのunsafeな要素を別のモジュールにカプセル化することで、それを安全かつシンプルに扱えるようにするインターフェースを作ります。また、Rustの<a href="https://doc.rust-lang.org/std/fmt/#related-macros">フォーマッティングマクロ</a>のサポートも実装します。</p>
+
+            <a class="read-more" href="vga-text-mode/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="testing/index.html">テスト</a></h2>
+        <div class="post-summary">
+            <p>この記事では、<code>no_std</code>な実行環境における<ruby>単体テスト<rp> (</rp><rt>unit test</rt><rp>) </rp></ruby>と<ruby>結合テスト<rp> (</rp><rt>integration test</rt><rp>) </rp></ruby>について学びます。Rustではカスタムテストフレームワークがサポートされているので、これを使ってカーネルの中でテスト関数を実行します。QEMUの外へとテストの結果を通知するため、QEMUと<code>bootimage</code>の様々な機能を使います。</p>
+
+            <a class="read-more" href="testing/index.html"><em>もっと読む »</em></a></div>
+    </div>
+</div>
+
+<div id="interrupts" class="post-category interrupts">Interrupts</div>
+<div class="posts interrupts">
+    <div>
+        <h2 class="post-title"><a href="cpu-exceptions/index.html">CPU例外</a></h2>
+        <div class="post-summary">
+            <p>CPU例外は、例えば無効なメモリアドレスにアクセスしたときやゼロ除算したときなど、様々なミスによって発生します。それらに対処するために、ハンドラ関数を提供する <strong><ruby>割り込み記述子表<rp> (</rp><rt>interrupt descriptor table</rt><rp>) </rp></ruby></strong> を設定しなくてはなりません。この記事を読み終わる頃には、私達のカーネルは<a href="https://wiki.osdev.org/Exceptions#Breakpoint">ブレークポイント例外</a>を捕捉し、その後通常の実行を継続できるようになっているでしょう。</p>
+
+            <a class="read-more" href="cpu-exceptions/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="double-fault-exceptions/index.html">Double Faults</a></h2>
+        <div class="post-summary">
+            <p>この記事ではCPUが例外ハンドラの呼び出しに失敗したときに起きる、ダブルフォルト例外について詳細に見ていきます。この例外を処理することによって、システムリセットを起こす重大な<strong>トリプルフォルト</strong>を避けることができます。あらゆる場合においてトリプルフォルトを防ぐために、ダブルフォルトを異なるカーネルスタック上でキャッチするための<strong>割り込みスタックテーブル</strong>をセットアップしていきます。</p>
+
+            <a class="read-more" href="double-fault-exceptions/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="hardware-interrupts/index.html">ハードウェア割り込み</a></h2>
+        <div class="post-summary">
+            <p>この記事では、ハードウェア割り込みを正しく CPU に転送するためにプログラム可能な割り込みコントローラの設定を行います。これらの割り込みに対処するため、例外ハンドラのときに行ったのと同じように割り込み記述子表に新しいエントリを追加しなくてはいけません。ここでは周期タイマ割り込みの受け方と、キーボードからの入力の受け方を学びます。</p>
+
+            <a class="read-more" href="hardware-interrupts/index.html"><em>もっと読む »</em></a></div>
+    </div>
+</div>
+
+<div id="memory-management" class="post-category memory-management">Memory Management</div>
+<div class="posts memory-management">
+    <div>
+        <h2 class="post-title"><a href="paging-introduction/index.html">ページング入門</a></h2>
+        <div class="post-summary">
+            <p>この記事では<strong>ページング</strong>を紹介します。これは、私達のオペレーティングシステムにも使う、とても一般的なメモリ管理方式です。なぜメモリの分離が必要なのか、<strong>セグメンテーション</strong>がどういう仕組みなのか、<strong>仮想メモリ</strong>とは何なのか、ページングがいかにしてメモリ<ruby>断片化<rp> (</rp><rt>フラグメンテーション</rt><rp>) </rp></ruby>の問題を解決するのかを説明します。また、x86_64アーキテクチャにおける、マルチレベルページテーブルのレイアウトについても説明します。</p>
+
+            <a class="read-more" href="paging-introduction/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="paging-implementation/index.html">ページングの実装</a></h2>
+        <div class="post-summary">
+            <p>この記事では私達のカーネルをページングに対応させる方法についてお伝えします。まずページテーブルの物理フレームにカーネルがアクセスできるようにする様々な方法を示し、それらの利点と欠点について議論します。次にアドレス変換関数を、ついで新しい<ruby>対応付け<rp> (</rp><rt>マッピング</rt><rp>) </rp></ruby>を作るための関数を実装します。</p>
+
+            <a class="read-more" href="paging-implementation/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="heap-allocation/index.html">ヒープ割り当て</a></h2>
+        <div class="post-summary">
+            <p>この記事では、私たちのカーネルにヒープ<ruby>割り当て<rp> (</rp><rt>アロケーション</rt><rp>) </rp></ruby>の機能を追加します。まず動的メモリの基礎を説明し、どのようにして借用チェッカがありがちなアロケーションエラーを防いでくれるのかを示します。その後Rustの基本的なアロケーションインターフェースを実装し、ヒープメモリ領域を作成し、アロケータクレートを設定します。この記事を終える頃には、Rustに組み込みの<code>alloc</code>クレートのすべてのアロケーション・コレクション型が私たちのカーネルで利用可能になっているでしょう。</p>
+
+            <a class="read-more" href="heap-allocation/index.html"><em>もっと読む »</em></a></div>
+    </div>
+
+    <div>
+        <h2 class="post-title"><a href="../allocator-designs/index.html">Allocator Designs</a></h2>
+        <div class="post-summary">
+            <p>This post explains how to implement heap allocators from scratch. It presents and discusses different allocator designs, including bump allocation, linked list allocation, and fixed-size block allocation. For each of the three designs, we will create a basic implementation that can be used for our kernel.</p>
+
+            <a class="read-more" href="../allocator-designs/index.html"><em>もっと読む »</em></a><aside class="no-translation">
+                （この記事はまだ翻訳されていません。）
+            </aside></div>
+    </div>
+</div>
+
+<div id="multitasking" class="post-category multitasking">Multitasking</div>
+<div class="posts multitasking">
+    <div>
+        <h2 class="post-title"><a href="async-await/index.html">Async&#x2F;Await</a></h2>
+        <div class="post-summary">
+            <p>この記事では、Rustの<strong>協調的マルチタスク</strong>と<strong>async/await</strong>機能について説明します。Rustのasync/await機能については、<code>Future</code> trait の設計、ステートマシンの変換、 <strong>pinning</strong> などを含めて詳しく説明します。そして、非同期キーボードタスクと基本的なexecutorを作成することで、カーネルにasync/awaitの基本的なサポートを追加します。</p>
+
+            <a class="read-more" href="async-await/index.html"><em>もっと読む »</em></a></div>
+    </div>
+</div>
+
+<div class="posts subscribe">
+    <h2 class="post-title">Subscribe</h2>
+    <p>Receive notifications about new posts and other major changes! You can either:</p>
+
+    <ul>
+        <li>Subscribe to our <a href="../rss.xml">RSS/Atom Feed</a>,</li>
+        <li>Subscribe to <a href="https://github.com/phil-opp/blog_os/issues/479">this GitHub issue</a>, or</li>
+        <li>Subscribe to our <a href="https://tinyletter.com/phil-opp/">email newsletter</a>.</li>
+    </ul>
+</div>
+
+<hr>
+
+<div class="frontpage-section">
+    <h2>Status Updates</h2>
+    
+    <p>These posts give a regular overview of the most important changes to the blog and the tools and libraries behind the scenes.</p>
+    <ul>
+          <li><b><a href="https://rust-osdev.com/this-month/2022-11/">This Month in Rust OSDev (November 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-10/">This Month in Rust OSDev (October 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-09/">This Month in Rust OSDev (September 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-08/">This Month in Rust OSDev (August 2022)</a> </b></li>
+  <li><b><a href="https://rust-osdev.com/this-month/2022-07/">This Month in Rust OSDev (July 2022)</a> </b></li>
+
+        <li><a href="../status-update/index.html"><em>view all »</em></a></li>
+    </ul>
+</div>
+
+<div class="frontpage-section">
+    <h2 class="post-title">First Edition</h2>
+    <p>You are currently viewing the second edition of “Writing an OS in Rust”. The first edition is very different in many aspects, for example it builds upon the GRUB bootloader instead of using the `bootloader` crate. In case you're interested in it, it is still available. Note that the first edition is no longer updated and might contain outdated information. <a class="read-more" href="../edition-1"><em>read&nbsp;the&nbsp;first edition&nbsp;»</em></a></p>
+</div>
+
+<div class="">
+    <h2>Support Me</h2>
+    
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+</div>
+</main>
+        </div>
+
+        <div>
+<aside class="page-aside-right">
+    <div class="block" id="language-selector">
+        <h2>Other Languages</h2>
+        
+        <ul><li data-lang-switch-to="en" class=""><a href="../index.html">
+                    English (original)
+                </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../zh-CN/index.html">
+                    Chinese (simplified)
+                </a></li><li data-lang-switch-to="zh-TW" class=""><a href="../zh-TW/index.html">
+                    Chinese (traditional)
+                </a></li><li data-lang-switch-to="fr" class=""><a href="../fr/index.html">
+                    French
+                </a></li><li data-lang-switch-to="fa" class=""><a href="../fa/index.html">
+                    Persian
+                </a></li><li data-lang-switch-to="ru" class=""><a href="../ru/index.html">
+                    Russian
+                </a></li><li data-lang-switch-to="ko" class=""><a href="../ko/index.html">
+                    Korean
+                </a></li></ul>
+    </div>
+    <div class="block">
+        <h2>Recent Updates</h2>
+        <ul>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1177">[Translation][Korean] post-07 (edition-2)</a> <time datetime="2022-12-15T10:01:07">Dec&nbsp;15</time></li>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1175">[Translation][Korean] post-06 (edition-2)</a> <time datetime="2022-12-13T13:13:40">Dec&nbsp;13</time></li>
+  <li><a href="https://github.com/phil-opp/blog_os/pull/1131">[Chinese] Translate posts 5-8 and improve translation of posts 1-4</a> <time datetime="2022-11-25T10:27:42">Nov&nbsp;25</time></li>
+</ul>
+    </div>
+
+    <div class="block">
+        <h2>Repository</h2>
+        <div class="gh-repo-box">
+            <div>
+                <svg viewBox="0 0 12 16" version="1.1" width="12" height="16" aria-hidden="true"><path fill-rule="evenodd" d="M4 9H3V8h1v1zm0-3H3v1h1V6zm0-2H3v1h1V4zm0-2H3v1h1V2zm8-1v12c0 .55-.45 1-1 1H6v2l-1.5-1.5L3 16v-2H1c-.55 0-1-.45-1-1V1c0-.55.45-1 1-1h10c.55 0 1 .45 1 1zm-1 10H1v2h2v-1h3v1h5v-2zm0-10H2v9h9V1z"></path></svg>
+                <a href="https://github.com/phil-opp/blog_os" class="repo-link">
+                    <span title="blog_os">phil-opp/blog_os</span>
+                </a>
+            </div>
+
+            <p class="subtitle">
+                Writing an OS in Rust
+            </p>
+
+            <p class="stars-forks">
+                <a href="https://github.com/phil-opp/blog_os/stargazers" class="stars">
+                    <svg aria-label="stars" viewBox="0 0 14 16" version="1.1" width="14" height="16" role="img"><path fill-rule="evenodd" d="M14 6l-4.9-.64L7 1 4.9 5.36 0 6l3.6 3.26L2.67 14 7 11.67 11.33 14l-.93-4.74L14 6z"></path></svg>
+                    11.2k
+                </a>
+                <a href="https://github.com/phil-opp/blog_os/network/members" class="forks">
+                    <svg aria-label="forks" viewBox="0 0 10 16" version="1.1" width="10" height="16" role="img"><path fill-rule="evenodd" d="M8 1a1.993 1.993 0 0 0-1 3.72V6L5 8 3 6V4.72A1.993 1.993 0 0 0 2 1a1.993 1.993 0 0 0-1 3.72V6.5l3 3v1.78A1.993 1.993 0 0 0 5 15a1.993 1.993 0 0 0 1-3.72V9.5l3-3V4.72A1.993 1.993 0 0 0 8 1zM2 4.2C1.34 4.2.8 3.65.8 3c0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2zm3 10c-.66 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2zm3-10c-.66 0-1.2-.55-1.2-1.2 0-.65.55-1.2 1.2-1.2.65 0 1.2.55 1.2 1.2 0 .65-.55 1.2-1.2 1.2z"></path></svg>
+                    851
+                </a>
+
+                <a href="https://github.com/sponsors/phil-opp" class="sponsor">
+                    <svg viewBox="0 0 12 16" version="1.1" width="12" height="16" aria-hidden="true"><path fill-rule="evenodd" d="M9 2c-.97 0-1.69.42-2.2 1-.51.58-.78.92-.8 1-.02-.08-.28-.42-.8-1-.52-.58-1.17-1-2.2-1-1.632.086-2.954 1.333-3 3 0 .52.09 1.52.67 2.67C1.25 8.82 3.01 10.61 6 13c2.98-2.39 4.77-4.17 5.34-5.33C11.91 6.51 12 5.5 12 5c-.047-1.69-1.342-2.913-3-3z"></path></svg>
+                    Sponsor
+                </a>
+            </p>
+        </div>
+    </div>
+</aside>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

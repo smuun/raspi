@@ -1,0 +1,511 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This post explores unit testing in no_std executables using Rust’s built-in test framework. We will adjust our code so that cargo test works and add s…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Unit Testing | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#requirements">Requirements</a>
+            
+        </li><li>
+            <a href="index.html#unit-tests-for-no-std-binaries">Unit Tests for no_std Binaries</a>
+            <ol>
+                <li>
+                    <a href="index.html#silencing-the-warnings">Silencing the Warnings</a>
+                </li><li>
+                    <a href="index.html#including-the-standard-library">Including the Standard Library</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#testing-the-vga-module">Testing the VGA Module</a>
+            <ol>
+                <li>
+                    <a href="index.html#constructing-a-writer">Constructing a Writer</a>
+                </li><li>
+                    <a href="index.html#testing-write-byte">Testing write_byte</a>
+                </li><li>
+                    <a href="index.html#testing-strings">Testing Strings</a>
+                </li><li>
+                    <a href="index.html#more-tests">More Tests</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Unit Testing</h1>
+    <time datetime="2018-04-29" class="post-date">
+        Apr 29, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+             <b>Deprecated: </b> 
+            This post is deprecated in favor of the <a href="https://os.phil-opp.com/testing"><em>Testing</em></a> post and will no longer receive updates.
+        </div>
+    
+
+    <div class="">
+    <p>This post explores unit testing in <code>no_std</code> executables using Rust’s built-in test framework. We will adjust our code so that <code>cargo test</code> works and add some basic unit tests to our VGA buffer module.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-04"><code>post-04</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#requirements">Requirements</a>
+                
+            </li><li>
+                <a href="index.html#unit-tests-for-no-std-binaries">Unit Tests for no_std Binaries</a>
+                <ul>
+                    <li>
+                        <a href="index.html#silencing-the-warnings">Silencing the Warnings</a>
+                    </li><li>
+                        <a href="index.html#including-the-standard-library">Including the Standard Library</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#testing-the-vga-module">Testing the VGA Module</a>
+                <ul>
+                    <li>
+                        <a href="index.html#constructing-a-writer">Constructing a Writer</a>
+                    </li><li>
+                        <a href="index.html#testing-write-byte">Testing write_byte</a>
+                    </li><li>
+                        <a href="index.html#testing-strings">Testing Strings</a>
+                    </li><li>
+                        <a href="index.html#more-tests">More Tests</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="requirements"><a class="zola-anchor" href="index.html#requirements" aria-label="Anchor link for: requirements">🔗</a>Requirements</h2>
+<p>In this post we explore how to execute <code>cargo test</code> on the host system (as a normal Linux/Windows/macOS executable). This only works if you don’t have a <code>.cargo/config</code> file that sets a default target. If you followed the <a href="../minimal-rust-kernel/index.html"><em>Minimal Rust Kernel</em></a> post before 2019-04-27, you should be fine. If you followed it after that date, you need to remove the <code>build.target</code> key from your <code>.cargo/config</code> file and explicitly pass a target argument to <code>cargo xbuild</code>.</p>
+<p>Alternatively, consider reading the new <a href="../testing/index.html"><em>Testing</em></a> post instead. It sets up a similar functionality as this post, but instead of running the tests on your host system, they are run in a realistic environment inside QEMU.</p>
+<h2 id="unit-tests-for-no-std-binaries"><a class="zola-anchor" href="index.html#unit-tests-for-no-std-binaries" aria-label="Anchor link for: unit-tests-for-no-std-binaries">🔗</a>Unit Tests for <code>no_std</code> Binaries</h2>
+<p>Rust has a <a href="https://doc.rust-lang.org/book/ch11-00-testing.html">built-in test framework</a> that is capable of running unit tests without the need to set anything up. Just create a function that checks some results through assertions and add the <code>#[test]</code> attribute to the function header. Then <code>cargo test</code> will automatically find and execute all test functions of your crate.</p>
+<p>Unfortunately it’s a bit more complicated for <code>no_std</code> applications such as our kernel. If we run <code>cargo test</code> (without adding any test yet), we get the following error:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>   Compiling blog_os v0.2.0 (file:///…/blog_os)
+</span><span>error[E0152]: duplicate lang item found: `panic_impl`.
+</span><span>  --&gt; src/main.rs:35:1
+</span><span>   |
+</span><span>35 | / fn panic(info: &amp;PanicInfo) -&gt; ! {
+</span><span>36 | |     println!(&quot;{}&quot;, info);
+</span><span>37 | |     loop {}
+</span><span>38 | | }
+</span><span>   | |_^
+</span><span>   |
+</span><span>   = note: first defined in crate `std`.
+</span></code></pre>
+<p>The problem is that unit tests are built for the host machine, with the <code>std</code> library included. This makes sense because they should be able to run as a normal application on the host operating system. Since the standard library has it’s own <code>panic_handler</code> function, we get the above error. To fix it, we use <a href="https://doc.rust-lang.org/reference/conditional-compilation.html">conditional compilation</a> to include our implementation of the panic handler only in non-test environments:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[cfg(not(test))] </span><span style="color:#608b4e;">// only compile when the test flag is not set
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>The only change is the added <code>#[cfg(not(test))]</code> attribute. The <code>#[cfg(…)]</code> attribute ensures that the annotated item is only included if the passed condition is met. The <code>test</code> configuration is set when the crate is compiled for unit tests. Through <code>not(…)</code> we negate the condition so that the language item is only compiled for non-test builds.</p>
+<p>When we now try <code>cargo test</code> again, we get an ugly linker error:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `cc` failed: exit code: 1
+</span><span>  |
+</span><span>  = note: &quot;cc&quot; &quot;-Wl,--as-needed&quot; &quot;-Wl,-z,noexecstack&quot; &quot;-m64&quot; &quot;-L&quot; &quot;/…/lib/rustlib/x86_64-unknown-linux-gnu/lib&quot; […]
+</span><span>  = note: /…/blog_os-969bdb90d27730ed.2q644ojj2xqxddld.rcgu.o: In function `_start&#39;:
+</span><span>          /…/blog_os/src/main.rs:17: multiple definition of `_start&#39;
+</span><span>          /usr/lib/gcc/x86_64-linux-gnu/5/../../../x86_64-linux-gnu/Scrt1.o:(.text+0x0): first defined here
+</span><span>          /usr/lib/gcc/x86_64-linux-gnu/5/../../../x86_64-linux-gnu/Scrt1.o: In function `_start&#39;:
+</span><span>          (.text+0x20): undefined reference to `main&#39;
+</span><span>          collect2: error: ld returned 1 exit status
+</span><span>
+</span></code></pre>
+<p>I shortened the output here because it is extremely verbose. The relevant part is at the bottom, after the second “note:”. We got two distinct errors here, “<em>multiple definition of <code>_start</code></em>” and “<em>undefined reference to <code>main</code></em>”.</p>
+<p>The reason for the first error is that the test framework injects its own <code>main</code> and <code>_start</code> functions, which will run the tests when invoked. So we get two functions named <code>_start</code> when compiling in test mode, one from the test framework and the one we defined ourselves. To fix this, we need to exclude our <code>_start</code> function in that case, which we can do by marking it as <code>#[cfg(not(test))]</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{ … }
+</span></code></pre>
+<p>The second problem is that we use the <code>#![no_main]</code> attribute for our crate, which suppresses any <code>main</code> generation, including the test <code>main</code>. To solve this, we use the <a href="https://chrismorgan.info/blog/rust-cfg_attr.html"><code>cfg_attr</code></a> attribute to conditionally enable the <code>no_main</code> attribute only in non-test mode:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_main)] </span><span style="color:#608b4e;">// instead of `#![no_main]`
+</span></code></pre>
+<p>Now <code>cargo test</code> works:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>   Compiling blog_os v0.2.0 (file:///…/blog_os)
+</span><span>    [some warnings]
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.98 secs
+</span><span>     Running target/debug/deps/blog_os-1f08396a9eff0aa7
+</span><span>
+</span><span>running 0 tests
+</span><span>
+</span><span>test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+</span></code></pre>
+<p>The test framework seems to work as intended. We don’t have any tests yet, but we already get a test result summary.</p>
+<h3 id="silencing-the-warnings"><a class="zola-anchor" href="index.html#silencing-the-warnings" aria-label="Anchor link for: silencing-the-warnings">🔗</a>Silencing the Warnings</h3>
+<p>We get a few warnings about unused imports, because we no longer compile our <code>_start</code> function. To silence such unused code warnings, we can add the following to the top of our <code>main.rs</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>#![cfg_attr(test, allow(unused_imports))]
+</span></code></pre>
+<p>Like before, the <code>cfg_attr</code> attribute sets the passed attribute if the passed condition holds. Here, we set the <code>allow(…)</code> attribute when compiling in test mode. We use the <code>allow</code> attribute to disable warnings for the <code>unused_import</code> <em>lint</em>.</p>
+<p>Lints are classes of warnings, for example <code>dead_code</code> for unused code or <code>missing-docs</code> for missing documentation. Lints can be set to four different states:</p>
+<ul>
+<li><code>allow</code>: no errors, no warnings</li>
+<li><code>warn</code>: causes a warning</li>
+<li><code>deny</code>: causes a compilation error</li>
+<li><code>forbid</code>: like <code>deny</code>, but can’t be overridden</li>
+</ul>
+<p>Some lints are <code>allow</code> by default (such as <code>missing-docs</code>), others are <code>warn</code> by default (such as <code>dead_code</code>), and some few are even <code>deny</code> by default.. The default can be overridden by the <code>allow</code>, <code>warn</code>, <code>deny</code> and <code>forbid</code> attributes. For a list of all lints, see <code>rustc -W help</code>. There is also the <a href="https://github.com/rust-lang-nursery/rust-clippy">clippy</a> project, which provides many additional lints.</p>
+<h3 id="including-the-standard-library"><a class="zola-anchor" href="index.html#including-the-standard-library" aria-label="Anchor link for: including-the-standard-library">🔗</a>Including the Standard Library</h3>
+<p>Unit tests run on the host machine, so it’s possible to use the complete standard library inside them. To link the standard library in test mode, we can make the <code>#![no_std]</code> attribute conditional through <code>cfg_attr</code> too:</p>
+<pre data-lang="diff" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-diff "><code class="language-diff" data-lang="diff"><span>-#![no_std]
+</span><span>+#![cfg_attr(not(test), no_std)]
+</span></code></pre>
+<h2 id="testing-the-vga-module"><a class="zola-anchor" href="index.html#testing-the-vga-module" aria-label="Anchor link for: testing-the-vga-module">🔗</a>Testing the VGA Module</h2>
+<p>Now that we have set up the test framework, we can add a first unit test for our <code>vga_buffer</code> module:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">mod </span><span>test {
+</span><span>    </span><span style="color:#569cd6;">use super</span><span>::*;
+</span><span>
+</span><span>    #[test]
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>foo() {}
+</span><span>}
+</span></code></pre>
+<p>We add the test in an inline <code>test</code> submodule. This isn’t necessary, but a common way to separate test code from the rest of the module. By adding the <code>#[cfg(test)]</code> attribute, we ensure that the module is only compiled in test mode. Through <code>use super::*</code>, we import all items of the parent module (the <code>vga_buffer</code> module), so that we can test them easily.</p>
+<p>The <code>#[test]</code> attribute on the <code>foo</code> function tells the test framework that the function is an unit test. The framework will find it automatically, even if it’s private and inside a private module as in our case:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>   Compiling blog_os v0.2.0 (file:///…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 2.99 secs
+</span><span>     Running target/debug/deps/blog_os-1f08396a9eff0aa7
+</span><span>
+</span><span>running 1 test
+</span><span>test vga_buffer::test::foo ... ok
+</span><span>
+</span><span>test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+</span></code></pre>
+<p>We see that the test was found and executed. It didn’t panic, so it counts as passed.</p>
+<h3 id="constructing-a-writer"><a class="zola-anchor" href="index.html#constructing-a-writer" aria-label="Anchor link for: constructing-a-writer">🔗</a>Constructing a Writer</h3>
+<p>In order to test the VGA methods, we first need to construct a <code>Writer</code> instance. Since we will need such an instance for other tests too, we create a separate function for it:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">mod </span><span>test {
+</span><span>    </span><span style="color:#569cd6;">use super</span><span>::*;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>construct_writer() -&gt; Writer {
+</span><span>        </span><span style="color:#569cd6;">use </span><span>std::boxed::Box;
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">let</span><span> buffer = construct_buffer();
+</span><span>        Writer {
+</span><span>            column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>            color_code: ColorCode::new(Color::Blue, Color::Magenta),
+</span><span>            buffer: Box::leak(Box::new(buffer)),
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>construct_buffer() -&gt; Buffer { … }
+</span><span>}
+</span></code></pre>
+<p>We set the initial column position to 0 and choose some arbitrary colors for foreground and background color. The difficult part is the buffer construction, it’s described in detail below. We then use <a href="https://doc.rust-lang.org/nightly/std/boxed/struct.Box.html#method.new"><code>Box::new</code></a> and <a href="https://doc.rust-lang.org/nightly/std/boxed/struct.Box.html#method.leak"><code>Box::leak</code></a> to transform the created <code>Buffer</code> into a <code>&amp;'static mut Buffer</code>, because the <code>buffer</code> field needs to be of that type.</p>
+<h4 id="buffer-construction"><a class="zola-anchor" href="index.html#buffer-construction" aria-label="Anchor link for: buffer-construction">🔗</a>Buffer Construction</h4>
+<p>So how do we create a <code>Buffer</code> instance? The naive approach does not work unfortunately:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>construct_buffer() -&gt; Buffer {
+</span><span>    Buffer {
+</span><span>        chars: [[Volatile::new(empty_char()); </span><span style="color:#b4cea8;">BUFFER_WIDTH</span><span>]; </span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>],
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>empty_char() -&gt; ScreenChar {
+</span><span>    ScreenChar {
+</span><span>        ascii_character: </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Green, Color::Brown),
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>When running <code>cargo test</code> the following error occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0277]: the trait bound `volatile::Volatile&lt;vga_buffer::ScreenChar&gt;: core::marker::Copy` is not satisfied
+</span><span>   --&gt; src/vga_buffer.rs:186:21
+</span><span>    |
+</span><span>186 |             chars: [[Volatile::new(empty_char); BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `core::marker::Copy` is not implemented for `volatile::Volatile&lt;vga_buffer::ScreenChar&gt;`
+</span><span>    |
+</span><span>    = note: the `Copy` trait is required because the repeated element will be copied
+</span></code></pre>
+<p>The problem is that array construction in Rust requires that the contained type is <a href="https://doc.rust-lang.org/core/marker/trait.Copy.html"><code>Copy</code></a>. The <code>ScreenChar</code> is <code>Copy</code>, but the <code>Volatile</code> wrapper is not. There is currently no easy way to circumvent this without using <a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html"><code>unsafe</code></a>, but fortunately there is the <a href="https://docs.rs/array-init"><code>array_init</code></a> crate that provides a safe interface for such operations.</p>
+<p>To use that crate, we add the following to our <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">dev-dependencies</span><span>]
+</span><span style="color:#569cd6;">array-init </span><span>= </span><span style="color:#d69d85;">&quot;0.0.3&quot;
+</span></code></pre>
+<p>Note that we’re using the <a href="https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#development-dependencies"><code>dev-dependencies</code></a> table instead of the <code>dependencies</code> table, because we only need the crate for <code>cargo test</code> and not for a normal build.</p>
+<p>Now we can fix our <code>construct_buffer</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>construct_buffer() -&gt; Buffer {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>array_init::array_init;
+</span><span>
+</span><span>    Buffer {
+</span><span>        chars: array_init(|_| array_init(|_| Volatile::new(empty_char()))),
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>See the <a href="https://docs.rs/array-init">documentation of <code>array_init</code></a> for more information about using that crate.</p>
+<h3 id="testing-write-byte"><a class="zola-anchor" href="index.html#testing-write-byte" aria-label="Anchor link for: testing-write-byte">🔗</a>Testing <code>write_byte</code></h3>
+<p>Now we’re finally able to write a first unit test that tests the <code>write_byte</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>test {
+</span><span>    […]
+</span><span>
+</span><span>    #[test]
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_byte() {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = construct_writer();
+</span><span>        writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;X&#39;</span><span>);
+</span><span>        writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;Y&#39;</span><span>);
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">for </span><span>(i, row) </span><span style="color:#569cd6;">in</span><span> writer.buffer.chars.iter().enumerate() {
+</span><span>            </span><span style="color:#569cd6;">for </span><span>(j, screen_char) </span><span style="color:#569cd6;">in</span><span> row.iter().enumerate() {
+</span><span>                </span><span style="color:#569cd6;">let</span><span> screen_char = screen_char.read();
+</span><span>                </span><span style="color:#569cd6;">if</span><span> i == </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1 </span><span style="color:#569cd6;">&amp;&amp;</span><span> j == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;X&#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else if</span><span> i == </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1 </span><span style="color:#569cd6;">&amp;&amp;</span><span> j == </span><span style="color:#b5cea8;">1 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;Y&#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>                    assert_eq!(screen_char, empty_char());
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We construct a <code>Writer</code>, write two bytes to it, and then check that the right screen characters were updated. When we run <code>cargo test</code>, we see that the test is executed and passes:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>running 1 test
+</span><span>test vga_buffer::test::write_byte ... ok
+</span><span>
+</span><span>test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+</span></code></pre>
+<p>Try to play around a bit with this function and verify that the test fails if you change something, e.g. if you print a third byte without adjusting the <code>for</code> loop.</p>
+<p>(If you’re getting an “binary operation <code>==</code> cannot be applied to type <code>vga_buffer::ScreenChar</code>” error, you need to also derive <a href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html"><code>PartialEq</code></a> for <code>ScreenChar</code> and <code>ColorCode</code>).</p>
+<h3 id="testing-strings"><a class="zola-anchor" href="index.html#testing-strings" aria-label="Anchor link for: testing-strings">🔗</a>Testing Strings</h3>
+<p>Let’s add a second unit test to test formatted output and newline behavior:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>test {
+</span><span>    […]
+</span><span>
+</span><span>    #[test]
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_formatted() {
+</span><span>        </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = construct_writer();
+</span><span>        writeln!(&amp;mut writer, </span><span style="color:#d69d85;">&quot;a&quot;</span><span>).unwrap();
+</span><span>        writeln!(&amp;mut writer, </span><span style="color:#d69d85;">&quot;b</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;c&quot;</span><span>).unwrap();
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">for </span><span>(i, row) </span><span style="color:#569cd6;">in</span><span> writer.buffer.chars.iter().enumerate() {
+</span><span>            </span><span style="color:#569cd6;">for </span><span>(j, screen_char) </span><span style="color:#569cd6;">in</span><span> row.iter().enumerate() {
+</span><span>                </span><span style="color:#569cd6;">let</span><span> screen_char = screen_char.read();
+</span><span>                </span><span style="color:#569cd6;">if</span><span> i == </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">3 </span><span style="color:#569cd6;">&amp;&amp;</span><span> j == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;a&#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else if</span><span> i == </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2 </span><span style="color:#569cd6;">&amp;&amp;</span><span> j == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;b&#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else if</span><span> i == </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2 </span><span style="color:#569cd6;">&amp;&amp;</span><span> j == </span><span style="color:#b5cea8;">1 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;c&#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else if</span><span> i &gt;= </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2 </span><span>{
+</span><span>                    assert_eq!(screen_char.ascii_character, </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>);
+</span><span>                    assert_eq!(screen_char.color_code, writer.color_code);
+</span><span>                } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>                    assert_eq!(screen_char, empty_char());
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>In this test we’re using the <a href="https://doc.rust-lang.org/nightly/core/macro.writeln.html"><code>writeln!</code></a> macro to print strings with newlines to the buffer. Most of the for loop is similar to the <code>write_byte</code> test and only verifies if the written characters are at the expected place. The new <code>if i &gt;= BUFFER_HEIGHT - 2</code> case verifies that the empty lines that are shifted in on a newline have the <code>writer.color_code</code>, which is different from the initial color.</p>
+<h3 id="more-tests"><a class="zola-anchor" href="index.html#more-tests" aria-label="Anchor link for: more-tests">🔗</a>More Tests</h3>
+<p>We only present two basic tests here as an example, but of course many more tests are possible. For example a test that changes the writer color in between writes. Or a test that checks that the top line is correctly shifted off the screen on a newline. Or a test that checks that non-ASCII characters are handled correctly.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>Unit testing is a very useful technique to ensure that certain components have a desired behavior. Even if they cannot show the absence of bugs, they’re still an useful tool for finding them and especially for avoiding regressions.</p>
+<p>This post explained how to set up unit testing in a Rust kernel. We now have a functioning test framework and can easily add tests by adding functions with a <code>#[test]</code> attribute. To run them, a short <code>cargo test</code> suffices. We also added a few basic tests for our VGA buffer as an example how unit tests could look like.</p>
+<p>We also learned a bit about conditional compilation, Rust’s <a href="index.html#silencing-the-warnings">lint system</a>, how to <a href="index.html#buffer-construction">initialize arrays with non-Copy types</a>, and the <code>dev-dependencies</code> section of the <code>Cargo.toml</code>.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>We now have a working unit testing framework, which gives us the ability to test individual components. However, unit tests have the disadvantage that they run on the host machine and are thus unable to test how components interact with platform specific parts. For example, we can’t test the <code>println!</code> macro with an unit test because it wants to write at the VGA text buffer at address <code>0xb8000</code>, which only exists in the bare metal environment.</p>
+<p>The next post will close this gap by creating a basic <em>integration test</em> framework, which runs the tests in QEMU and thus has access to platform specific components. This will allow us to test the full system, for example that our kernel boots correctly or that no deadlock occurs on nested <code>println!</code> invocations.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+        
+            <a class="next" href="../integration-tests/index.html">Integration Tests &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Unit%20Testing%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Unit Testing"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Unit%20Testing%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

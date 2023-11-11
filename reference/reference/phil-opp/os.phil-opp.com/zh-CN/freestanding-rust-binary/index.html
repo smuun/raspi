@@ -1,0 +1,584 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="创建一个不链接标准库的 Rust 可执行文件，将是我们迈出的第一步。无需底层操作系统的支撑，这样才能在裸机（bare metal）上运行 Rust 代码。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>独立式可执行程序 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#jian-jie">简介</a>
+            
+        </li><li>
+            <a href="index.html#jin-yong-biao-zhun-ku">禁用标准库</a>
+            <ol>
+                <li>
+                    <a href="index.html#no-std-shu-xing">no_std 属性</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#shi-xian-panic-chu-li-han-shu">实现 panic 处理函数</a>
+            
+        </li><li>
+            <a href="index.html#eh-personality-yu-yan-xiang">eh_personality 语言项</a>
+            <ol>
+                <li>
+                    <a href="index.html#jin-yong-zhan-zhan-kai">禁用栈展开</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#start-yu-yan-xiang">start 语言项</a>
+            <ol>
+                <li>
+                    <a href="index.html#zhong-xie-ru-kou-dian">重写入口点</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#lian-jie-qi-cuo-wu">链接器错误</a>
+            <ol>
+                <li>
+                    <a href="index.html#bian-yi-wei-luo-ji-mu-biao">编译为裸机目标</a>
+                </li><li>
+                    <a href="index.html#lian-jie-qi-can-shu">链接器参数</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#xiao-jie">小结</a>
+            
+        </li><li>
+            <a href="index.html#xia-pian-yu-lan">下篇预览</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>独立式可执行程序</h1>
+    <time datetime="2018-02-10" class="post-date">
+        Feb 10, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../freestanding-rust-binary/index.html">A Freestanding Rust Binary</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/luojia65">@luojia65</a>, <a href="https://github.com/Rustin-Liu">@Rustin-Liu</a>, <a href="https://github.com/TheBegining">@TheBegining</a> 和 <a href="https://github.com/liuyuran">@liuyuran</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/JiangengDong">@JiangengDong</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>创建一个不链接标准库的 Rust 可执行文件，将是我们迈出的第一步。无需底层操作系统的支撑，这样才能在<strong>裸机</strong>（<a href="https://en.wikipedia.org/wiki/Bare_machine">bare metal</a>）上运行 Rust 代码。</p>
+<span id="continue-reading"></span>
+<p>此博客在 <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上公开开发. 如果您有任何问题或疑问，请在此处打开一个 issue。 您也可以在<a href="index.html#comments">底部</a>发表评论. 这篇文章的完整源代码可以在 [<code>post-01</code>] <a href="https://github.com/phil-opp/blog_os/tree/post-01">post branch</a> 分支中找到。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#jian-jie">简介</a>
+                
+            </li><li>
+                <a href="index.html#jin-yong-biao-zhun-ku">禁用标准库</a>
+                <ul>
+                    <li>
+                        <a href="index.html#no-std-shu-xing">no_std 属性</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#shi-xian-panic-chu-li-han-shu">实现 panic 处理函数</a>
+                
+            </li><li>
+                <a href="index.html#eh-personality-yu-yan-xiang">eh_personality 语言项</a>
+                <ul>
+                    <li>
+                        <a href="index.html#jin-yong-zhan-zhan-kai">禁用栈展开</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#start-yu-yan-xiang">start 语言项</a>
+                <ul>
+                    <li>
+                        <a href="index.html#zhong-xie-ru-kou-dian">重写入口点</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#lian-jie-qi-cuo-wu">链接器错误</a>
+                <ul>
+                    <li>
+                        <a href="index.html#bian-yi-wei-luo-ji-mu-biao">编译为裸机目标</a>
+                    </li><li>
+                        <a href="index.html#lian-jie-qi-can-shu">链接器参数</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#xiao-jie">小结</a>
+                
+            </li><li>
+                <a href="index.html#xia-pian-yu-lan">下篇预览</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="jian-jie"><a class="zola-anchor" href="index.html#jian-jie" aria-label="Anchor link for: jian-jie">🔗</a>简介</h2>
+<p>要编写一个操作系统内核，我们需要编写不依赖任何操作系统特性的代码。这意味着我们不能使用线程、文件、堆内存、网络、随机数、标准输出，或其它任何需要操作系统抽象和特定硬件的特性；因为我们正在编写自己的操作系统和硬件驱动。</p>
+<p>实现这一点，意味着我们不能使用 <a href="https://doc.rust-lang.org/std/">Rust标准库</a>的大部分；但还有很多 Rust 特性是我们依然可以使用的。比如说，我们可以使用<a href="https://doc.rust-lang.org/book/ch13-02-iterators.html">迭代器</a>、<a href="https://doc.rust-lang.org/book/ch13-01-closures.html">闭包</a>、<a href="https://doc.rust-lang.org/book/ch06-00-enums.html">模式匹配</a>、<a href="https://doc.rust-lang.org/core/option/">Option</a>、<a href="https://doc.rust-lang.org/core/result/index.html">Result</a>、<a href="https://doc.rust-lang.org/core/macro.write.html">字符串格式化</a>，当然还有<a href="https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html">所有权系统</a>。这些功能让我们能够编写表达性强、高层抽象的操作系统，而无需关心<a href="https://www.nayuki.io/page/undefined-behavior-in-c-and-cplusplus-programs">未定义行为</a>和<a href="https://tonyarcieri.com/it-s-time-for-a-memory-safety-intervention">内存安全</a>。</p>
+<p>为了用 Rust 编写一个操作系统内核，我们需要创建一个独立于操作系统的可执行程序。这样的可执行程序常被称作<strong>独立式可执行程序</strong>（freestanding executable）或<strong>裸机程序</strong>(bare-metal executable)。</p>
+<p>在这篇文章里，我们将逐步地创建一个独立式可执行程序，并且详细解释为什么每个步骤都是必须的。如果读者只对最终的代码感兴趣，可以跳转到本篇文章的小结部分。</p>
+<h2 id="jin-yong-biao-zhun-ku"><a class="zola-anchor" href="index.html#jin-yong-biao-zhun-ku" aria-label="Anchor link for: jin-yong-biao-zhun-ku">🔗</a>禁用标准库</h2>
+<p>在默认情况下，所有的 Rust <strong>包</strong>（crate）都会链接<strong>标准库</strong>（<a href="https://doc.rust-lang.org/std/">standard library</a>），而标准库依赖于操作系统功能，如线程、文件系统、网络。标准库还与 <strong>Rust 的 C 语言标准库实现库</strong>（libc）相关联，它也是和操作系统紧密交互的。既然我们的计划是编写自己的操作系统，我们就需要不使用任何与操作系统相关的库——因此我们必须禁用<strong>标准库自动引用</strong>（automatic inclusion）。使用 <a href="https://doc.rust-lang.org/book/first-edition/using-rust-without-the-standard-library.html">no_std 属性</a>可以实现这一点。</p>
+<p>我们可以从创建一个新的 cargo 项目开始。最简单的办法是使用下面的命令：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>cargo new blog_os --bin --edition 2018
+</span></code></pre>
+<p>在这里我把项目命名为 <code>blog_os</code>，当然读者也可以选择自己的项目名称。默认情况下，即使不显式指定，cargo 也会为我们添加<code>--bin</code> 选项，说明我们将要创建一个可执行文件（而不是一个库）； 另外 <code>--edition 2018</code> 参数指明了项目的包要使用 Rust 的 <strong>2018 版次</strong>（<a href="https://doc.rust-lang.org/nightly/edition-guide/rust-2018/index.html">2018 edition</a>），但在默认情况下，该参数会指向本地安装的最新版本。当我们成功执行这行指令后，cargo 为我们创建的目录结构如下：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>blog_os
+</span><span>├── Cargo.toml
+</span><span>└── src
+</span><span>    └── main.rs
+</span></code></pre>
+<p>在这里，<code>Cargo.toml</code> 文件包含了包的<strong>配置</strong>（configuration），比如包的名称、作者、<a href="https://semver.org/">semver版本</a> 和项目依赖项；<code>src/main.rs</code> 文件包含包的<strong>根模块</strong>（root module）和 main 函数。我们可以使用 <code>cargo build</code> 来编译这个包，然后在 <code>target/debug</code> 文件夹内找到编译好的 <code>blog_os</code> 二进制文件。</p>
+<h3 id="no-std-shu-xing"><a class="zola-anchor" href="index.html#no-std-shu-xing" aria-label="Anchor link for: no-std-shu-xing">🔗</a>no_std 属性</h3>
+<p>现在我们的包依然隐式地与标准库链接。为了禁用这种链接，我们可以尝试添加 <a href="https://doc.rust-lang.org/book/first-edition/using-rust-without-the-standard-library.html">no_std 属性</a>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// main.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>main() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello, world!&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>看起来很顺利。当我们使用 <code>cargo build</code> 来编译的时候，却出现了下面的错误：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>error: cannot find </span><span style="color:#ff3333;">macro</span><span> `println</span><span style="color:#569cd6;">!</span><span>` </span><span style="color:#569cd6;">in</span><span> this scope
+</span><span> --&gt; src\main.rs:</span><span style="color:#b5cea8;">4</span><span>:</span><span style="color:#b5cea8;">5
+</span><span>  </span><span style="color:#569cd6;">|
+</span><span style="color:#b5cea8;">4 </span><span style="color:#569cd6;">|     </span><span>println!(</span><span style="color:#d69d85;">&quot;Hello, world!&quot;</span><span>);
+</span><span>  |     ^^^^^^^
+</span></code></pre>
+<p>出现这个错误的原因是：<a href="https://doc.rust-lang.org/std/macro.println.html">println! 宏</a>是标准库的一部分，而我们的项目不再依赖于标准库。我们选择不再打印字符串。这也很好理解，因为 <code>println!</code> 将会向<strong>标准输出</strong>（<a href="https://en.wikipedia.org/wiki/Standard_streams#Standard_output_.28stdout.29">standard output</a>）打印字符，它依赖于特殊的文件描述符，而这是由操作系统提供的特性。</p>
+<p>所以我们可以移除这行代码，使用一个空的 main 函数再次尝试编译：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// main.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>main() {}
+</span></code></pre>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build
+</span><span>error: `#[panic_handler]` function required, but not found
+</span><span>error: language item required, but not found: `eh_personality`
+</span></code></pre>
+<p>现在我们发现，编译器缺少一个 <code>#[panic_handler]</code> 函数和一个<strong>语言项</strong>（language item）。</p>
+<h2 id="shi-xian-panic-chu-li-han-shu"><a class="zola-anchor" href="index.html#shi-xian-panic-chu-li-han-shu" aria-label="Anchor link for: shi-xian-panic-chu-li-han-shu">🔗</a>实现 panic 处理函数</h2>
+<p><code>panic_handler</code> 属性定义了一个函数，它会在一个 panic 发生时被调用。标准库中提供了自己的 panic 处理函数，但在 <code>no_std</code> 环境中，我们需要定义一个自己的 panic 处理函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// 这个函数将在 panic 时被调用
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>类型为 <a href="https://doc.rust-lang.org/nightly/core/panic/struct.PanicInfo.html">PanicInfo</a> 的参数包含了 panic 发生的文件名、代码行数和可选的错误信息。这个函数从不返回，所以他被标记为<strong>发散函数</strong>（<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/functions.html#diverging-functions">diverging function</a>）。发散函数的返回类型称作 <strong>Never 类型</strong>（<a href="https://doc.rust-lang.org/nightly/std/primitive.never.html">“never” type</a>），记为<code>!</code>。对这个函数，我们目前能做的很少，所以我们只需编写一个无限循环 <code>loop {}</code>。</p>
+<h2 id="eh-personality-yu-yan-xiang"><a class="zola-anchor" href="index.html#eh-personality-yu-yan-xiang" aria-label="Anchor link for: eh-personality-yu-yan-xiang">🔗</a>eh_personality 语言项</h2>
+<p>语言项是一些编译器需求的特殊函数或类型。举例来说，Rust 的 <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html">Copy</a> trait 是一个这样的语言项，告诉编译器哪些类型需要遵循<strong>复制语义</strong>（<a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html">copy semantics</a>）——当我们查找 <code>Copy</code> trait 的<a href="https://github.com/rust-lang/rust/blob/485397e49a02a3b7ff77c17e4a3f16c653925cb3/src/libcore/marker.rs#L296-L299">实现</a>时，我们会发现，一个特殊的 <code>#[lang = &quot;copy&quot;]</code> 属性将它定义为了一个语言项，达到与编译器联系的目的。</p>
+<p>我们可以自己实现语言项，但这是下下策：目前来看，语言项是高度不稳定的语言细节实现，它们不会经过编译期类型检查（所以编译器甚至不确保它们的参数类型是否正确）。幸运的是，我们有更稳定的方式，来修复上面的语言项错误。</p>
+<p><code>eh_personality</code> 语言项标记的函数，将被用于实现<strong>栈展开</strong>（<a href="https://www.bogotobogo.com/cplusplus/stackunwinding.php">stack unwinding</a>）。在使用标准库的情况下，当 panic 发生时，Rust 将使用栈展开，来运行在栈上所有活跃的变量的<strong>析构函数</strong>（destructor）——这确保了所有使用的内存都被释放，允许调用程序的<strong>父进程</strong>（parent thread）捕获 panic，处理并继续运行。但是，栈展开是一个复杂的过程，如 Linux 的 <a href="https://www.nongnu.org/libunwind/">libunwind</a> 或 Windows 的<strong>结构化异常处理</strong>（<a href="https://docs.microsoft.com/en-us/windows/win32/debug/structured-exception-handling">structured exception handling, SEH</a>），通常需要依赖于操作系统的库；所以我们不在自己编写的操作系统中使用它。</p>
+<h3 id="jin-yong-zhan-zhan-kai"><a class="zola-anchor" href="index.html#jin-yong-zhan-zhan-kai" aria-label="Anchor link for: jin-yong-zhan-zhan-kai">🔗</a>禁用栈展开</h3>
+<p>在其它一些情况下，栈展开并不是迫切需求的功能；因此，Rust 提供了<strong>在 panic 时中止</strong>（<a href="https://github.com/rust-lang/rust/pull/32900">abort on panic</a>）的选项。这个选项能禁用栈展开相关的标志信息生成，也因此能缩小生成的二进制程序的长度。有许多方式能打开这个选项，最简单的方式是把下面的几行设置代码加入我们的 <code>Cargo.toml</code>：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">profile.dev</span><span>]
+</span><span style="color:#569cd6;">panic </span><span>= </span><span style="color:#d69d85;">&quot;abort&quot;
+</span><span>
+</span><span>[</span><span style="color:#808080;">profile.release</span><span>]
+</span><span style="color:#569cd6;">panic </span><span>= </span><span style="color:#d69d85;">&quot;abort&quot;
+</span></code></pre>
+<p>这些选项能将 <strong>dev 配置</strong>（dev profile）和 <strong>release 配置</strong>（release profile）的 panic 策略设为 <code>abort</code>。<code>dev</code> 配置适用于 <code>cargo build</code>，而 <code>release</code> 配置适用于 <code>cargo build --release</code>。现在编译器应该不再要求我们提供 <code>eh_personality</code> 语言项实现。</p>
+<p>现在我们已经修复了出现的两个错误，可以开始编译了。然而，尝试编译运行后，一个新的错误出现了：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; cargo build
+</span><span>error: requires `start` lang_item
+</span></code></pre>
+<h2 id="start-yu-yan-xiang"><a class="zola-anchor" href="index.html#start-yu-yan-xiang" aria-label="Anchor link for: start-yu-yan-xiang">🔗</a>start 语言项</h2>
+<p>这里，我们的程序遗失了 <code>start</code> 语言项，它将定义一个程序的<strong>入口点</strong>（entry point）。</p>
+<p>我们通常会认为，当运行一个程序时，首先被调用的是 <code>main</code> 函数。但是，大多数语言都拥有一个<strong>运行时系统</strong>（<a href="https://en.wikipedia.org/wiki/Runtime_system">runtime system</a>），它通常为<strong>垃圾回收</strong>（garbage collection）或<strong>绿色线程</strong>（software threads，或 green threads）服务，如 Java 的 GC 或 Go 语言的协程（goroutine）；这个运行时系统需要在 main 函数前启动，因为它需要让程序初始化。</p>
+<p>在一个典型的使用标准库的 Rust 程序中，程序运行是从一个名为 <code>crt0</code> 的运行时库开始的。<code>crt0</code> 意为 C runtime zero，它能建立一个适合运行 C 语言程序的环境，这包含了栈的创建和可执行程序参数的传入。在这之后，这个运行时库会调用 <a href="https://github.com/rust-lang/rust/blob/bb4d1491466d8239a7a5fd68bd605e3276e97afb/src/libstd/rt.rs#L32-L73">Rust 的运行时入口点</a>，这个入口点被称作 <strong>start语言项</strong>（“start” language item）。Rust 只拥有一个极小的运行时，它被设计为拥有较少的功能，如爆栈检测和打印<strong>栈轨迹</strong>（stack trace）。这之后，这个运行时将会调用 main 函数。</p>
+<p>我们的独立式可执行程序并不能访问 Rust 运行时或 <code>crt0</code> 库，所以我们需要定义自己的入口点。只实现一个 <code>start</code> 语言项并不能帮助我们，因为这之后程序依然要求 <code>crt0</code> 库。所以，我们要做的是，直接重写整个 <code>crt0</code> 库和它定义的入口点。</p>
+<h3 id="zhong-xie-ru-kou-dian"><a class="zola-anchor" href="index.html#zhong-xie-ru-kou-dian" aria-label="Anchor link for: zhong-xie-ru-kou-dian">🔗</a>重写入口点</h3>
+<p>要告诉 Rust 编译器我们不使用预定义的入口点，我们可以添加 <code>#![no_main]</code> 属性。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// 这个函数将在 panic 时被调用
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>读者也许会注意到，我们移除了 <code>main</code> 函数。原因很显然，既然没有底层运行时调用它，<code>main</code> 函数也失去了存在的必要性。为了重写操作系统的入口点，我们转而编写一个 <code>_start</code> 函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>我们使用 <code>no_mangle</code> 标记这个函数，来对它禁用<strong>名称重整</strong>（<a href="https://en.wikipedia.org/wiki/Name_mangling">name mangling</a>）——这确保 Rust 编译器输出一个名为 <code>_start</code> 的函数；否则，编译器可能最终生成名为 <code>_ZN3blog_os4_start7hb173fedf945531caE</code> 的函数，无法让链接器正确辨别。</p>
+<p>我们还将函数标记为 <code>extern &quot;C&quot;</code>，告诉编译器这个函数应当使用 <a href="https://en.wikipedia.org/wiki/Calling_convention">C 语言的调用约定</a>，而不是 Rust 语言的调用约定。函数名为 <code>_start</code> ，是因为大多数系统默认使用这个名字作为入口点名称。</p>
+<p>与前文的 <code>panic</code> 函数类似，这个函数的返回值类型为<code>!</code>——它定义了一个发散函数，或者说一个不允许返回的函数。这一点很重要，因为这个入口点不会被任何函数调用，但将直接被操作系统或<strong>引导程序</strong>（bootloader）调用。所以作为函数返回的替代，这个入口点应该去调用，比如操作系统提供的 <strong>exit 系统调用</strong>（<a href="https://en.wikipedia.org/wiki/Exit_(system_call)">“exit” system call</a>）函数。在我们编写操作系统的情况下，关机应该是一个合适的选择，因为<strong>当一个独立式可执行程序返回时，不会留下任何需要做的事情</strong>（there is nothing to do if a freestanding binary returns）。现在来看，我们可以添加一个无限循环，来满足对返回值类型的需求。</p>
+<p>如果我们现在编译这段程序，会出来一大段不太好看的<strong>链接器错误</strong>（linker error）。</p>
+<h2 id="lian-jie-qi-cuo-wu"><a class="zola-anchor" href="index.html#lian-jie-qi-cuo-wu" aria-label="Anchor link for: lian-jie-qi-cuo-wu">🔗</a>链接器错误</h2>
+<p><strong>链接器</strong>（linker）是一个程序，它将生成的目标文件组合为一个可执行文件。不同的操作系统如 Windows、macOS、Linux，规定了不同的可执行文件格式，因此也各有自己的链接器，抛出不同的错误；但这些错误的根本原因还是相同的：链接器的默认配置假定程序依赖于C语言的运行时环境，但我们的程序并不依赖于它。</p>
+<p>为了解决这个错误，我们需要告诉链接器，它不应该包含（include）C 语言运行环境。我们可以选择提供特定的<strong>链接器参数</strong>（linker argument），也可以选择编译为<strong>裸机目标</strong>（bare metal target）。</p>
+<h3 id="bian-yi-wei-luo-ji-mu-biao"><a class="zola-anchor" href="index.html#bian-yi-wei-luo-ji-mu-biao" aria-label="Anchor link for: bian-yi-wei-luo-ji-mu-biao">🔗</a>编译为裸机目标</h3>
+<p>在默认情况下，Rust 尝试适配当前的系统环境，编译可执行程序。举个例子，如果你使用 <code>x86_64</code> 平台的 Windows 系统，Rust 将尝试编译一个扩展名为 <code>.exe</code> 的 Windows 可执行程序，并使用 <code>x86_64</code> 指令集。这个环境又被称作为你的<strong>宿主系统</strong>（“host” system）。</p>
+<p>为了描述不同的环境，Rust 使用一个称为<strong>目标三元组</strong>（target triple）的字符串。要查看当前系统的目标三元组，我们可以运行 <code>rustc --version --verbose</code>：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>rustc 1.35.0-nightly (474e7a648 2019-04-07)
+</span><span>binary: rustc
+</span><span>commit-hash: 474e7a6486758ea6fc761893b1a49cd9076fb0ab
+</span><span>commit-date: 2019-04-07
+</span><span>host: x86_64-unknown-linux-gnu
+</span><span>release: 1.35.0-nightly
+</span><span>LLVM version: 8.0
+</span></code></pre>
+<p>上面这段输出来自一个 <code>x86_64</code> 平台下的 Linux 系统。我们能看到，<code>host</code> 字段的值为三元组 <code>x86_64-unknown-linux-gnu</code>，它包含了 CPU 架构 <code>x86_64</code> 、供应商 <code>unknown</code> 、操作系统 <code>linux</code> 和<a href="https://en.wikipedia.org/wiki/Application_binary_interface">二进制接口</a> <code>gnu</code>。</p>
+<p>Rust 编译器尝试为当前系统的三元组编译，并假定底层有一个类似于 Windows 或 Linux 的操作系统提供C语言运行环境——然而这将导致链接器错误。所以，为了避免这个错误，我们可以另选一个底层没有操作系统的运行环境。</p>
+<p>这样的运行环境被称作裸机环境，例如目标三元组 <code>thumbv7em-none-eabihf</code> 描述了一个 ARM <strong>嵌入式系统</strong>（<a href="https://en.wikipedia.org/wiki/Embedded_system">embedded system</a>）。我们暂时不需要了解它的细节，只需要知道这个环境底层没有操作系统——这是由三元组中的 <code>none</code> 描述的。要为这个目标编译，我们需要使用 rustup 添加它：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>rustup target add thumbv7em-none-eabihf
+</span></code></pre>
+<p>这行命令将为目标下载一个标准库和 core 库。这之后，我们就能为这个目标构建独立式可执行程序了：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo build --target thumbv7em-none-eabihf
+</span></code></pre>
+<p>我们传递了 <code>--target</code> 参数，来为裸机目标系统<strong>交叉编译</strong>（<a href="https://en.wikipedia.org/wiki/Cross_compiler">cross compile</a>）我们的程序。我们的目标并不包括操作系统，所以链接器不会试着链接 C 语言运行环境，因此构建过程成功会完成，不会产生链接器错误。</p>
+<p>我们将使用这个方法编写自己的操作系统内核。我们不会编译到 <code>thumbv7em-none-eabihf</code>，而是使用描述 <code>x86_64</code> 环境的<strong>自定义目标</strong>（<a href="https://doc.rust-lang.org/rustc/targets/custom.html">custom target</a>）。在下一篇文章中，我们将详细描述一些相关的细节。</p>
+<h3 id="lian-jie-qi-can-shu"><a class="zola-anchor" href="index.html#lian-jie-qi-can-shu" aria-label="Anchor link for: lian-jie-qi-can-shu">🔗</a>链接器参数</h3>
+<p>我们也可以选择不编译到裸机系统，因为传递特定的参数也能解决链接器错误问题。虽然我们不会在后面使用到这个方法，为了教程的完整性，我们也撰写了专门的短文章，来提供这个途径的解决方案。
+如有需要，请点击下方的 <em>“链接器参数”</em> 按钮来展开可选内容。</p>
+<details>
+<summary>链接器参数</summary>
+<p>在本章节中，我们讨论了Linux、Windows和macOS中遇到的链接错误，并阐述如何通过传递额外参数来解决这些错误。注意，由于不同操作系统的可执行文件内在格式不同，所以对于不同操作系统而言，所适用的额外参数也有所不同。</p>
+<h4 id="linux"><a class="zola-anchor" href="index.html#linux" aria-label="Anchor link for: linux">🔗</a>Linux</h4>
+<p>在Linux下，会触发以下链接错误（简化版）：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `cc` failed: exit code: 1
+</span><span>  |
+</span><span>  = note: &quot;cc&quot; […]
+</span><span>  = note: /usr/lib/gcc/../x86_64-linux-gnu/Scrt1.o: In function `_start&#39;:
+</span><span>          (.text+0x12): undefined reference to `__libc_csu_fini&#39;
+</span><span>          /usr/lib/gcc/../x86_64-linux-gnu/Scrt1.o: In function `_start&#39;:
+</span><span>          (.text+0x19): undefined reference to `__libc_csu_init&#39;
+</span><span>          /usr/lib/gcc/../x86_64-linux-gnu/Scrt1.o: In function `_start&#39;:
+</span><span>          (.text+0x25): undefined reference to `__libc_start_main&#39;
+</span><span>          collect2: error: ld returned 1 exit status
+</span></code></pre>
+<p>这里的问题在于，链接器默认包含了C启动例程，即构建名为 <code>_start</code> 的入口函数的地方。但其依赖一些C标准库 <code>libc</code> 中的符号，而我们已经使用 <code>no_std</code> 开关排除掉了这些符号，所以链接器报告了这些错误。要解决这个问题，我们需要通过 <code>-nostartfiles</code> 参数来告诉链接器不要使用C启动例程功能。</p>
+<p>通过 <code>cargo rustc</code> 可以传递链接器参数，该命令和 <code>cargo build</code> 的效果完全一致，但是可以将参数传递给rust的底层编译器 <code>rustc</code>。<code>rustc</code> 支持 <code>-C link-arg</code> 参数，此参数可以传递参数给配套的链接器。那么以此推断，我们的编译语句可以这样写：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-arg=-nostartfiles
+</span></code></pre>
+<p>现在我们编译出的程序就可以在Linux上独立运行了。</p>
+<p>我们并不需要显式指定入口函数名，链接器默认会查找 <code>_start</code> 函数作为入口点。</p>
+<h4 id="windows"><a class="zola-anchor" href="index.html#windows" aria-label="Anchor link for: windows">🔗</a>Windows</h4>
+<p>在Windows下，会触发以下链接错误（简化版）：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `link.exe` failed: exit code: 1561
+</span><span>  |
+</span><span>  = note: &quot;C:\\Program Files (x86)\\…\\link.exe&quot; […]
+</span><span>  = note: LINK : fatal error LNK1561: entry point must be defined
+</span></code></pre>
+<p>错误信息 “entry point must be defined” 意味着链接器没有找到程序入口点。在Windows环境下，默认入口点<a href="https://docs.microsoft.com/en-us/cpp/build/reference/entry-entry-point-symbol">取决于使用的子系统</a>。对于 <code>CONSOLE</code> 子系统，链接器会寻找 <code>mainCRTStartup</code> 函数作为入口，而对于 <code>WINDOWS</code> 子系统，入口函数名叫做 <code>WinMainCRTStartup</code>。要复写掉入口函数名的默认设定，使其使用我们已经定义的 <code>_start</code> 函数，可以将 <code>/ENTRY</code> 参数传递给链接器：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-arg=/ENTRY:_start
+</span></code></pre>
+<p>显而易见，从链接参数上看，Windows平台使用的链接器和Linux平台是完全不同的。</p>
+<p>此时可能你还会遇到这个链接错误：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `link.exe` failed: exit code: 1221
+</span><span>  |
+</span><span>  = note: &quot;C:\\Program Files (x86)\\…\\link.exe&quot; […]
+</span><span>  = note: LINK : fatal error LNK1221: a subsystem can&#39;t be inferred and must be
+</span><span>          defined
+</span></code></pre>
+<p>该错误的原因是Windows平台下的可执行文件可以使用不同的<a href="https://docs.microsoft.com/en-us/cpp/build/reference/entry-entry-point-symbol">子系统</a>。一般而言，操作系统会如此判断：如果入口函数名叫 <code>main</code> ，则会使用 <code>CONSOLE</code> 子系统；若名叫 <code>WinMain</code> ，则会使用 <code>WINDOWS</code> 子系统。然而此时我们使用的入口函数名叫 <code>_start</code> ，两者都不是，此时就需要显式指定子系统：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-args=&quot;/ENTRY:_start /SUBSYSTEM:console&quot;
+</span></code></pre>
+<p>这里我们使用了 <code>CONSOLE</code> 子系统，如果使用 <code>WINDOWS</code> 子系统其实也可以。但是多次使用 <code>-C link-arg</code> 参数大可不必，我们可以如上面一样，将一个引号包裹起来的以空格分隔的列表传递给 <code>-C link-arg</code> 参数。</p>
+<p>现在我们编译出的程序就可以在Windows平台成功运行了。</p>
+<h4 id="macos"><a class="zola-anchor" href="index.html#macos" aria-label="Anchor link for: macos">🔗</a>macOS</h4>
+<p>在macOS下，会触发以下链接错误（简化版）：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `cc` failed: exit code: 1
+</span><span>  |
+</span><span>  = note: &quot;cc&quot; […]
+</span><span>  = note: ld: entry point (_main) undefined. for architecture x86_64
+</span><span>          clang: error: linker command failed with exit code 1 […]
+</span></code></pre>
+<p>该错误告诉我们链接器找不到入口函数 <code>main</code> （由于某些原因，macOS平台下，所有函数都会具有 <code>_</code> 前缀）。要重设入口函数名，我们可以传入链接器参数 <code>-e</code> ：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-args=&quot;-e __start&quot;
+</span></code></pre>
+<p><code>-e</code> 参数可用于重设入口函数名。由于在macOS平台下，所有函数都具有 <code>_</code> 前缀，所以需要传入 <code>__start</code> ，而不是 <code>_start</code> 。</p>
+<p>接下来，会出现一个新的链接错误：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `cc` failed: exit code: 1
+</span><span>  |
+</span><span>  = note: &quot;cc&quot; […]
+</span><span>  = note: ld: dynamic main executables must link with libSystem.dylib
+</span><span>          for architecture x86_64
+</span><span>          clang: error: linker command failed with exit code 1 […]
+</span></code></pre>
+<p>macOS <a href="https://developer.apple.com/library/archive/qa/qa1118/_index.html">并未官方支持静态链接</a> ，并且在默认情况下程序会链接 <code>libSystem</code> 库。要复写这个设定并进行静态链接，我们可以传入链接器参数 <code>-static</code> ：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-args=&quot;-e __start -static&quot;
+</span></code></pre>
+<p>然而问题并没有解决，链接器再次抛出了一个错误：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: linking with `cc` failed: exit code: 1
+</span><span>  |
+</span><span>  = note: &quot;cc&quot; […]
+</span><span>  = note: ld: library not found for -lcrt0.o
+</span><span>          clang: error: linker command failed with exit code 1 […]
+</span></code></pre>
+<p>该错误的原因是macOS平台下的程序会默认链接 <code>crt0</code> （即“C runtime zero”）。 这个错误实际上和Linux平台上的错误类似，可以添加链接器参数 <code>-nostartfiles</code> 解决：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo rustc -- -C link-args=&quot;-e __start -static -nostartfiles&quot;
+</span></code></pre>
+<p>现在，我们的程序可以在macOS下编译成功了。</p>
+<h4 id="tong-yi-bian-yi-ming-ling"><a class="zola-anchor" href="index.html#tong-yi-bian-yi-ming-ling" aria-label="Anchor link for: tong-yi-bian-yi-ming-ling">🔗</a>统一编译命令</h4>
+<p>经过上面的章节，我们知道了在各个平台使用的编译命令是不同的，这十分不优雅。要解决这个问题，我们可以创建一个 <code>.cargo/config.toml</code> 文件，分别配置不同平台下所使用的参数：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;linux&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">rustflags </span><span>= [</span><span style="color:#d69d85;">&quot;-C&quot;</span><span>, </span><span style="color:#d69d85;">&quot;link-arg=-nostartfiles&quot;</span><span>]
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;windows&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">rustflags </span><span>= [</span><span style="color:#d69d85;">&quot;-C&quot;</span><span>, </span><span style="color:#d69d85;">&quot;link-args=/ENTRY:_start /SUBSYSTEM:console&quot;</span><span>]
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;macos&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">rustflags </span><span>= [</span><span style="color:#d69d85;">&quot;-C&quot;</span><span>, </span><span style="color:#d69d85;">&quot;link-args=-e __start -static -nostartfiles&quot;</span><span>]
+</span></code></pre>
+<p>对应的 <code>rustflags</code> 配置项的值可以自动被填充到 <code>rustc</code> 的运行参数中。要寻找 <code>.cargo/config.toml</code> 更多的用法，可以看一下 <a href="https://doc.rust-lang.org/cargo/reference/config.html">官方文档</a>。</p>
+<p>现在只需要运行 <code>cargo build</code> 即可在全部三个平台编译我们的程序了。</p>
+<h4 id="wo-men-zhen-de-xu-yao-zuo-zhe-xie"><a class="zola-anchor" href="index.html#wo-men-zhen-de-xu-yao-zuo-zhe-xie" aria-label="Anchor link for: wo-men-zhen-de-xu-yao-zuo-zhe-xie">🔗</a>我们真的需要做这些？</h4>
+<p>尽管我们可以在Linux、Windows和macOS编译出可执行程序，但这可能并非是个好主意。
+因为我们的程序少了不少本该存在的东西，比如 <code>_start</code> 执行时的栈初始化。
+失去了C运行时，部分基于它的依赖项很可能无法正确执行，这会造成程序出现各式各样的异常，比如segmentation fault（段错误）。</p>
+<p>如果你希望创建一个基于已存在的操作系统的最小类库，建议引用 <code>libc</code> ，阅读 <a href="https://doc.rust-lang.org/1.16.0/book/no-stdlib.html">这里</a> 并恰当设定 <code>#[start]</code> 比较好。</p>
+</details>
+<h2 id="xiao-jie"><a class="zola-anchor" href="index.html#xiao-jie" aria-label="Anchor link for: xiao-jie">🔗</a>小结</h2>
+<p>一个用 Rust 编写的最小化的独立式可执行程序应该长这样：</p>
+<p><code>src/main.rs</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#![no_std] </span><span style="color:#608b4e;">// 不链接 Rust 标准库
+</span><span>#![no_main] </span><span style="color:#608b4e;">// 禁用所有 Rust 层级的入口点
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// 不重整函数名
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// 因为编译器会寻找一个名为 `_start` 的函数，所以这个函数就是入口点
+</span><span>    </span><span style="color:#608b4e;">// 默认命名为 `_start`
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// 这个函数将在 panic 时被调用
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p><code>Cargo.toml</code>：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">package</span><span>]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;crate_name&quot;
+</span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;0.1.0&quot;
+</span><span style="color:#569cd6;">authors </span><span>= [</span><span style="color:#d69d85;">&quot;Author Name &lt;author@example.com&gt;&quot;</span><span>]
+</span><span>
+</span><span style="color:#608b4e;"># 使用 `cargo build` 编译时需要的配置
+</span><span>[</span><span style="color:#808080;">profile.dev</span><span>]
+</span><span style="color:#569cd6;">panic </span><span>= </span><span style="color:#d69d85;">&quot;abort&quot; </span><span style="color:#608b4e;"># 禁用panic时栈展开
+</span><span>
+</span><span style="color:#608b4e;"># 使用 `cargo build --release` 编译时需要的配置
+</span><span>[</span><span style="color:#808080;">profile.release</span><span>]
+</span><span style="color:#569cd6;">panic </span><span>= </span><span style="color:#d69d85;">&quot;abort&quot; </span><span style="color:#608b4e;"># 禁用 panic 时栈展开
+</span></code></pre>
+<p>选用任意一个裸机目标来编译。比如对 <code>thumbv7em-none-eabihf</code>，我们使用以下命令：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>cargo build --target thumbv7em-none-eabihf
+</span></code></pre>
+<p>另外，我们也可以选择以本地操作系统为目标进行编译：</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span style="color:#608b4e;"># Linux
+</span><span>cargo rustc</span><span style="color:#569cd6;"> --</span><span> -C link-arg=-nostartfiles
+</span><span style="color:#608b4e;"># Windows
+</span><span>cargo rustc</span><span style="color:#569cd6;"> --</span><span> -C link-args=</span><span style="color:#d69d85;">&quot;/ENTRY:_start /SUBSYSTEM:console&quot;
+</span><span style="color:#608b4e;"># macOS
+</span><span>cargo rustc</span><span style="color:#569cd6;"> --</span><span> -C link-args=</span><span style="color:#d69d85;">&quot;-e __start -static -nostartfiles&quot;
+</span></code></pre>
+<p>要注意的是，现在我们的代码只是一个 Rust 编写的独立式可执行程序的一个例子。运行这个二进制程序还需要很多准备，比如在 <code>_start</code> 函数之前需要一个已经预加载完毕的栈。所以为了真正运行这样的程序，<strong>我们还有很多事情需要做</strong>。</p>
+<h2 id="xia-pian-yu-lan"><a class="zola-anchor" href="index.html#xia-pian-yu-lan" aria-label="Anchor link for: xia-pian-yu-lan">🔗</a>下篇预览</h2>
+<p>下一篇文章要做的事情基于我们这篇文章的成果，它将详细讲述编写一个最小的操作系统内核需要的步骤：如何配置特定的编译目标，如何将可执行程序与引导程序拼接，以及如何把一些特定的字符串打印到屏幕上。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+        
+            <a class="next" href="../minimal-rust-kernel/index.html">最小内核 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Freestanding%20Rust%20Binary%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="A Freestanding Rust Binary (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Freestanding%20Rust%20Binary%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../freestanding-rust-binary/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-TW" class=""><a href="../../zh-TW/freestanding-rust-binary/index.html">
+                        Chinese (traditional)
+                    </a></li><li data-lang-switch-to="fr" class=""><a href="../../fr/freestanding-rust-binary/index.html">
+                        French
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/freestanding-rust-binary/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/freestanding-rust-binary/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ru" class=""><a href="../../ru/freestanding-rust-binary/index.html">
+                        Russian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/freestanding-rust-binary/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

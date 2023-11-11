@@ -1,0 +1,685 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事ではCPUが例外ハンドラの呼び出しに失敗したときに起きる、ダブルフォルト例外について詳細に見ていきます。この例外を処理することによって、システムリセットを起こす重大なトリプルフォルトを避けることができます。あらゆる場合においてトリプルフォルトを防ぐために、ダブルフォルトを異なるカーネルスタッ…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Double Faults | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#daburuhuorutotoha">ダブルフォルトとは</a>
+            <ol>
+                <li>
+                    <a href="index.html#daburuhuorutowoqi-kosu">ダブルフォルトを起こす</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#daburuhuorutohandora">ダブルフォルトハンドラ</a>
+            
+        </li><li>
+            <a href="index.html#daburuhuorutonoyuan-yin">ダブルフォルトの原因</a>
+            <ol>
+                <li>
+                    <a href="index.html#kanerusutatukuobahuro">カーネルスタックオーバーフロー</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#sutatukuwoqie-riti-eru">スタックを切り替える</a>
+            <ol>
+                <li>
+                    <a href="index.html#isttotss">ISTとTSS</a>
+                </li><li>
+                    <a href="index.html#tsswotukuru">TSSをつくる</a>
+                </li><li>
+                    <a href="index.html#gurobarudeisukuriputateburu">グローバルディスクリプタテーブル</a>
+                </li><li>
+                    <a href="index.html#zui-hou-nosutetupu">最後のステップ</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#sutatukuobahurotesuto">スタックオーバーフローテスト</a>
+            <ol>
+                <li>
+                    <a href="index.html#startwoshi-zhuang-suru">_startを実装する</a>
+                </li><li>
+                    <a href="index.html#idtnotesuto">IDTのテスト</a>
+                </li><li>
+                    <a href="index.html#daburuhuorutohandora-1">ダブルフォルトハンドラ</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Double Faults</h1>
+    <time datetime="2018-06-18" class="post-date">
+        Jun 18, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../double-fault-exceptions/index.html">Double Faults</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/garasubo">@garasubo</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事ではCPUが例外ハンドラの呼び出しに失敗したときに起きる、ダブルフォルト例外について詳細に見ていきます。この例外を処理することによって、システムリセットを起こす重大な<strong>トリプルフォルト</strong>を避けることができます。あらゆる場合においてトリプルフォルトを防ぐために、ダブルフォルトを異なるカーネルスタック上でキャッチするための<strong>割り込みスタックテーブル</strong>をセットアップしていきます。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください（訳注: リンクは原文(英語)のものになります）。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-06"><code>post-06</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#daburuhuorutotoha">ダブルフォルトとは</a>
+                <ul>
+                    <li>
+                        <a href="index.html#daburuhuorutowoqi-kosu">ダブルフォルトを起こす</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#daburuhuorutohandora">ダブルフォルトハンドラ</a>
+                
+            </li><li>
+                <a href="index.html#daburuhuorutonoyuan-yin">ダブルフォルトの原因</a>
+                <ul>
+                    <li>
+                        <a href="index.html#kanerusutatukuobahuro">カーネルスタックオーバーフロー</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#sutatukuwoqie-riti-eru">スタックを切り替える</a>
+                <ul>
+                    <li>
+                        <a href="index.html#isttotss">ISTとTSS</a>
+                    </li><li>
+                        <a href="index.html#tsswotukuru">TSSをつくる</a>
+                    </li><li>
+                        <a href="index.html#gurobarudeisukuriputateburu">グローバルディスクリプタテーブル</a>
+                    </li><li>
+                        <a href="index.html#zui-hou-nosutetupu">最後のステップ</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#sutatukuobahurotesuto">スタックオーバーフローテスト</a>
+                <ul>
+                    <li>
+                        <a href="index.html#startwoshi-zhuang-suru">_startを実装する</a>
+                    </li><li>
+                        <a href="index.html#idtnotesuto">IDTのテスト</a>
+                    </li><li>
+                        <a href="index.html#daburuhuorutohandora-1">ダブルフォルトハンドラ</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="daburuhuorutotoha"><a class="zola-anchor" href="index.html#daburuhuorutotoha" aria-label="Anchor link for: daburuhuorutotoha">🔗</a>ダブルフォルトとは</h2>
+<p>簡単に言うとダブルフォルトとはCPUが例外ハンドラを呼び出すことに失敗したときに起きる特別な例外です。例えば、ページフォルトが起きたが、ページフォルトハンドラが<a href="../cpu-exceptions/index.html#ge-riip-miji-shu-zi-biao">割り込みディスクリプタテーブル</a>（IDT: Interrupt Descriptor Table）に登録されていないときに発生します。つまり、C++での<code>catch(...)</code>や、JavaやC#の<code>catch(Exception e)</code>ような、例外のあるプログラミング言語のcatch-allブロックのようなものです。</p>
+<p>ダブルフォルトは通常の例外のように振る舞います。ベクター番号<code>8</code>を持ち、IDTに通常のハンドラ関数として定義できます。ダブルフォルトがうまく処理されないと、より重大な例外である<strong>トリプルフォルト</strong>が起きてしまうため、ダブルフォルトハンドラを設定することはとても重要です。トリプルフォルトはキャッチできず、ほとんどのハードウェアはシステムリセットを起こします。</p>
+<h3 id="daburuhuorutowoqi-kosu"><a class="zola-anchor" href="index.html#daburuhuorutowoqi-kosu" aria-label="Anchor link for: daburuhuorutowoqi-kosu">🔗</a>ダブルフォルトを起こす</h3>
+<p>ハンドラ関数を定義していない例外を発生させることでダブルフォルトを起こしてみましょう。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// ページフォルトを起こす
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        *(</span><span style="color:#b5cea8;">0xdeadbeef </span><span style="color:#569cd6;">as *mut u64</span><span>) = </span><span style="color:#b5cea8;">42</span><span>;
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 前回同様
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>不正なアドレスである<code>0xdeadbeef</code>に書き込みを行うため<code>unsafe</code>を使います。この仮想アドレスはページテーブル上で物理アドレスにマップされていないため、ページフォルトが発生します。私達の<a href="../cpu-exceptions/index.html#ge-riip-miji-shu-zi-biao">IDT</a>にはページフォルトが登録されていないため、ダブルフォルトが発生します。</p>
+<p>今、私達のカーネルを起動すると、ブートループが発生します。この理由は以下の通りです：</p>
+<ol>
+<li>CPUが<code>0xdeadbeef</code>に書き込みを試みページフォルトを起こします。</li>
+<li>CPUはIDTに対応するエントリを探しに行き、ハンドラ関数が指定されていないことを発見します。結果、ページフォルトハンドラが呼び出せず、ダブルフォルトが発生します。</li>
+<li>CPUはダブルフォルトハンドラのIDTエントリを見にいきますが、このエントリもハンドラ関数を指定していません。結果、<strong>トリプルフォルト</strong>が発生します。</li>
+<li>トリプルフォルトは重大なエラーなので、QEMUはほとんどの実際のハードウェアと同様にシステムリセットを行います。</li>
+</ol>
+<p>このトリプルフォルトを防ぐためには、ページフォルトかダブルフォルトのハンドラ関数を定義しないといけません。私達はすべての場合におけるトリプルフォルトを防ぎたいので、適切に処理できなかったすべての例外において呼び出されることになるダブルフォルトハンドラを定義するところからはじめましょう。</p>
+<h2 id="daburuhuorutohandora"><a class="zola-anchor" href="index.html#daburuhuorutohandora" aria-label="Anchor link for: daburuhuorutohandora">🔗</a>ダブルフォルトハンドラ</h2>
+<p>ダブルフォルトは通常のエラーコードのある例外なので、ブレークポイントハンドラと同じようにハンドラ関数を指定することができます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        idt.double_fault.set_handler_fn(double_fault_handler); </span><span style="color:#608b4e;">// new
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// new
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>double_fault_handler(
+</span><span>    stack_frame: InterruptStackFrame, _error_code: </span><span style="color:#569cd6;">u64</span><span>) -&gt; </span><span style="color:#569cd6;">!
+</span><span>{
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;EXCEPTION: DOUBLE FAULT</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">{:#?}&quot;</span><span>, stack_frame);
+</span><span>}
+</span></code></pre>
+<p>私達のハンドラは短いエラーメッセージを出力して、例外スタックフレームをダンプします。ダブルフォルトハンドラのエラーコードは常に<code>0</code>なので、出力する必要はないでしょう。ブレークポイントハンドラとの違いの一つは、ダブルフォルトハンドラは<a href="https://doc.rust-jp.rs/rust-by-example-ja/fn/diverging.html">発散する</a>（diverging）（訳注: 翻訳当時、リンク先未訳）ということです。<code>x86_64</code>アーキテクチャではダブルフォルト例外から復帰することができないためです。</p>
+<p>ここで私達のカーネルを起動すると、ダブルフォルトハンドラが呼び出されていることがわかることでしょう。</p>
+<p><img src="qemu-catch-double-fault.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and the exception stack frame" /></p>
+<p>動きました！ここで何が起きているかというと、</p>
+<ol>
+<li>CPUが<code>0xdeadbeef</code>に書き込みを試みページフォルトを起こします。</li>
+<li>以前と同様に、CPUはIDT中の対応するエントリを見にいきますが、ハンドラ関数が定義されていないことを発見し、結果、ダブルフォルトが起きます。</li>
+<li>今回はダブルフォルトハンドラが指定されているので、CPUはそれを適切に呼び出せます。</li>
+</ol>
+<p>CPUはダブルフォルトハンドラを呼べるようになったので、トリプルフォルト（とブートループ）はもう起こりません。</p>
+<p>ここまでは簡単です。ではなぜこの例外のために丸々一つの記事を用意したのでしょうか？実は、私達は<strong>ほとんどの</strong>ダブルフォルトをキャッチすることはできますが、このアプローチでは十分でないケースがいくつか存在するのです。</p>
+<h2 id="daburuhuorutonoyuan-yin"><a class="zola-anchor" href="index.html#daburuhuorutonoyuan-yin" aria-label="Anchor link for: daburuhuorutonoyuan-yin">🔗</a>ダブルフォルトの原因</h2>
+<p>特別なケースを見ていく前に、ダブルフォルトの正確な原因を知る必要があります。ここまで、私達はとてもあいまいな定義を使ってきました。</p>
+<blockquote>
+<p>ダブルフォルトとはCPUが例外ハンドラを呼び出すことに失敗したときに起きる特別な例外です。</p>
+</blockquote>
+<p><strong>「呼び出すことに失敗する」</strong> とは正確には何を意味するのでしょうか？ハンドラが存在しない？ハンドラが<a href="http://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf">スワップアウト</a>された？また、ハンドラ自身が例外を発生させたらどうなるのでしょうか？</p>
+<p>例えば以下のようなことが起こるとどうなるでしょう？</p>
+<ol>
+<li>ブレークポイント例外が発生したが、対応するハンドラがスワップアウトされていたら？</li>
+<li>ページフォルトが発生したが、ページフォルトハンドラがスワップアウトされていたら？</li>
+<li>ゼロ除算ハンドラがブレークポイント例外を起こしたが、ブレークポイントハンドラがスワップアウトされていたら？</li>
+<li>カーネルがスタックをオーバーフローさせて<strong>ガードページ</strong>にヒットしたら？</li>
+</ol>
+<p>幸いにもAMD64のマニュアル（<a href="https://www.amd.com/system/files/TechDocs/24593.pdf">PDF</a>）には正確な定義が書かれています（8.2.9章）。それによると「ダブルフォルト例外は直前の（一度目の）例外ハンドラの処理中に二度目の例外が発生したとき<strong>起きうる</strong> （can occur）」と書かれています。<strong>起きうる</strong>というのが重要で、とても特別な例外の組み合わせでのみダブルフォルトとなります。この組み合わせは以下のようになっています。</p>
+<table><thead><tr><th>最初の例外</th><th>二度目の例外</th></tr></thead><tbody>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Divide-by-zero_Error">ゼロ除算</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">無効TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">セグメント不在</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">スタックセグメントフォルト</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">一般保護違反</a></td><td><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">無効TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">セグメント不在</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">スタックセグメントフォルト</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">一般保護違反</a></td></tr>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">ページフォルト</a></td><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">ページフォルト</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">無効TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">セグメント不在</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">スタックセグメントフォルト</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">一般保護違反</a></td></tr>
+</tbody></table>
+<p>例えばゼロ除算例外に続いてページフォルトが起きた場合は問題ありません（ページフォルトハンドラが呼び出される）が、ゼロ除算例外に続いて一般保護違反が起きた場合はダブルフォルトが発生します。</p>
+<p>この表を見れば、先程の質問のうち最初の３つに答えることができます：</p>
+<ol>
+<li>ブレークポイント例外が発生して、対応するハンドラ関数がスワップアウトされている場合、<strong>ページフォルト</strong>が発生して<strong>ページフォルトハンドラ</strong>が呼び出される</li>
+<li>ページフォルトが発生してページフォルトハンドラがスワップアウトされている場合、<strong>ダブルフォルト</strong>が発生して<strong>ダブルフォルトハンドラ</strong>が呼び出されます。</li>
+<li>ゼロ除算ハンドラがブレークポイント例外を発生させた場合、CPUはブレークポイントハンドラを呼び出そうとします。もしブレークポイントハンドラがスワップアウトされている場合、<strong>ページフォルト</strong>が発生して<strong>ページフォルトハンドラ</strong>が呼び出されます。</li>
+</ol>
+<p>実際、IDTにハンドラ関数が指定されていない例外のケースでもこの体系に従っています。つまり、例外が発生したとき、CPUは対応するIDTエントリを読み込みにいきます。このエントリは0であり正しいIDTエントリではないので、<strong>一般保護違反</strong>が発生します。私達は一般保護違反のハンドラも定義していないので、新たな一般保護違反が発生します。表によるとこれはダブルフォルトを起こします。</p>
+<h3 id="kanerusutatukuobahuro"><a class="zola-anchor" href="index.html#kanerusutatukuobahuro" aria-label="Anchor link for: kanerusutatukuobahuro">🔗</a>カーネルスタックオーバーフロー</h3>
+<p>4つ目の質問を見てみましょう。</p>
+<blockquote>
+<p>カーネルがスタックをオーバーフローさせてガードページにヒットしたら？</p>
+</blockquote>
+<p>ガードページはスタックの底にある特別なメモリページで、これによってスタックオーバーフローを検出することができます。このページはどの物理メモリにもマップされていないので、アクセスすることで警告なく他のメモリを破壊する代わりにページフォルトが発生します。ブートローダーはカーネルスタックのためにガードページをセットアップするので、スタックオーバーフローは<strong>ページフォルト</strong>を発生させることになります。</p>
+<p>ページフォルトが起きるとCPUはIDT内のページフォルトハンドラを探しにいき、<a href="../../cpu-exceptions/index.html#the-interrupt-stack-frame">割り込みスタックフレーム</a>（訳注: 翻訳当時、リンク先未訳）をスタック上にプッシュしようと試みます。しかし、このスタックポインタは存在しないガードページを指しています。結果、二度目のページフォルトが発生して、ダブルフォルトが起きます（上の表によれば）。</p>
+<p>そして、ここでCPUは<strong>ダブルフォルトハンドラ</strong>を呼びにいきます。しかし、ダブルフォルト例外においてもCPUは例外スタックフレームをプッシュしようと試みます。スタックポインタはまだガードページを指しているので、<strong>三度目の</strong>ページフォルトが起きて、<strong>トリプルフォルト</strong>を発生させシステムは再起動します。そのため、私達の今のダブルフォルトハンドラではこの場合でのトリプルフォルトを避けることができません。</p>
+<p>実際にやってみましょう。カーネルスタックオーバーフローは無限に再帰する関数を呼び出すことによって簡単に引き起こせます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// この関数の名前修飾をしない
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>        stack_overflow(); </span><span style="color:#608b4e;">// 再帰呼び出しのために、リターンアドレスがプッシュされる
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// スタックオーバーフローを起こす
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), println(…), and loop {}
+</span><span>}
+</span></code></pre>
+<p>これをQEMUで試すと、再びブートループに入るのがわかります。</p>
+<p>では、私達はどうすればこの問題を避けられるでしょうか？例外スタックフレームをプッシュすることは、CPU自身が行ってしまうので、省略できません。つまりどうにかしてダブルフォルト例外が発生したときスタックが常に正常であることを保証する必要があります。幸いにもx86_64アーキテクチャにはこの問題の解決策があります。</p>
+<h2 id="sutatukuwoqie-riti-eru"><a class="zola-anchor" href="index.html#sutatukuwoqie-riti-eru" aria-label="Anchor link for: sutatukuwoqie-riti-eru">🔗</a>スタックを切り替える</h2>
+<p>x86_64アーキテクチャは例外発生時に予め定義されている既知の正常なスタックに切り替えることができます。この切り替えはハードウェアレベルで発生するので、CPUが例外スタックフレームをプッシュする前に行うことができます。</p>
+<p>切り替えの仕組みは<strong>割り込みスタックテーブル</strong>（IST: Interrupt Stack Table）として実装されています。ISTは７つの既知の正常なポインタのテーブルです。Rust風の疑似コードで表すとこのようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">struct </span><span>InterruptStackTable {
+</span><span>    stack_pointers: [Option&lt;StackPointer&gt;; 7],
+</span><span>}
+</span></code></pre>
+<p>各例外ハンドラに対して、私達は対応する<a href="../../cpu-exceptions/index.html#the-interrupt-descriptor-table">IDTエントリ</a>（訳注: 翻訳当時、リンク先未訳）の<code>stack_pointers</code>フィールドを通してISTからスタックを選ぶことができます。例えば、IST中の最初のスタックをダブルフォルトハンドラのために使うことができます。そうすると、CPUがダブルフォルトが発生したときは必ず、このスタックに自動的に切り替えを行います。この切り替えは何かがプッシュされる前に起きるので、トリプルフォルトを防ぐことになります。</p>
+<h3 id="isttotss"><a class="zola-anchor" href="index.html#isttotss" aria-label="Anchor link for: isttotss">🔗</a>ISTとTSS</h3>
+<p>割り込みスタックテーブル（IST）は <strong><a href="https://ja.wikipedia.org/wiki/Task_state_segment">タスクステートセグメント</a></strong>（TSS）というレガシーな構造体の一部です。TSSはかつては様々な32ビットモードでのタスクに関する情報（例：プロセッサのレジスタの状態）を保持していて、例えば<a href="https://wiki.osdev.org/Context_Switching#Hardware_Context_Switching">ハードウェアコンテキストスイッチング</a>に使われていました。しかし、ハードウェアコンテキストスイッチングは64ビットモードではサポートされなくなり、TSSのフォーマットは完全に変わりました。</p>
+<p>x86_64ではTSSはタスク固有の情報は全く持たなくなりました。代わりに、2つのスタックテーブル（ISTがその1つ）を持つようになりました。唯一32ビットと64ビットのTSSで共通のフィールドは<a href="https://ja.wikipedia.org/wiki/Task_state_segment#I/O%E8%A8%B1%E5%8F%AF%E3%83%93%E3%83%83%E3%83%88%E3%83%9E%E3%83%83%E3%83%97">I/Oポート許可ビットマップ</a>へのポインタのみです。</p>
+<p>64ビットのTSSは下記のようなフォーマットです：</p>
+<table><thead><tr><th>フィールド</th><th>型</th></tr></thead><tbody>
+<tr><td><span style="opacity: 0.5">(予約済み)</span></td><td><code>u32</code></td></tr>
+<tr><td>特権スタックテーブル</td><td><code>[u64; 3]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(予約済み)</span></td><td><code>u64</code></td></tr>
+<tr><td>割り込みスタックテーブル</td><td><code>[u64; 7]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(予約済み)</span></td><td><code>u64</code></td></tr>
+<tr><td><span style="opacity: 0.5">(予約済み)</span></td><td><code>u16</code></td></tr>
+<tr><td>I/Oマップベースアドレス</td><td><code>u16</code></td></tr>
+</tbody></table>
+<p><strong>特権スタックテーブル</strong>は特権レベルが変わった際にCPUが使用します。例えば、CPUがユーザーモード（特権レベル3）の時に例外が発生した場合、CPUは通常例外ハンドラを呼び出す前にカーネルモード（特権レベル0）に切り替わります。この場合、CPUは特権レベルスタックテーブルの0番目のスタックに切り替わります。ユーザーモードについてはまだ実装してないため、このテープルはとりあえず無視しておきましょう。</p>
+<h3 id="tsswotukuru"><a class="zola-anchor" href="index.html#tsswotukuru" aria-label="Anchor link for: tsswotukuru">🔗</a>TSSをつくる</h3>
+<p>割り込みスタックテーブルにダブルフォルト用のスタックを含めた新しいTSSをつくってみましょう。そのためにはTSS構造体が必要です。幸いにも、すでに<code>x86_64</code>クレートに<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/tss/struct.TaskStateSegment.html"><code>TaskStateSegment</code>構造体</a>が含まれているので、これを使っていきます。</p>
+<p>新しい<code>gdt</code>モジュール内でTSSをつくります（名前の意味は後でわかるでしょう）：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>gdt;
+</span><span>
+</span><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::tss::TaskStateSegment;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>: </span><span style="color:#569cd6;">u16 </span><span>= </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TSS</span><span>: TaskStateSegment = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> tss = TaskStateSegment::new();
+</span><span>        tss.interrupt_stack_table[</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX </span><span style="color:#569cd6;">as usize</span><span>] = {
+</span><span>            </span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">STACK_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">4096 </span><span>* </span><span style="color:#b5cea8;">5</span><span>;
+</span><span>            </span><span style="color:#569cd6;">static mut </span><span style="color:#b4cea8;">STACK</span><span>: [</span><span style="color:#569cd6;">u8</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>] = [</span><span style="color:#b5cea8;">0</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>];
+</span><span>
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_start = VirtAddr::from_ptr(</span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">STACK </span><span>});
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_end = stack_start + </span><span style="color:#b4cea8;">STACK_SIZE</span><span>;
+</span><span>            stack_end
+</span><span>        };
+</span><span>        tss
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>Rustの定数評価機はこの初期化をコンパイル時に行うことがまだできないので<code>lazy_static</code>を使います。ここでは0番目のISTエントリをダブルフォルト用のスタックとして定義します（他のISTのインデックスでも動くでしょう）。そして、ダブルフォルト用スタックの先頭アドレスを0番目のエントリに書き込みます。先頭アドレスを書き込むのはx86のスタックは下、つまり高いアドレスから低いアドレスに向かって伸びていくからです。</p>
+<p>私達はまだメモリ管理を実装していません。そのため、新しいスタックを確保する適切な方法がありません。その代わり今回は、スタックのストレージとして<code>static mut</code>な配列を使います。コンパイラが変更可能な静的変数がアクセスされるとき競合がないことを保証できないため<code>unsafe</code>が必要となります。これが不変の<code>static</code>ではなく<code>static mut</code>であることは重要です。そうでなければブートローダーはこれをリードオンリーのページにマップしてしまうからです。私達は後の記事でこの部分を適切なスタック確保処理に置き換えます。そうすればこの部分での<code>unsafe</code>は必要なくなります。</p>
+<p>ちなみに、このダブルフォルトスタックはスタックオーバーフローに対する保護をするガードページを持ちません。つまり、スタックオーバーフローがスタックより下のメモリを破壊するかもしれないので、私達はダブルフォルトハンドラ内でスタックを多用すべきではないということです。</p>
+<h4 id="tsswodu-miip-mu"><a class="zola-anchor" href="index.html#tsswodu-miip-mu" aria-label="Anchor link for: tsswodu-miip-mu">🔗</a>TSSを読み込む</h4>
+<p>新しいTSSをつくったので、CPUにそれを使うように教える方法が必要です。残念ながら、これはちょっと面倒くさいです。なぜならTSSは（歴史的な理由で）セグメンテーションシステムを使うためです。テーブルを直接読み込むのではなく、新しいセグメントディスクリプタを<a href="https://web.archive.org/web/20190217233448/https://www.flingos.co.uk/docs/reference/Global-Descriptor-Table/">グローバルディスクリプタテーブル</a>（GDT: Global Descriptor Table）に追加する必要があります。そうすると各自のGDTインデックスで<a href="https://www.felixcloutier.com/x86/ltr"><code>ltr</code>命令</a>を呼び出すことで私達のTSSを読み込むことができます。</p>
+<h3 id="gurobarudeisukuriputateburu"><a class="zola-anchor" href="index.html#gurobarudeisukuriputateburu" aria-label="Anchor link for: gurobarudeisukuriputateburu">🔗</a>グローバルディスクリプタテーブル</h3>
+<p>グローバルディスクリプタテーブル（GDT）はページングがデファクトスタンダードになる以前は、<a href="https://ja.wikipedia.org/wiki/%E3%82%BB%E3%82%B0%E3%83%A1%E3%83%B3%E3%83%88%E6%96%B9%E5%BC%8F">メモリセグメンテーション</a>のため使われていた古い仕組みです。カーネル・ユーザーモードの設定やTSSの読み込みなど、様々なことを行うために64ビットモードでも未だに必要です。</p>
+<p>GDTはプログラムの<strong>セグメント</strong>を含む構造です。ページングが標準になる以前に、プログラム同士を独立させるためにより古いアーキテクチャで使われていました。セグメンテーションに関するより詳しい情報は無料の<a href="http://pages.cs.wisc.edu/~remzi/OSTEP/">「Three Easy Pieces」</a>という本の同じ名前の章を見てください。セグメンテーションは64ビットモードではもうサポートされていませんが、GDTはまだ存在しています。GDTはカーネル空間とユーザー空間の切り替えと、TSS構造体の読み込みという主に2つのことに使われています。</p>
+<h4 id="gdtwotukuru"><a class="zola-anchor" href="index.html#gdtwotukuru" aria-label="Anchor link for: gdtwotukuru">🔗</a>GDTをつくる</h4>
+<p><code>TSS</code>の静的変数のセグメントを含む静的<code>GDT</code>をつくりましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor};
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: GlobalDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        gdt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>先に紹介したコードと同様に、再び<code>lazy_static</code>を使います。コードセグメントとTSSセグメントを持つ新しいGDTを作成します。</p>
+<h4 id="gdtwodu-miip-mu"><a class="zola-anchor" href="index.html#gdtwodu-miip-mu" aria-label="Anchor link for: gdtwodu-miip-mu">🔗</a>GDTを読み込む</h4>
+<p>GDTを読み込むために新しく<code>gdt::init</code>関数をつくり、これを<code>init</code>関数から呼び出します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.load();
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>}
+</span></code></pre>
+<p>これでGDTが読み込まれます（<code>_start</code>関数は<code>init</code>を呼び出すため）が、これではまだスタックオーバーフローでブートループが起きてしまいます。</p>
+<h3 id="zui-hou-nosutetupu"><a class="zola-anchor" href="index.html#zui-hou-nosutetupu" aria-label="Anchor link for: zui-hou-nosutetupu">🔗</a>最後のステップ</h3>
+<p>問題はGDTセグメントとTSSレジスタが古いGDTからの値を含んでいるため、GDTセグメントがまだ有効になっていないことです。ダブルフォルト用のIDTエントリが新しいスタックを使うように変更する必要もあります。</p>
+<p>まとめると、私達は次のようなことをする必要があります：</p>
+<ol>
+<li><strong>コードセグメントレジスタを再読み込みする</strong>：GDTを変更したので、コードセグメントレジスタ<code>cs</code>を再読み込みする必要があります。これは、古いセグメントセレクタが異なるGDTディスクリプタ（例：TSSディスクリプタ）を指す可能性があるためです。</li>
+<li><strong>TSSをロードする</strong>：TSSセレクタを含むGDTをロードしましたが、CPUにこのTSSを使うよう教えてあげる必要があります。</li>
+<li><strong>IDTエントリを更新する</strong>：TSSがロードされると同時に、CPUは正常な割り込みスタックテーブル（IST）へアクセスできるようになります。そうしたら、ダブルフォルトIDTエントリを変更することで、CPUに新しいダブルフォルトスタックを使うよう教えてあげることができます。</li>
+</ol>
+<p>最初の２つのステップのために、私達は<code>gdt::init</code>関数の中で<code>code_selector</code>と<code>tss_selector</code>変数にアクセスする必要があります。これは、その変数たちを新しい<code>Selectors</code>構造体を使い静的変数にすることで実装できます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::SegmentSelector;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: (GlobalDescriptorTable, Selectors) = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        </span><span style="color:#569cd6;">let</span><span> tss_selector = gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        (gdt, Selectors { code_selector, tss_selector })
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Selectors {
+</span><span>    code_selector: SegmentSelector,
+</span><span>    tss_selector: SegmentSelector,
+</span><span>}
+</span></code></pre>
+<p>これで私達は<code>cs</code>セグメントレジスタを再読み込みし<code>TSS</code>を読み込むためにセレクタを使うことができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::segmentation::set_cs;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::tables::load_tss;
+</span><span>
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">0.</span><span>load();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        set_cs(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>code_selector);
+</span><span>        load_tss(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>tss_selector);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/segmentation/fn.set_cs.html"><code>set_cs</code></a>を使ってコードセグメントレジスタを再読み込みして、<a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/tables/fn.load_tss.html"><code>load_tss</code></a>を使ってTSSを読み込んでいます。これらの関数は<code>unsafe</code>とマークされているので、呼び出すには<code>unsafe</code>ブロックが必要です。<code>unsafe</code>なのは、不正なセレクタを読み込むことでメモリ安全性を壊す可能性があるからです。</p>
+<p>これで正常なTSSと割り込みスタックテーブルを読み込んだので、私達はIDT内のダブルフォルトハンドラにスタックインデックスをセットすることができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use crate</span><span>::gdt;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault.set_handler_fn(double_fault_handler)
+</span><span>                .set_stack_index(gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p><code>set_stack_index</code>メソッドは呼び出し側が、使われているインデックスが正しいものであり、かつ他の例外で使われていないかを確かめる必要があるため、<code>unsafe</code>です。</p>
+<p>これで全部です。CPUはダブルフォルトが発生したら常にダブルフォルトスタックに切り替えるでしょう。よって、私達はカーネルスタックオーバーフローを含む<strong>すべての</strong>ダブルフォルトをキャッチすることができます。</p>
+<p><img src="qemu-double-fault-on-stack-overflow.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and a dump of the exception stack frame" /></p>
+<p>これからはトリプルフォルトを見ることは二度とないでしょう。これらダブルフォルトのための実装を誤って壊していないことを保証するために、テストを追加しましょう。</p>
+<h2 id="sutatukuobahurotesuto"><a class="zola-anchor" href="index.html#sutatukuobahurotesuto" aria-label="Anchor link for: sutatukuobahurotesuto">🔗</a>スタックオーバーフローテスト</h2>
+<p>新しい<code>gdt</code>モジュールをテストしダブルフォルトハンドラがスタックオーバーフローで正しく呼ばれることを保証するために、結合テストを追加します。ここでの考えは、テスト関数内でダブルフォルトを引き起こしダブルフォルトハンドラが呼び出されていることを確かめる、というものです。</p>
+<p>最小の骨組みから始めましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p><code>panic_handler</code>のテストと同様、テストは<a href="../testing/index.html#hanesu-harness-nonaitesuto">テストハーネスなし</a>で実行されます。理由は私達はダブルフォルト後に実行を続けることができず、２つ以上のテストは意味をなさないためです。テストハーネスを無効にするために、以下を<code>Cargo.toml</code>に追加します：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[[</span><span style="color:#808080;">test</span><span>]]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;stack_overflow&quot;
+</span><span style="color:#569cd6;">harness </span><span>= </span><span style="color:#569cd6;">false
+</span></code></pre>
+<p>これで<code>cargo test --test stack_overflow</code>でのコンパイルは成功するでしょう。<code>unimplemented</code>マクロがパニックを起こすため、テストはもちろん失敗します。</p>
+<h3 id="startwoshi-zhuang-suru"><a class="zola-anchor" href="index.html#startwoshi-zhuang-suru" aria-label="Anchor link for: startwoshi-zhuang-suru">🔗</a><code>_start</code>を実装する</h3>
+<p><code>_start</code>関数の実装はこのようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::serial_print;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;stack_overflow::stack_overflow...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::gdt::init();
+</span><span>    init_test_idt();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// スタックオーバーフローを起こす
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;Execution continued after stack overflow&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span>#[allow(unconditional_recursion)]
+</span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>    stack_overflow(); </span><span style="color:#608b4e;">// 再帰のたびにリターンアドレスがプッシュされる
+</span><span>    volatile::Volatile::new(</span><span style="color:#b5cea8;">0</span><span>).read(); </span><span style="color:#608b4e;">// 末尾最適化を防ぐ
+</span><span>}
+</span></code></pre>
+<p>新しいGDTを初期化するために<code>gdt::init</code>関数を呼びます。そして<code>interrupts::init_idt</code>関数を呼び出す代わりに、すぐ後で説明する<code>init_test_idt</code>関数を呼びます。なぜなら、私達はパニックの代わりに<code>exit_qemu(QemuExitCode::Success)</code>を実行するカスタムしたダブルフォルトハンドラを登録したいためです。</p>
+<p><code>stack_overflow</code>関数は<code>main.rs</code>の中にある関数とほとんど同じです。唯一の違いは<a href="https://ja.wikipedia.org/wiki/%E6%9C%AB%E5%B0%BE%E5%86%8D%E5%B8%B0#%E6%9C%AB%E5%B0%BE%E5%91%BC%E5%87%BA%E3%81%97%E6%9C%80%E9%81%A9%E5%8C%96"><strong>末尾呼び出し最適化</strong></a>と呼ばれるコンパイラの最適化を防ぐために<a href="https://docs.rs/volatile/0.2.6/volatile/struct.Volatile.html"><code>Volatile</code></a>タイプを使って関数の末尾で追加の<a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a>読み込みを行っていることです。この最適化の特徴として、コンパイラが、最後の文が再帰関数呼び出しである関数を通常のループに変換できるようになる、というものがあります。その結果として、追加のスタックフレームが関数呼び出しではつくられず、スタックの使用量が変わらないままとなります。</p>
+<p>しかし、ここではスタックオーバーフローを起こしたいので、コンパイラに削除されない、ダミーのvolatile読み込み文を関数の末尾に追加します。その結果、関数は<strong>末尾再帰</strong>ではなくなり、ループへの変換は防がれます。更に関数が無限に再帰することに対するコンパイラの警告をなくすために<code>allow(unconditional_recursion)</code>属性を追加します。</p>
+<h3 id="idtnotesuto"><a class="zola-anchor" href="index.html#idtnotesuto" aria-label="Anchor link for: idtnotesuto">🔗</a>IDTのテスト</h3>
+<p>上で述べたように、テストはカスタムしたダブルフォルトハンドラを含む専用のIDTが必要です。実装はこのようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptDescriptorTable;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TEST_IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault
+</span><span>                .set_handler_fn(test_double_fault_handler)
+</span><span>                .set_stack_index(blog_os::gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>);
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_test_idt() {
+</span><span>    </span><span style="color:#b4cea8;">TEST_IDT</span><span>.load();
+</span><span>}
+</span></code></pre>
+<p>実装は<code>interrupts.rs</code>内の通常のIDTと非常に似ています。通常のIDT同様、分離されたスタックに切り替えるようダブルフォルトハンドラ用のISTにスタックインデックスをセットします。<code>init_test_idt</code>関数は<code>load</code>メソッドによりCPU上にIDTを読み込みます。</p>
+<h3 id="daburuhuorutohandora-1"><a class="zola-anchor" href="index.html#daburuhuorutohandora-1" aria-label="Anchor link for: daburuhuorutohandora-1">🔗</a>ダブルフォルトハンドラ</h3>
+<p>唯一欠けているのはダブルフォルトハンドラです。このようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, QemuExitCode, serial_println};
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptStackFrame;
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>test_double_fault_handler(
+</span><span>    _stack_frame: InterruptStackFrame,
+</span><span>    _error_code: </span><span style="color:#569cd6;">u64</span><span>,
+</span><span>) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>ダブルフォルトハンドラが呼ばれるとき、私達はQEMUを正常な終了コードで終了し、テストを成功とマークします。結合テストは完全に分けられた実行ファイルなので、私達はテストファイルの先頭で<code>#![feature(abi_x86_interrupt)]</code>属性を再びセットする必要があります。</p>
+<p>これで私達は<code>cargo test --test stack_overflow</code>（もしくは全部のテストを走らせるよう<code>cargo test</code>）でテストを走らせることができます。期待していたとおり、<code>stack_overflow... [ok]</code>とコンソールに出力されるのがわかります。<code>set_stack_index</code>の行をコメントアウトすると、テストは失敗するでしょう。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>この記事では私達はダブルフォルトが何であるかとどういう条件下で発生するかを学びました。エラーメッセージを出力する基本的なダブルフォルトハンドラと、そのための結合テストを追加しました。</p>
+<p>また、私達はスタックオーバーフロー下でも動くよう、ダブルフォルト発生時にハードウェアがサポートするスタック切り替えを行うようにしました。実装していく中で、古いアーキテクチャでのセグメンテーションで使われていたタスクステートセグメント（TSS）、割り込みスタックテーブル（IST）、グローバルディスクリプタテーブル（GDT）についても学びました。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>次の記事ではタイマーやキーボード、ネットワークコントローラのような、外部デバイスからの割り込みをどのように処理するかを説明します。これらのハードウェア割り込みは例外によく似ています。例えば、これらもIDTからディスパッチされます。しかしながら、例外とは違い、それらはCPU上で直接発生するものではありません。代わりに、<strong>割り込みコントローラ</strong>がこれらの割り込みを集めて、優先度によってそれらをCPUに送ります。次回、私達は<a href="https://ja.wikipedia.org/wiki/Intel_8259">Intel 8259</a>（PIC）割り込みコントローラを調べ、どのようにキーボードのサポートを実装するかを学びます。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../cpu-exceptions/index.html">&laquo; CPU例外</a>
+        
+        
+            <a class="next" href="../hardware-interrupts/index.html">ハードウェア割り込み &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Double%20Faults%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Double Faults (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Double%20Faults%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../double-fault-exceptions/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/double-fault-exceptions/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/double-fault-exceptions/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/double-fault-exceptions/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

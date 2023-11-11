@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html class="discourse-comment"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <link href="comments_data/embed_9af0dcb4e7c92a5fa990fc810d9bb07ca2cd87f2.css" media="all" rel="stylesheet" data-target="embed">
+      <link href="comments_data/embedded_theme_3_2b8d04921059857782229c284a66db092c68a142.css" media="all" rel="stylesheet" data-target="embedded_theme" data-theme-id="3" data-theme-name="light">
+    <link rel="preload" href="comments_data/break_string-cc617154cd957804f2f6a1f3bc68258c9cdca3d4b9a322bf.js" as="script">
+<script defer="defer" src="comments_data/break_string-cc617154cd957804f2f6a1f3bc68258c9cdca3d4b9a322bf.js"></script>
+
+
+      <title>Cortex-M Exception Handling | Interrupt - Blog - Interrupt</title>
+
+    <meta id="data-embedded" data-referer="https://interrupt.memfault.com/blog/arm-cortex-m-exceptions-and-nvic">
+    <link rel="preload" href="comments_data/embed-application-4e18c443be26cb7c50c56d1a8f39fcf176af9b4ae8e.js" as="script">
+<script defer="defer" src="comments_data/embed-application-4e18c443be26cb7c50c56d1a8f39fcf176af9b4ae8e.js"></script>
+
+
+    
+  </head>
+  <body>
+    <header class="discourse" data-embed-state="loaded">
+  <span class="replies">5 replies</span>
+</header>
+
+    <article class="post" id="post-176">
+      <a title="December  2, 2019  9:51pm" class="post-date" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/2">Dec '19</a>
+
+      <div class="author">
+        <a href="https://community.memfault.com/u/FelixBors" target="_blank"><img src="comments_data/45_003.png" alt=""></a>
+      </div>
+      <div class="cooked">
+        <h3 class="username">
+          <a href="https://community.memfault.com/u/FelixBors" target="_blank" class="new-user">Felix<wbr>​Bors</a>
+        </h3>
+        <p>Thank you Chris, very useful.</p>
+
+      </div>
+    </article>
+    <article class="post" id="post-689">
+      <a title="October 25, 2020 12:52am" class="post-date" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/4">Oct '20</a>
+
+      <div class="author">
+        <a href="https://community.memfault.com/u/radin" target="_blank"><img src="comments_data/45.png" alt=""></a>
+      </div>
+      <div class="cooked">
+        <h3 class="username">
+          <a href="https://community.memfault.com/u/radin" target="_blank" class="new-user">radin</a>
+        </h3>
+        <p>Thanks a lot.<br>
+Could you please explain more on how to configure a GPIO pin to trigger interrupts on NVIC?<br>
+I mean how to find PIO’s corresponding bits in NVIC registers.</p>
+
+      </div>
+    </article>
+    <article class="post" id="post-770">
+      <a title="November 21, 2020  6:36am" class="post-date" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/5">Nov '20</a>
+
+      <div class="author">
+        <a href="https://community.memfault.com/u/tobermory" target="_blank"><img src="comments_data/45_005.png" alt=""></a>
+      </div>
+      <div class="cooked">
+        <h3 class="username">
+          <a href="https://community.memfault.com/u/tobermory" target="_blank" class="">tobermory</a>
+        </h3>
+        <p>Your post states that PendSV and Systick are triggered by 
+software.  While true for PendSV (and your code does it, normally this 
+is done by ISRs serving I/O interrupts), I think that SysTick interrupts
+ are hardware-sourced. Yes, you set up the Systick regs by software, but
+ the event that fires the handler is a hardware one.</p>
+<p>In case anyone is unaware, all this material, and more, is detailed 
+in Joseph Yiu’s amazing book on Cortex-M3/4 (definitive guide, 3rd ed).</p>
+
+      </div>
+    </article>
+    <article class="post" id="post-907">
+      <a title="February 17, 2021  6:43pm" class="post-date" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/6">Feb '21</a>
+
+      <div class="author">
+        <a href="https://community.memfault.com/u/dnsglk" target="_blank"><img src="comments_data/45_004.png" alt=""></a>
+      </div>
+      <div class="cooked">
+        <h3 class="username">
+          <a href="https://community.memfault.com/u/dnsglk" target="_blank" class="new-user">dnsglk</a>
+        </h3>
+        <p>Great article!</p>
+<p>Is my understanding correct, that the max depth the interrupts can be
+ nested is the number of priority groups? I’m trying to wrap my head 
+around on how to estimate the max stack size for interrupts considering 
+the worst case scenario.</p>
+<p>Thanks,<br>
+Denis</p>
+
+      </div>
+    </article>
+    <article class="post" id="post-1407">
+      <a title="September  7, 2022  5:00pm" class="post-date" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/7">Sep '22</a>
+
+      <div class="author">
+        <a href="https://community.memfault.com/u/JimYuill" target="_blank"><img src="comments_data/45_002.png" alt=""></a>
+      </div>
+      <div class="cooked">
+        <h3 class="username">
+          <a href="https://community.memfault.com/u/JimYuill" target="_blank" class="new-user">Jim<wbr>​Yuill</a>
+        </h3>
+        <p>This is an excellent article, very clear and has needed info.<br>
+It’s rare to find articles of this quality.<br>
+Thanks!</p>
+
+      </div>
+    </article>
+
+    <footer class="clearfix">
+      <a target="_blank" href="https://community.memfault.com/"><img class="logo" src="comments.html"></a>
+      <a class="button" target="_blank" href="https://community.memfault.com/t/cortex-m-exception-handling-interrupt/75/7">Continue Discussion</a>
+    </footer>
+    <div class="clearfix"></div>
+
+
+  
+
+</body></html>

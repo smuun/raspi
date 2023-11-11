@@ -1,0 +1,1109 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Printing to Screen | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Printing to Screen</h1>
+    <time datetime="2015-10-23" class="post-date">
+        Oct 23, 2015
+         (updated on Oct 31, 2016) 
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#the-vga-text-buffer">The VGA Text Buffer</a>
+                
+            </li><li>
+                <a href="index.html#a-basic-rust-module">A basic Rust Module</a>
+                <ol>
+                    <li>
+                        <a href="index.html#colors">Colors</a>
+                    </li><li>
+                        <a href="index.html#the-text-buffer">The Text Buffer</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#printing-characters">Printing Characters</a>
+                <ol>
+                    <li>
+                        <a href="index.html#cannot-move-out-of-borrowed-content">Cannot Move out of Borrowed Content</a>
+                    </li><li>
+                        <a href="index.html#try-it-out">Try it out!</a>
+                    </li><li>
+                        <a href="index.html#volatile">Volatile</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#printing-strings">Printing Strings</a>
+                <ol>
+                    <li>
+                        <a href="index.html#support-formatting-macros">Support Formatting Macros</a>
+                    </li><li>
+                        <a href="index.html#newlines">Newlines</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#providing-an-interface">Providing an Interface</a>
+                
+            </li><li>
+                <a href="index.html#a-println-macro">A println macro</a>
+                <ol>
+                    <li>
+                        <a href="index.html#clearing-the-screen">Clearing the screen</a>
+                    </li><li>
+                        <a href="index.html#hello-world-using-println">Hello World using println</a>
+                    </li><li>
+                        <a href="index.html#deadlocks">Deadlocks</a>
+                    </li><li>
+                        <a href="index.html#fixing-the-deadlock">Fixing the Deadlock</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li><li>
+                <a href="index.html#other-rust-os-projects">Other Rust OS Projects</a>
+                
+            </li><li>
+                <a href="index.html#footnotes">Footnotes</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In the <a href="../set-up-rust/index.html">previous post</a> we switched from assembly to <a href="https://www.rust-lang.org/">Rust</a>, a systems programming language that provides great safety. But so far we are using unsafe features like <a href="https://doc.rust-lang.org/book/raw-pointers.html">raw pointers</a> whenever we want to print to screen. In this post we will create a Rust module that provides a safe and easy-to-use interface for the VGA text buffer. It will support Rust’s <a href="https://doc.rust-lang.org/std/fmt/#related-macros">formatting macros</a>, too.</p>
+<span id="continue-reading"></span>
+<p>This post uses recent unstable features, so you need an up-to-date nighly compiler. If you have any questions, problems, or suggestions please <a href="https://github.com/phil-opp/blog_os/issues">file an issue</a> or create a comment at the bottom. The code from this post is also available on <a href="https://github.com/phil-opp/blog_os/tree/first_edition_post_4">GitHub</a>.</p>
+<h2 id="the-vga-text-buffer"><a class="zola-anchor" href="index.html#the-vga-text-buffer" aria-label="Anchor link for: the-vga-text-buffer">🔗</a>The VGA Text Buffer</h2>
+<p>The text buffer starts at physical address <code>0xb8000</code> and contains the characters displayed on screen. It has 25 rows and 80 columns. Each screen character has the following format:</p>
+<table><thead><tr><th>Bit(s)</th><th>Value</th></tr></thead><tbody>
+<tr><td>0-7</td><td>ASCII code point</td></tr>
+<tr><td>8-11</td><td>Foreground color</td></tr>
+<tr><td>12-14</td><td>Background color</td></tr>
+<tr><td>15</td><td>Blink</td></tr>
+</tbody></table>
+<p>The following colors are available:</p>
+<table><thead><tr><th>Number</th><th>Color</th><th>Number + Bright Bit</th><th>Bright Color</th></tr></thead><tbody>
+<tr><td>0x0</td><td>Black</td><td>0x8</td><td>Dark Gray</td></tr>
+<tr><td>0x1</td><td>Blue</td><td>0x9</td><td>Light Blue</td></tr>
+<tr><td>0x2</td><td>Green</td><td>0xa</td><td>Light Green</td></tr>
+<tr><td>0x3</td><td>Cyan</td><td>0xb</td><td>Light Cyan</td></tr>
+<tr><td>0x4</td><td>Red</td><td>0xc</td><td>Light Red</td></tr>
+<tr><td>0x5</td><td>Magenta</td><td>0xd</td><td>Pink</td></tr>
+<tr><td>0x6</td><td>Brown</td><td>0xe</td><td>Yellow</td></tr>
+<tr><td>0x7</td><td>Light Gray</td><td>0xf</td><td>White</td></tr>
+</tbody></table>
+<p>Bit 4 is the <em>bright bit</em>, which turns for example blue into light blue. It is unavailable in background color as the bit is used to control if the text should blink. If you want to use a light background color (e.g. white) you have to disable blinking through a <a href="http://www.ctyme.com/intr/rb-0117.htm">BIOS function</a>.</p>
+<h2 id="a-basic-rust-module"><a class="zola-anchor" href="index.html#a-basic-rust-module" aria-label="Anchor link for: a-basic-rust-module">🔗</a>A basic Rust Module</h2>
+<p>Now that we know how the VGA buffer works, we can create a Rust module to handle printing:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">mod </span><span>vga_buffer;
+</span></code></pre>
+<p>The content of this module can live either in <code>src/vga_buffer.rs</code> or <code>src/vga_buffer/mod.rs</code>. The latter supports submodules while the former does not. But our module does not need any submodules so we create it as <code>src/vga_buffer.rs</code>.</p>
+<p>All of the code below goes into our new module (unless specified otherwise).</p>
+<h3 id="colors"><a class="zola-anchor" href="index.html#colors" aria-label="Anchor link for: colors">🔗</a>Colors</h3>
+<p>First, we represent the different colors using an enum:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[allow(dead_code)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>Color {
+</span><span>    Black      = </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    Blue       = </span><span style="color:#b5cea8;">1</span><span>,
+</span><span>    Green      = </span><span style="color:#b5cea8;">2</span><span>,
+</span><span>    Cyan       = </span><span style="color:#b5cea8;">3</span><span>,
+</span><span>    Red        = </span><span style="color:#b5cea8;">4</span><span>,
+</span><span>    Magenta    = </span><span style="color:#b5cea8;">5</span><span>,
+</span><span>    Brown      = </span><span style="color:#b5cea8;">6</span><span>,
+</span><span>    LightGray  = </span><span style="color:#b5cea8;">7</span><span>,
+</span><span>    DarkGray   = </span><span style="color:#b5cea8;">8</span><span>,
+</span><span>    LightBlue  = </span><span style="color:#b5cea8;">9</span><span>,
+</span><span>    LightGreen = </span><span style="color:#b5cea8;">10</span><span>,
+</span><span>    LightCyan  = </span><span style="color:#b5cea8;">11</span><span>,
+</span><span>    LightRed   = </span><span style="color:#b5cea8;">12</span><span>,
+</span><span>    Pink       = </span><span style="color:#b5cea8;">13</span><span>,
+</span><span>    Yellow     = </span><span style="color:#b5cea8;">14</span><span>,
+</span><span>    White      = </span><span style="color:#b5cea8;">15</span><span>,
+</span><span>}
+</span></code></pre>
+<p>We use a <a href="https://doc.rust-lang.org/rust-by-example/custom_types/enum/c_like.html">C-like enum</a> here to explicitly specify the number for each color. Because of the <code>repr(u8)</code> attribute each enum variant is stored as an <code>u8</code>. Actually 4 bits would be sufficient, but Rust doesn’t have an <code>u4</code> type.</p>
+<p>Normally the compiler would issue a warning for each unused variant. By using the <code>#[allow(dead_code)]</code> attribute we disable these warnings for the <code>Color</code> enum.</p>
+<p>To represent a full color code that specifies foreground and background color, we create a newtype on top of <code>u8</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">struct </span><span>ColorCode(</span><span style="color:#569cd6;">u8</span><span>);
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ColorCode {
+</span><span>    </span><span style="color:#569cd6;">const fn </span><span>new(foreground: Color, background: Color) -&gt; ColorCode {
+</span><span>        ColorCode((background </span><span style="color:#569cd6;">as u8</span><span>) &lt;&lt; </span><span style="color:#b5cea8;">4 </span><span style="color:#569cd6;">| </span><span>(foreground </span><span style="color:#569cd6;">as u8</span><span>))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>ColorCode</code> contains the full color byte, containing foreground and background color. Blinking is enabled implicitly by using a bright background color (soon we will disable blinking anyway). The <code>new</code> function is a <a href="https://github.com/rust-lang/rfcs/blob/master/text/0911-const-fn.md">const function</a> to allow it in static initializers. As <code>const</code> functions are unstable we need to add the <code>const_fn</code> feature in <code>src/lib.rs</code>.</p>
+<h3 id="the-text-buffer"><a class="zola-anchor" href="index.html#the-text-buffer" aria-label="Anchor link for: the-text-buffer">🔗</a>The Text Buffer</h3>
+<p>Now we can add structures to represent a screen character and the text buffer:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[repr(C)]
+</span><span style="color:#569cd6;">struct </span><span>ScreenChar {
+</span><span>    ascii_character: </span><span style="color:#569cd6;">u8</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">25</span><span>;
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_WIDTH</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">80</span><span>;
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>Since the field ordering in default structs is undefined in Rust, we need the <a href="https://doc.rust-lang.org/nightly/nomicon/other-reprs.html#reprc">repr(C)</a> attribute. It guarantees that the struct’s fields are laid out exactly like in a C struct and thus guarantees the correct field ordering.</p>
+<p>To actually write to screen, we now create a writer type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>core::ptr::Unique;
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Writer {
+</span><span>    column_position: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>    buffer: Unique&lt;Buffer&gt;,
+</span><span>}
+</span></code></pre>
+<p>The writer will always write to the last line and shift lines up when a line is full (or on <code>\n</code>). The <code>column_position</code> field keeps track of the current position in the last row. The current foreground and background colors are specified by <code>color_code</code> and a pointer to the VGA buffer is stored in <code>buffer</code>. To make it possible to create a <code>static</code> Writer later, the <code>buffer</code> field stores an <code>Unique&lt;Buffer&gt;</code> instead of a plain <code>*mut Buffer</code>. <a href="https://doc.rust-lang.org/1.10.0/core/ptr/struct.Unique.html">Unique</a> is a wrapper that implements Send/Sync and is thus usable as a <code>static</code>. Since it’s unstable, you may need to add the <code>unique</code> feature to <code>lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>#![feature(unique)]
+</span></code></pre>
+<h2 id="printing-characters"><a class="zola-anchor" href="index.html#printing-characters" aria-label="Anchor link for: printing-characters">🔗</a>Printing Characters</h2>
+<p>Now we can use the <code>Writer</code> to modify the buffer’s characters. First we create a method to write a single ASCII byte (it doesn’t compile yet):</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">if </span><span>self.column_position &gt;= </span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                    self.new_line();
+</span><span>                }
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> row = </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>                </span><span style="color:#569cd6;">let</span><span> col = self.column_position;
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> color_code = self.color_code;
+</span><span>                self.buffer().chars[row][col] = ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code: color_code,
+</span><span>                };
+</span><span>                self.column_position += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>buffer(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; </span><span style="color:#569cd6;">&amp;mut</span><span> Buffer {
+</span><span>        </span><span style="color:#569cd6;">unsafe</span><span>{ self.buffer.as_mut() }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>If the byte is the <a href="https://en.wikipedia.org/wiki/Newline">newline</a> byte <code>\n</code>, the writer does not print anything. Instead it calls a <code>new_line</code> method, which we’ll implement later. Other bytes get printed to the screen in the second match case.</p>
+<p>When printing a byte, the writer checks if the current line is full. In that case, a <code>new_line</code> call is required before to wrap the line. Then it writes a new <code>ScreenChar</code> to the buffer at the current position. Finally, the current column position is advanced.</p>
+<p>The <code>buffer()</code> auxiliary method converts the raw pointer in the <code>buffer</code> field into a safe mutable buffer reference. The unsafe block is needed because the <a href="https://doc.rust-lang.org/1.26.0/core/ptr/struct.Unique.html#method.as_mut">as_mut()</a> method of <code>Unique</code> is unsafe. But our <code>buffer()</code> method itself isn’t marked as unsafe, so it must not introduce any unsafety (e.g. cause segfaults). To guarantee that, it’s very important that the <code>buffer</code> field always points to a valid <code>Buffer</code>. It’s like a contract that we must stand to every time we create a <code>Writer</code>. To ensure that it’s not possible to create an invalid <code>Writer</code> from outside of the module, the struct must have at least one private field and public creation functions are not allowed either.</p>
+<h3 id="cannot-move-out-of-borrowed-content"><a class="zola-anchor" href="index.html#cannot-move-out-of-borrowed-content" aria-label="Anchor link for: cannot-move-out-of-borrowed-content">🔗</a>Cannot Move out of Borrowed Content</h3>
+<p>When we try to compile it, we get the following error:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0507]: cannot move out of borrowed content
+</span><span>  --&gt; src/vga_buffer.rs:79:34
+</span><span>   |
+</span><span>79 | let color_code = self.color_code;
+</span><span>   |                  ^^^^ cannot move out of borrowed content
+</span></code></pre>
+<p>The reason it that Rust <em>moves</em> values by default instead of copying them like other languages. And we cannot move <code>color_code</code> out of <code>self</code> because we only borrowed <code>self</code>. For more information check out the <a href="https://doc.rust-lang.org/book/ownership.html">ownership section</a> in the Rust book.</p>
+<p>To fix it, we can implement the <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html">Copy</a> trait for the <code>ColorCode</code> type. The easiest way to do this is to use the built-in <a href="https://doc.rust-lang.org/rust-by-example/custom_types/enum/c_like.html">derive macro</a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[derive(Debug, Clone, Copy)]
+</span><span style="color:#569cd6;">struct </span><span>ColorCode(</span><span style="color:#569cd6;">u8</span><span>);
+</span></code></pre>
+<p>We also derive the <a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html">Clone</a> trait, since it’s a requirement for <code>Copy</code>, and the <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Debug.html">Debug</a> trait, which allows us to print this field for debugging purposes.</p>
+<p>Now our project should compile again.</p>
+<p>However, the <a href="https://doc.rust-lang.org/core/marker/trait.Copy.html#when-should-my-type-be-copy">documentation for Copy</a> says: <em>“if your type can implement Copy, it should”</em>. Therefore we also derive Copy for <code>Color</code> and <code>ScreenChar</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[allow(dead_code)]
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>Color {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(C)]
+</span><span style="color:#569cd6;">struct </span><span>ScreenChar {...}
+</span></code></pre>
+<h3 id="try-it-out"><a class="zola-anchor" href="index.html#try-it-out" aria-label="Anchor link for: try-it-out">🔗</a>Try it out!</h3>
+<p>To write some characters to the screen, you can create a temporary function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::LightGreen, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ Unique::new_unchecked(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut _</span><span>) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>It just creates a new Writer that points to the VGA buffer at <code>0xb8000</code>. To use the unstable <code>Unique::new_unchecked</code> function, we need to add the feature flag <code>#![feature(const_unique_new)]</code> to the top of our <code>src/lib.rs</code>.</p>
+<p>Then it writes the byte <code>b'H'</code> to it. The <code>b</code> prefix creates a <a href="https://doc.rust-lang.org/reference/tokens.html#characters-and-strings">byte character</a>, which represents an ASCII code point. When we call <code>vga_buffer::print_something</code> in main, a <code>H</code> should be printed in the <em>lower</em> left corner of the screen in light green:</p>
+<p><img src="vga-H-lower-left.png" alt="QEMU output with a green H in the lower left corner" /></p>
+<h3 id="volatile"><a class="zola-anchor" href="index.html#volatile" aria-label="Anchor link for: volatile">🔗</a>Volatile</h3>
+<p>We just saw that our <code>H</code> was printed correctly. However, it might not work with future Rust compilers that optimize more aggressively.</p>
+<p>The problem is that we only write to the <code>Buffer</code> and never read from it again. The compiler doesn’t know about the side effect that some characters appear on the screen. So it might decide that these writes are unnecessary and can be omitted.</p>
+<p>To avoid this erroneous optimization, we need to specify these writes as <em><a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a></em>. This tells the compiler that the write has side effects and should not be optimized away.</p>
+<p>In order to use volatile writes for the VGA buffer, we use the <a href="https://docs.rs/volatile">volatile</a> library. This <em>crate</em> (this is how packages are called in the Rust world) provides a <code>Volatile</code> wrapper type with <code>read</code> and <code>write</code> methods. These methods internally use the <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.read_volatile.html">read_volatile</a> and <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.write_volatile.html">write_volatile</a> functions of the standard library and thus guarantee that the reads/writes are not optimized away.</p>
+<p>We can add a dependency on the <code>volatile</code> crate by adding it to the <code>dependencies</code> section of our <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">volatile </span><span>= </span><span style="color:#d69d85;">&quot;0.1.0&quot;
+</span></code></pre>
+<p>The <code>0.1.0</code> is the <a href="https://semver.org/">semantic</a> version number. For more information, see the <a href="https://doc.crates.io/specifying-dependencies.html">Specifying Dependencies</a> guide of the cargo documentation.</p>
+<p>Now we’ve declared that our project depends on the <code>volatile</code> crate and are able to import it in <code>src/lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">extern crate</span><span> volatile;
+</span></code></pre>
+<p>Let’s use it to make writes to the VGA buffer volatile. We update our <code>Buffer</code> type as follows:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>volatile::Volatile;
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[Volatile&lt;ScreenChar&gt;; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>Instead of a <code>ScreenChar</code>, we’re now using a <code>Volatile&lt;ScreenChar&gt;</code>. (The <code>Volatile</code> type is <a href="https://doc.rust-lang.org/book/second-edition/ch10-00-generics.html">generic</a> and can wrap (almost) any type). This ensures that we can’t accidentally write to it through a “normal” write. Instead, we have to use the <code>write</code> method now.</p>
+<p>This means that we have to update our <code>Writer::write_byte</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>
+</span><span>                self.buffer().chars[row][col].write(ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code: color_code,
+</span><span>                });
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p>Instead of a normal assignment using <code>=</code>, we’re now using the <code>write</code> method. This guarantees that the compiler will never optimize away this write.</p>
+<h2 id="printing-strings"><a class="zola-anchor" href="index.html#printing-strings" aria-label="Anchor link for: printing-strings">🔗</a>Printing Strings</h2>
+<p>To print whole strings, we can convert them to bytes and print them one-by-one:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl Writer`
+</span><span style="color:#569cd6;">pub fn </span><span>write_str(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) {
+</span><span>    </span><span style="color:#569cd6;">for</span><span> byte </span><span style="color:#569cd6;">in</span><span> s.bytes() {
+</span><span>      self.write_byte(byte)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>You can try it yourself in the <code>print_something</code> function.</p>
+<p>When you print strings with some special characters like <code>ä</code> or <code>λ</code>, you’ll notice that they cause weird symbols on screen. That’s because they are represented by multiple bytes in <a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a>. By converting them to bytes, we of course get strange results. But since the VGA buffer doesn’t support UTF-8, it’s not possible to display these characters anyway.</p>
+<h3 id="support-formatting-macros"><a class="zola-anchor" href="index.html#support-formatting-macros" aria-label="Anchor link for: support-formatting-macros">🔗</a>Support Formatting Macros</h3>
+<p>It would be nice to support Rust’s formatting macros, too. That way, we can easily print different types like integers or floats. To support them, we need to implement the <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html">core::fmt::Write</a> trait. The only required method of this trait is <code>write_str</code> that looks quite similar to our <code>write_str</code> method. To implement the trait, we just need to move it into an <code>impl fmt::Write for Writer</code> block and add a return type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>core::fmt;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>fmt::Write </span><span style="color:#569cd6;">for </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_str(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) -&gt; fmt::Result {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> byte </span><span style="color:#569cd6;">in</span><span> s.bytes() {
+</span><span>          self.write_byte(byte)
+</span><span>        }
+</span><span>        Ok(())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>Ok(())</code> is just a <code>Ok</code> Result containing the <code>()</code> type. We can drop the <code>pub</code> because trait methods are always public.</p>
+<p>Now we can use Rust’s built-in <code>write!</code>/<code>writeln!</code> formatting macros:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in the `print_something` function
+</span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span style="color:#569cd6;">let mut</span><span> writer = Writer {</span><span style="color:#569cd6;">...</span><span>};
+</span><span>writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>writer.write_str(</span><span style="color:#d69d85;">&quot;ello! &quot;</span><span>);
+</span><span>write!(writer, </span><span style="color:#d69d85;">&quot;The numbers are </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> and </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.0</span><span>/</span><span style="color:#b5cea8;">3.0</span><span>);
+</span></code></pre>
+<p>Now you should see a <code>Hello! The numbers are 42 and 0.3333333333333333</code> at the bottom of the screen.</p>
+<h3 id="newlines"><a class="zola-anchor" href="index.html#newlines" aria-label="Anchor link for: newlines">🔗</a>Newlines</h3>
+<p>Right now, we just ignore newlines and characters that don’t fit into the line anymore. Instead we want to move every character one line up (the top line gets deleted) and start at the beginning of the last line again. To do this, we add an implementation for the <code>new_line</code> method of <code>Writer</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl Writer`
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {
+</span><span>    </span><span style="color:#569cd6;">for</span><span> row </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">1</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>{
+</span><span>        </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>            </span><span style="color:#569cd6;">let</span><span> buffer = self.buffer();
+</span><span>            </span><span style="color:#569cd6;">let</span><span> character = buffer.chars[row][col].read();
+</span><span>            buffer.chars[row - </span><span style="color:#b5cea8;">1</span><span>][col].write(character);
+</span><span>        }
+</span><span>    }
+</span><span>    self.clear_row(</span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>-</span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    self.column_position = </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span></code></pre>
+<p>We iterate over all screen characters and move each characters one row up. Note that the range notation (<code>..</code>) is exclusive the upper bound. We also omit the 0th row (the first range starts at <code>1</code>) because it’s the row that is shifted off screen.</p>
+<p>Now we only need to implement the <code>clear_row</code> method to finish the newline code:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl Writer`
+</span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> blank = ScreenChar {
+</span><span>        ascii_character: </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>,
+</span><span>        color_code: self.color_code,
+</span><span>    };
+</span><span>    </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>        self.buffer().chars[row][col].write(blank);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This method clears a row by overwriting all of its characters with a space character.</p>
+<h2 id="providing-an-interface"><a class="zola-anchor" href="index.html#providing-an-interface" aria-label="Anchor link for: providing-an-interface">🔗</a>Providing an Interface</h2>
+<p>To provide a global writer that can used as an interface from other modules, we can add a <code>static</code> writer:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>    column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    color_code: ColorCode::new(Color::LightGreen, Color::Black),
+</span><span>    buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ Unique::new_unchecked(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut _</span><span>) },
+</span><span>};
+</span></code></pre>
+<p>But we can’t use it to print anything! You can try it yourself in the <code>print_something</code> function. The reason is that we try to take a mutable reference (<code>&amp;mut</code>) to a immutable <code>static</code> when calling <code>WRITER.print_byte</code>.</p>
+<p>To resolve it, we could use a <a href="https://doc.rust-lang.org/1.30.0/book/second-edition/ch19-01-unsafe-rust.html#accessing-or-modifying-a-mutable-static-variable">mutable static</a>. But then every read and write to it would be unsafe since it could easily introduce data races and other bad things. Using <code>static mut</code> is highly discouraged, there are even proposals to <a href="https://internals.rust-lang.org/t/pre-rfc-remove-static-mut/1437">remove it</a>.</p>
+<p>But what are the alternatives? We could try to use a cell type like <a href="https://doc.rust-lang.org/nightly/core/cell/struct.RefCell.html">RefCell</a> or even <a href="https://doc.rust-lang.org/nightly/core/cell/struct.UnsafeCell.html">UnsafeCell</a> to provide <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/mutability.html#interior-vs-exterior-mutability">interior mutability</a>. But these types aren’t <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html">Sync</a> (with good reason), so we can’t use them in statics.</p>
+<p>To get synchronized interior mutability, users of the standard library can use <a href="https://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html">Mutex</a>. It provides mutual exclusion by blocking threads when the resource is already locked. But our basic kernel does not have any blocking support or even a concept of threads, so we can’t use it either. However there is a really basic kind of mutex in computer science that requires no operating system features: the <a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a>. Instead of blocking, the threads simply try to lock it again and again in a tight loop and thus burn CPU time until the mutex is free again.</p>
+<p>To use a spinning mutex, we can add the <a href="https://crates.io/crates/spin">spin crate</a> as a dependency:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">rlibc </span><span>= </span><span style="color:#d69d85;">&quot;0.1.4&quot;
+</span><span style="color:#569cd6;">spin </span><span>= </span><span style="color:#d69d85;">&quot;0.4.5&quot;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">extern crate</span><span> spin;
+</span></code></pre>
+<p>Then we can use the spinning Mutex to add interior mutability to our static writer:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs again
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">...
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">WRITER</span><span>: Mutex&lt;Writer&gt; = Mutex::new(Writer {
+</span><span>    column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    color_code: ColorCode::new(Color::LightGreen, Color::Black),
+</span><span>    buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ Unique::new_unchecked(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut _</span><span>) },
+</span><span>});
+</span></code></pre>
+<p><a href="https://docs.rs/spin/0.4.5/spin/struct.Mutex.html#method.new">Mutex::new</a> is a const function, too, so it can be used in statics.</p>
+<p>Now we can easily print from our main function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_str(</span><span style="color:#d69d85;">&quot;Hello again&quot;</span><span>);
+</span><span>    write!(vga_buffer::WRITER.lock(), </span><span style="color:#d69d85;">&quot;, some numbers: </span><span style="color:#b4cea8;">{} {}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.337</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Note that we need to import the <code>Write</code> trait if we want to use its functions.</p>
+<h2 id="a-println-macro"><a class="zola-anchor" href="index.html#a-println-macro" aria-label="Anchor link for: a-println-macro">🔗</a>A println macro</h2>
+<p>Rust’s <a href="https://doc.rust-lang.org/nightly/book/second-edition/appendix-04-macros.html">macro syntax</a> is a bit strange, so we won’t try to write a macro from scratch. Instead we look at the source of the <a href="https://doc.rust-lang.org/nightly/std/macro.println!.html"><code>println!</code> macro</a> in the standard library:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>macro_rules! println {
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>(print!(concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>)));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>, </span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>(print!(concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>), </span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>}
+</span></code></pre>
+<p>Macros are defined through one or more rules, which are similar to <code>match</code> arms. The <code>println</code> macro has two rules: The first rule is for invocations with a single argument (e.g. <code>println!(&quot;Hello&quot;)</code>) and the second rule is for invocations with additional parameters (e.g. <code>println!(&quot;{}{}&quot;, 4, 2)</code>).</p>
+<p>Both rules simply append a newline character (<code>\n</code>) to the format string and then invoke the <a href="https://doc.rust-lang.org/nightly/std/macro.print!.html"><code>print!</code> macro</a>, which is defined as:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::io::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>The macro expands to a call of the <a href="https://github.com/rust-lang/rust/blob/46d39f3329487115e7d7dcd37bc64eea6ef9ba4e/src/libstd/io/stdio.rs#L631"><code>_print</code> function</a> in the <code>io</code> module. The <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/macros.html#the-variable-crate"><code>$crate</code> variable</a> ensures that the macro also works from outside the <code>std</code> crate. For example, it expands to <code>::std</code> when it’s used in other crates.</p>
+<p>The <a href="https://doc.rust-lang.org/nightly/std/macro.format_args.html"><code>format_args</code> macro</a> builds a <a href="https://doc.rust-lang.org/nightly/core/fmt/struct.Arguments.html">fmt::Arguments</a> type from the passed arguments, which is passed to <code>_print</code>. The <a href="https://github.com/rust-lang/rust/blob/46d39f3329487115e7d7dcd37bc64eea6ef9ba4e/src/libstd/io/stdio.rs#L631"><code>_print</code> function</a> of libstd is rather complicated, as it supports different <code>Stdout</code> devices. We don’t need that complexity since we just want to print to the VGA buffer.</p>
+<p>To print to the VGA buffer, we just copy the <code>println!</code> macro and modify the <code>print!</code> macro to use our static <code>WRITER</code> instead of <code>_print</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>({
+</span><span>        </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = $crate::vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock();
+</span><span>        writer.write_fmt(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)).unwrap();
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>Instead of a <code>_print</code> function, we call the <code>write_fmt</code> method of our static <code>Writer</code>. Since we’re using a method from the <code>Write</code> trait, we need to import it before. The additional <code>unwrap()</code> at the end panics if printing isn’t successful. But since we always return <code>Ok</code> in <code>write_str</code>, that should not happen.</p>
+<p>Note the additional <code>{}</code> scope around the macro: We write <code>=&gt; ({…})</code> instead of <code>=&gt; (…)</code>. The additional <code>{}</code> avoids that the <code>Write</code> trait is silently imported to the parent scope when <code>print</code> is used.</p>
+<h3 id="clearing-the-screen"><a class="zola-anchor" href="index.html#clearing-the-screen" aria-label="Anchor link for: clearing-the-screen">🔗</a>Clearing the screen</h3>
+<p>We can now use <code>println!</code> to add a rather trivial function to clear the screen:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span style="color:#569cd6;">pub fn </span><span>clear_screen() {
+</span><span>    </span><span style="color:#569cd6;">for _ in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>{
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<h3 id="hello-world-using-println"><a class="zola-anchor" href="index.html#hello-world-using-println" aria-label="Anchor link for: hello-world-using-println">🔗</a>Hello World using <code>println</code></h3>
+<p>To use <code>println</code> in <code>lib.rs</code>, we need to import the macros of the VGA buffer module first. Therefore we add a <code>#[macro_use]</code> attribute to the module declaration:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[macro_use]
+</span><span style="color:#569cd6;">mod </span><span>vga_buffer;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {
+</span><span>    </span><span style="color:#608b4e;">// ATTENTION: we have a very small stack and no guard page
+</span><span>    vga_buffer::clear_screen();
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Since we imported the macros at crate level, they are available in all modules and thus provide an easy and safe interface to the VGA buffer.</p>
+<p>As expected, we now see a <em>“Hello World!”</em> on a cleared screen:</p>
+<p><img src="vga-hello-world.png" alt="QEMU printing “Hello World!” on a cleared screen" /></p>
+<h3 id="deadlocks"><a class="zola-anchor" href="index.html#deadlocks" aria-label="Anchor link for: deadlocks">🔗</a>Deadlocks</h3>
+<p>Whenever we use locks, we must be careful to not accidentally introduce <em>deadlocks</em>. A <a href="https://en.wikipedia.org/wiki/Deadlock">deadlock</a> occurs when a thread/program waits for a lock that will never be released. Normally, this happens when multiple threads access multiple locks. For example, when thread A holds lock 1 and tries to acquire lock 2 and – at the same time – thread B holds lock 2 and tries to acquire lock 1.</p>
+<p>However, a deadlock can also occur when a thread tries to acquire the same lock twice. This way we can trigger a deadlock in our VGA driver:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span>println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, { println!(</span><span style="color:#d69d85;">&quot;inner&quot;</span><span>); </span><span style="color:#d69d85;">&quot;outer&quot; </span><span>});
+</span></code></pre>
+<p>The argument passed to <code>println</code> is new block that resolves to the string <em>“outer”</em> (a block always returns the result of the last expression). But before returning “outer”, the block tries to print the string <em>“inner”</em>.</p>
+<p>When we try this code in QEMU, we see that neither of the strings are printed. To understand what’s happening, we take a look at our <code>print</code> macro again:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>({
+</span><span>        </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = $crate::vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock();
+</span><span>        writer.write_fmt(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)).unwrap();
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>So we <em>first</em> lock the <code>WRITER</code> and then we evaluate the arguments using <code>format_args</code>. The problem is that the argument in our code example contains another <code>println</code>, which tries to lock the <code>WRITER</code> again. So now the inner <code>println</code> waits for the outer <code>println</code> and vice versa. Thus, a deadlock occurs and the CPU spins endlessly.</p>
+<h3 id="fixing-the-deadlock"><a class="zola-anchor" href="index.html#fixing-the-deadlock" aria-label="Anchor link for: fixing-the-deadlock">🔗</a>Fixing the Deadlock</h3>
+<p>In order to fix the deadlock, we need to evaluate the arguments <em>before</em> locking the <code>WRITER</code>. We can do so by moving the locking and printing logic into a new <code>print</code> function (like it’s done in the standard library):</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>({
+</span><span>        $crate::vga_buffer::print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>    });
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>Now the macro only evaluates the arguments (through <code>format_args!</code>) and passes them to the new <code>print</code> function. The <code>print</code> function then locks the <code>WRITER</code> and prints the formatting arguments using <code>write_fmt</code>. So now the arguments are evaluated before locking the <code>WRITER</code>.</p>
+<p>Thus, we fixed the deadlock:</p>
+<p><img src="fixed-println-deadlock.png" alt="QEMU printing “inner” and then “outer”" /></p>
+<p>We see that both “inner” and “outer” are printed.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>In the next posts we will map the kernel pages correctly so that accessing <code>0x0</code> or writing to <code>.rodata</code> is not possible anymore. To obtain the loaded kernel sections we will read the Multiboot information structure. Then we will create a paging module and use it to switch to a new page table where the kernel sections are mapped correctly.</p>
+<p>The <a href="../allocating-frames/index.html">next post</a> describes the Multiboot information structure and creates a frame allocator using the information about memory areas.</p>
+<h2 id="other-rust-os-projects"><a class="zola-anchor" href="index.html#other-rust-os-projects" aria-label="Anchor link for: other-rust-os-projects">🔗</a>Other Rust OS Projects</h2>
+<p>Now that you know the very basics of OS development in Rust, you should also check out the following projects:</p>
+<ul>
+<li>
+<p><a href="https://github.com/thepowersgang/rust-barebones-kernel">Rust Bare-Bones Kernel</a>: A basic kernel with roughly the same functionality as ours. Writes output to the serial port instead of the VGA buffer and maps the kernel to the <a href="https://wiki.osdev.org/Higher_Half_Kernel">higher half</a> (instead of our identity mapping).
+<em>Note</em>: You need to <a href="../cross-compile-binutils/index.html">cross compile binutils</a> to build it (or you create some symbolic links<sup class="footnote-reference"><a href="index.html#fn-symlink">1</a></sup> if you’re on x86_64).</p>
+</li>
+<li>
+<p><a href="https://github.com/RustOS-Fork-Holding-Ground/RustOS">RustOS</a>: More advanced kernel that supports allocation, keyboard inputs, and threads. It also has a scheduler and a basic network driver.</p>
+</li>
+<li>
+<p><a href="https://github.com/thepowersgang/rust_os">“Tifflin” Experimental Kernel</a>: Big kernel project by thepowersgang, that is actively developed and has over 650 commits. It has a separate userspace and supports multiple file systems, even a GUI is included. Needs a cross compiler.</p>
+</li>
+<li>
+<p><a href="https://github.com/redox-os/redox">Redox</a>: Probably the most complete Rust OS today. It has an active community and over 1000 Github stars. File systems, network, an audio player, a picture viewer, and much more. Just take a look at the <a href="https://github.com/redox-os/redox#what-it-looks-like">screenshots</a>.</p>
+</li>
+</ul>
+<h2 id="footnotes"><a class="zola-anchor" href="index.html#footnotes" aria-label="Anchor link for: footnotes">🔗</a>Footnotes</h2>
+<div class="footnote-definition" id="fn-symlink"><sup class="footnote-definition-label">1</sup>
+<p>You will need to symlink <code>x86_64-none_elf-XXX</code> to <code>/usr/bin/XXX</code> where <code>XXX</code> is in {<code>as</code>, <code>ld</code>, <code>objcopy</code>, <code>objdump</code>, <code>strip</code>}. The <code>x86_64-none_elf-XXX</code> files must be in some folder that is in your <code>$PATH</code>. But then you can only build for your x86_64 host architecture, so use this hack only for testing.</p>
+</div>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../set-up-rust/index.html">&laquo; Set Up Rust</a>
+        
+        
+            <a class="next" href="../allocating-frames/index.html">Allocating Frames &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-1" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="003e2bc16557"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Retep998</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-1" class="permalink"><time title="Sun Oct 25 2015 13:54:02 GMT+0100 (Central European Standard Time)" datetime="2015-09-00T12:54:02Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Please add #[repr(C)] to some of your structs, in particular the ones that depend on having a specific layout.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-2" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-2" class="permalink"><time title="Sun Oct 25 2015 14:27:18 GMT+0100 (Central European Standard Time)" datetime="2015-09-00T13:27:18Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for the hint! On `ScreenChar` it is definitely required. But I'm not quite sure if it's needed for the `ColorCode` newtype…</p><p>Where (else) would you add #[repr(C)]?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-3" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="712455037d52"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Theo Belaire</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-3" class="permalink"><time title="Sun Oct 25 2015 19:03:07 GMT+0100 (Central European Standard Time)" datetime="2015-09-00T18:03:07Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>You could also link to: <a rel="nofollow" href="http://embedded.hannobraun.de/2015-04-10-hello-world/">http://embedded.hannobraun....</a><br>for another example of getting no_std rust working.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-4" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="89a7544d308a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">jeffreywilcke</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-4" class="permalink"><time title="Tue Oct 27 2015 18:31:28 GMT+0100 (Central European Standard Time)" datetime="2015-09-02T17:31:28Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>If anyone else (like me) is running in to some minor issues due to the incompleteness of the source code please have a look at my version that compiles: <a rel="nofollow" href="https://github.com/obscuren/jev_os">https://github.com/obscuren...</a></p><p>@phil_opp:disqus  FYI the link up top that says (full file) is missing and comes up with an anchor to #TODO :-)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-5" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-5" class="permalink"><time title="Tue Oct 27 2015 19:43:57 GMT+0100 (Central European Standard Time)" datetime="2015-09-02T18:43:57Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for the hint! I removed that link and added the rest of the Color enum.</p><p>Btw: you accidentally skipped the number 2 in your Color enum :).</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-6" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="89a7544d308a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">jeffreywilcke</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-6" class="permalink"><time title="Tue Oct 27 2015 20:31:02 GMT+0100 (Central European Standard Time)" datetime="2015-09-02T19:31:02Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Ah oops :)</p><p>I'm fairly new to rust and I couldn't get <a rel="nofollow" href="https://github.com/obscuren/jev_os/blob/master/src/vga_buffer.rs#L97">https://github.com/obscuren...</a> that line (in your original example) to work. Throwing something about "borrowed something something couldn't be moved".</p><p>Also thanks for the excellent examples and post! :D</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-7" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-7" class="permalink"><time title="Tue Oct 27 2015 20:51:26 GMT+0100 (Central European Standard Time)" datetime="2015-09-02T19:51:26Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>I just checked out your project and <code>color_code: self.color_code</code> works fine. Maybe it was before you made <code>ColorCode</code> Copy?</p><p>Edit: Damn, I totally forgot to describe Copy and Clone…</p><p>Update: I mentioned the compiler errors and added some explanation <a rel="nofollow" href="http://blog.phil-opp.com/rust-os/printing-to-screen.html#cannot-move-out-of-borrowed-content">here</a> and <a rel="nofollow" href="http://blog.phil-opp.com/rust-os/printing-to-screen.html#newlines">here</a>.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-8" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="89a7544d308a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">jeffreywilcke</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-8" class="permalink"><time title="Tue Oct 27 2015 23:08:48 GMT+0100 (Central European Standard Time)" datetime="2015-09-02T22:08:48Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Awesome, thanks! And thank you for the explanation.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-9" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6334312b9f4a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">emk1024</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-9" class="permalink"><time title="Fri Oct 30 2015 02:16:13 GMT+0100 (Central European Standard Time)" datetime="2015-09-05T01:16:13Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>I made it this far, and then started on implementing interrupts, which are needed for keyboard input. Along the way, I discovered the <a rel="nofollow" href="https://github.com/gz/rust-x86">rust-x86</a> crate, which provides data structures for major x86_64 CPU data types. This looks like it would save a lot of debugging time and digging around in manuals. Also of interest is the hilarious and extremely helpful <a rel="nofollow" href="http://jvns.ca/blog/2013/12/04/day-37-how-a-keyboard-works/">After 5 days, my OS doesn't crash when I press a key</a>.</p><p><a rel="nofollow" href="https://github.com/emk/toyos.rs/blob/master/src/arch/x86_64/interrupts.rs">My interrupt-descriptor-table-in-progress is also available on GitHub</a> for anybody who's interested in laying the groundwork for keyboard I/O.</p><p>This is definitely a fun idea, and your explanations are great. Highly recommended.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-10" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-10" class="permalink"><time title="Fri Oct 30 2015 10:14:01 GMT+0100 (Central European Standard Time)" datetime="2015-09-05T09:14:01Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for the links! The rust-x86 crate looks useful indeed (but may need some minor additions/changes for 64bit). Julia Evans's blog is great and was my first resource about rust OS development :). Just keep in mind that it's from 2013 and thus uses an early version of Rust.</p><p>Your interrupt table code looks good! I think the handler functions need to be assembly functions until support for something like <a rel="nofollow" href="https://github.com/rust-lang/rfcs/pull/1275">naked functions</a> is added. Am I right?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-11" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6334312b9f4a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">emk1024</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-11" class="permalink"><time title="Fri Oct 30 2015 15:15:15 GMT+0100 (Central European Standard Time)" datetime="2015-09-05T14:15:15Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Yup. x86 interrupt handler functions appear to be completely non-standard in any case—it seems like every x86(_64) OS I've looked at has different rules for saving registers, mostly because the architecture is such a mess of ancient hacks. I also have another comment-in-progress on the XMM registers, which cause serious headaches implementing interrupts.</p><p>rust-x86 appears to actually be x86_64-only, despite the name. The data structures I looked at were all what I'd expect on a 64-bit chip. I'll probably throw away a lot of my carefully debugged code and just use the rust-x86 versions of stuff.</p><p>It would be nice to have a bunch of crates on cargo which handle common processor and I/O stuff. And maybe a Rust-only ELF loader library for loading and relocating user-space binaries. :-)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-12" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="23a9539aaf13"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Ahmed Charles</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-12" class="permalink"><time title="Sun Nov 01 2015 04:43:24 GMT+0100 (Central European Standard Time)" datetime="2015-10-00T03:43:24Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>I think it should be 80 columns and 25 rows, when describing VGA.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-13" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-13" class="permalink"><time title="Sun Nov 01 2015 05:47:34 GMT+0100 (Central European Standard Time)" datetime="2015-10-00T04:47:34Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks, fixed it. </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-14" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="2b57bc2f067a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">FreeFull</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-14" class="permalink"><time title="Sun Jan 17 2016 00:44:20 GMT+0100 (Central European Standard Time)" datetime="2016-00-06T23:44:20Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>When you mention the write!/writeln! macros can be now used, the example uses Writer::new(...) although Writer doesn't have a `new` method.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-15" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-15" class="permalink"><time title="Sun Jan 17 2016 01:17:07 GMT+0100 (Central European Standard Time)" datetime="2016-00-00T00:17:07Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for reporting! I created <a rel="nofollow" href="https://github.com/phil-opp/blog_os/issues/118">#118</a> for it.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-16" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="85d8e5933c4e"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Hunter Lester</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-16" class="permalink"><time title="Tue Feb 23 2016 23:03:50 GMT+0100 (Central European Standard Time)" datetime="2016-01-02T22:03:50Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thank you for this education. I love your presentation.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-17" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-17" class="permalink"><time title="Tue Feb 23 2016 23:57:31 GMT+0100 (Central European Standard Time)" datetime="2016-01-02T22:57:31Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>You're welcome. Thanks a lot!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-18" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="0ebc26be67a5"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="36" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="20" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Nathan</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-18" class="permalink"><time title="Wed May 04 2016 13:01:52 GMT+0200 (Central European Summer Time)" datetime="2016-04-03T11:01:52Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>The print macro should be `let mut writer`.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-19" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-19" class="permalink"><time title="Thu May 05 2016 11:43:35 GMT+0200 (Central European Summer Time)" datetime="2016-04-04T09:43:35Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks! Fixed in <a rel="nofollow" href="https://github.com/phil-opp/blog_os/pull/156">#156</a>.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-20" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="1d800ad10773"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Chris Latham</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-20" class="permalink"><time title="Wed Jun 22 2016 16:02:16 GMT+0200 (Central European Summer Time)" datetime="2016-05-03T14:02:16Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>hey, great articles so far!</p><p>i've been following along, and i've run into some issues with the ::core::fmt::Write implementation for our writer class.</p><p>if i add that code in, i get these linker errors:</p><p>core.0.rs:(.text._ZN4core3fmt5write17hdac96890aec66a9aE+0x324): undefined reference to `_Unwind_Resume'</p><p>core.0.rs:(.text._ZN4core3fmt5write17hdac96890aec66a9aE+0x3eb): undefined reference to `_Unwind_Resume'</p><p>core.0.rs:(.text._ZN4core3fmt5write17hdac96890aec66a9aE+0x3f3): undefined reference to `_Unwind_Resume'</p><p>i've gone back and checked that i set panic to "abort" for both dev and release profiles in my config.toml, the same way you did to fix the unwinding issues. everything seems to match up with what you have. what have i missed?</p><p>thanks in advance.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-21" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="4827e190ca52"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Andrii Zymohliad</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-21" class="permalink"><time title="Sun Aug 21 2016 13:39:00 GMT+0200 (Central European Summer Time)" datetime="2016-07-00T11:39:00Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>It becomes more and more difficult for me to understand it... Mostly because of difficulty of Rust. I just follow every step and everything works for me, but I feel like if I make any step away from the instruction - everything will get broken.</p><p>But still I learn a lot from this blog. Thank you again!</p><p>One thing I can't understand: we implement ::core::fmt::Write trait for our Writer, and we implement 'write_str' method for it. But how can we use 'write_fmt' method if we didn't define it here?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-22" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-22" class="permalink"><time title="Sun Aug 21 2016 14:16:08 GMT+0200 (Central European Summer Time)" datetime="2016-07-00T12:16:08Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>The <a rel="nofollow" href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html">core::fmt::Write</a> defines 3 methods: `write_str`, `write_char`, and `write_fmt`. However, the latter two have <a rel="nofollow" href="https://doc.rust-lang.org/book/traits.html#default-methods">default implementations</a>, so we only need to implement `write_str`.</p><p>I try to explain uncommon features of Rust in the posts, but providing a complete Rust introduction is out of scope. I recommend you to read the <a rel="nofollow" href="index.html">official Rust book</a> or <a rel="nofollow" href="http://rust-lang.github.io/book/">its new iteration</a> (still work-in-progress).</p><p></p><blockquote>It becomes more and more difficult for me to understand it...</blockquote><p></p><p>That's unfortunate :(. Feel free to ask if something else is unclear!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-23" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="4827e190ca52"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Andrii Zymohliad</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-23" class="permalink"><time title="Sun Aug 21 2016 14:43:36 GMT+0200 (Central European Summer Time)" datetime="2016-07-00T12:43:36Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Aa, ok. Thanks for clarification and quick reply.</p><p>Yes, you explain everything very well. Very surprisingly well for such difficult topic. Of course complete Rust intro is out of scope. But I didn't know about new iteration of Rust book. Thank you for the hint.</p><p>And thanks a lot for such welcoming and kind manner of communication with your "students" :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-24" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-24" class="permalink"><time title="Tue Sep 20 2016 00:51:21 GMT+0200 (Central European Summer Time)" datetime="2016-08-01T22:51:21Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p></p><blockquote>Yes, you explain everything very well. Very surprisingly well for such difficult topic.</blockquote><p></p><p>Thanks so much!</p><p></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-25" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8dec010e6542"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Hoschi</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-25" class="permalink"><time title="Mon Sep 26 2016 12:22:58 GMT+0200 (Central European Summer Time)" datetime="2016-08-01T10:22:58Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Hey!</p><p>If you are interested in adding some build information, you can do it this way:</p><p>Add the following to your Makefile:</p><p>BUILD_NUMBER_FILE := buildno.txt<br>BUILD_NUMBER_LDFLAGS = --defsym _BUILD_NUMBER=$$(cat $(BUILD_NUMBER_FILE)) --defsym _BUILD_DATE=$$(date +'%Y%m%d')</p><p>$(kernel): builddata cargo ..</p><p>builddata:<br>    touch $(BUILD_NUMBER_FILE)<br>    @echo $$(($$(cat $(BUILD_NUMBER_FILE)) + 1)) &gt; $(BUILD_NUMBER_FILE)</p><p>The above will make the current date and a build number available in the kernel, incremented each time you build it.</p><p>To access build information:</p><p>Add the following to your <a rel="nofollow" href="http://lib.rs">lib.rs</a>:</p><p>extern {<br>    fn _BUILD_NUMBER();<br>    fn _BUILD_DATE();<br>}</p><p>Now you can do the following, for example in your rust_main():</p><p>let build_number = _BUILD_NUMBER as u32;<br>let build_date = _BUILD_DATE as u32;</p><p>println!("Build {}: {} ", build_number, build_date);</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-26" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c1f13bc47392"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Joshua Beitler</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-26" class="permalink"><time title="Fri Nov 18 2016 06:09:48 GMT+0100 (Central European Standard Time)" datetime="2016-10-05T05:09:48Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>I'm curious - why does this code write from the bottom of the screen and then up, when most other VGA drivers go from the top of the screen down?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-27" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-27" class="permalink"><time title="Thu Nov 24 2016 11:20:09 GMT+0100 (Central European Standard Time)" datetime="2016-10-04T10:20:09Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>As soon as the screen is full (i.e. scrolling begins) both approaches do the same thing: writing to the bottom line and shifting the other lines up. By starting at the bottom, we don't need any special case for the first 25 lines.</p><p>(…and maybe I just wanted to do things a bit differently :D)</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-28" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="d666ae7d102b"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Harry Rigg</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-28" class="permalink"><time title="Sat Nov 26 2016 05:23:19 GMT+0100 (Central European Standard Time)" datetime="2016-10-06T04:23:19Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>I went ahead and made the "panic_fmt" function complete :) Now I get filename, line and an error message when rust panics! very helpful, here is the code:</p><p>#[lang = "panic_fmt"]<br>extern fn panic_fmt(args: fmt::Arguments, file: &amp;'static str, line: u32) -&gt; ! {<br>    println!("Panic in file {} line {}: {}", file, line, args);<br>    loop {}<br>}</p><p>Thanks for the awesome tutorials!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-29" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-29" class="permalink"><time title="Sat Nov 26 2016 11:27:02 GMT+0100 (Central European Standard Time)" datetime="2016-10-06T10:27:02Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Great! We also do this <a rel="nofollow" href="../allocating-frames.html#handling-panics">in the next post</a>, but it's a good idea to mention it here, too.</p><p>Thanks for the code by the way, I always thought that the `file` argument is of type `&amp;str` (instead of `&amp;'static str`). I opened <a rel="nofollow" href="https://github.com/phil-opp/blog_os/pull/256">#256</a> to fix this.</p><p></p><blockquote>Thanks for the awesome tutorials!</blockquote><p></p><p>You're welcome, I'm glad you like them!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-30" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="ec89f4898779"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="4" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="36" width="8" height="8" style="fill: #5698c4"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">ocamlmycaml</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-30" class="permalink"><time title="Sun Jan 01 2017 07:56:15 GMT+0100 (Central European Standard Time)" datetime="2017-00-00T06:56:15Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>So i'm trying to make `println!("{}: some number", 1);` work, but when I add that line to my rust_main function, the emulator does the whole triple exception thing starting with a 0xd error - which according to <a rel="nofollow" href="http://OSDev.org">OSDev.org</a> is a "General protection fault":</p><p>```check_exception old: 0xffffffff new 0xd<br>     0: v=0d e=0000 i=0 cpl=0 IP=0008:ec834853e5894855 pc=ec834853e5894855 SP=0010:000000000012ec18 env-&gt;regs[R_EAX]=0000000000000a00```</p><p>`println!("Hello {}!", "world");` works just fine - it just doesn't seem to be able to interpolate non-string types. Would you have any idea on what's going wrong? I'm not sure where to even look. If you'd like to clone and run my code and take a look: https://github.com/ocamlmycaml/rust-moss/</p><p>btw ++good tutorial, i'm learning a lot!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-31" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="ec89f4898779"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="4" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="36" width="8" height="8" style="fill: #5698c4"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">ocamlmycaml</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-31" class="permalink"><time title="Sun Jan 01 2017 11:42:41 GMT+0100 (Central European Standard Time)" datetime="2017-00-00T10:42:41Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>I figured it out - I had OUTPUT_FORMAT(elf32-i386) in my linker.ld file. I was trying a few things to run the kernel without making an iso</p><p>I'm not gonna pretend like I understand what happened, but removing that OUTPUT_FORMAT statement fixed my problems</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-319" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="946892702792"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Esdras</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-319" class="permalink"><time title="Fri Aug 25 2017 03:07:38 GMT+0200 (Central European Summer Time)" datetime="2017-07-05T01:07:38Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Solution for the problems of compilation: </p>
+
+  <p>1: go to vga_buffer.rs
+  2: go to line buffer: unsafe { Unique::new(0xb8000 as *mut _) },
+  3: change for buffer: unsafe { Unique::new_unchecked(0xb8000 as *mut _) },
+  thanks for attention (sorry for my english)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-363" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="12c610920c53"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Hello :) </span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-363" class="permalink"><time title="Tue Jan 02 2018 18:48:08 GMT+0100 (Central European Standard Time)" datetime="2018-00-02T17:48:08Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>Great tutorials, just a quick question for learning purposes.
+  Could the values in <code>enum</code> be defined implicitly like so? </p>
+
+  <pre><code>pub enum Color {
+      Black,
+      Blue,
+      ...
+   }
+  </code></pre></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-364" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c8fed02ed154"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-364" class="permalink"><time title="Sun Jan 07 2018 21:21:00 GMT+0100 (Central European Standard Time)" datetime="2018-00-00T20:21:00Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>I don't know actually. It seems to work: <a rel="nofollow" href="https://play.rust-lang.org/?gist=7e8684f332ece651836c80b4d7439c1c&amp;version=stable">https://play.rust-lang.org/?gist=7e8684f332ece651836c80b4d7439c1c&amp;version=stable</a>. However, I'm not sure if this is specified behavior or if it might be changed some day (e.g. by new compiler optimizations).</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-395" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f8b4e176b538"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-395" class="permalink"><time title="Sun Apr 29 2018 18:01:10 GMT+0200 (Central European Summer Time)" datetime="2018-03-00T16:01:10Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>I followed everything in this tutorial to the letter, and had a question. If I were to try to print a string to the screen, how would I do it? I have been using </p>
+
+  <p>print!("{}", string)</p>
+
+  <p>with string containing what I want to print. I know this works in normal Rust, but would it work with the VGA buffer you made? Thanks!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-396" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="26bdefcabbde"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-396" class="permalink"><time title="Sun Apr 29 2018 20:53:35 GMT+0200 (Central European Summer Time)" datetime="2018-03-00T18:53:35Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>Sure, why shouldn't it? The whole formatting part is handled by Rust's <code>format_args!&lt;/code macro, so everything should work the same.</code></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-398" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f8b4e176b538"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-398" class="permalink"><time title="Fri May 04 2018 22:48:37 GMT+0200 (Central European Summer Time)" datetime="2018-04-05T20:48:37Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>Question. How would I go about changing the color of the text on the fly? Like if I wanted to print
+      Hello World</p>
+
+  <p>and have "Hello" be green and "World" be white. How would I go about doing this?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-399" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c8fed02ed154"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-399" class="permalink"><time title="Sat May 05 2018 11:40:23 GMT+0200 (Central European Summer Time)" datetime="2018-04-06T09:40:23Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>You could use two separate print statements and change the color on the global writer in between. Or alternatively, you could add support for <a rel="nofollow" href="https://en.wikipedia.org/wiki/ANSI_escape_code">ANSI escape codes</a> like in a normal terminal.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-405" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="f8b4e176b538"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-405" class="permalink"><time title="Sat Jun 09 2018 17:03:31 GMT+0200 (Central European Summer Time)" datetime="2018-05-06T15:03:31Z">vor 7 Monaten</time></a><span class="note"></span></div><div class="text"><p>So would this work? <a rel="nofollow" href="https://repl.it/repls/NonstopCompleteCodes">https://repl.it/repls/NonstopCompleteCodes</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-406" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c8fed02ed154"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-406" class="permalink"><time title="Sat Jun 09 2018 17:57:19 GMT+0200 (Central European Summer Time)" datetime="2018-05-06T15:57:19Z">vor 7 Monaten</time></a><span class="note"></span></div><div class="text"><p>Yes, it should work.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-400" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="18185f14f67a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">NateDogg1232</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-400" class="permalink"><time title="Tue May 08 2018 08:57:40 GMT+0200 (Central European Summer Time)" datetime="2018-04-02T06:57:40Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>I keep getting the error of <code>the trait `core::marker::Copy` is not implemented for `vga_buffer::ScreenChar`</code></p>
+
+  <p>Why exactly does this happen despite everything looking up to snuff?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-401" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-401" class="permalink"><time title="Tue May 08 2018 12:11:25 GMT+0200 (Central European Summer Time)" datetime="2018-04-02T10:11:25Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>You need to <code>#[derive(Clone, Copy)] </code> for ScreenChar.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

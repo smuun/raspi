@@ -1,0 +1,113 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Set Up GDB | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Set Up GDB</h1>
+    <p>There are a lot of things that can go wrong when developing an OS. So it’s a good idea to add a debugger to our toolset, which allows us to set breakpoints and examine variables. We will use <a href="https://www.gnu.org/software/gdb/">GDB</a> as QEMU supports it out of the box.</p>
+<h3 id="qemu-parameters"><a class="zola-anchor" href="index.html#qemu-parameters" aria-label="Anchor link for: qemu-parameters">🔗</a>QEMU parameters</h3>
+<p>To make QEMU listen for a gdb connection, we add the <code>-s</code> flag to the <code>run</code> target in our Makefile:</p>
+<pre data-lang="make" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-make "><code class="language-make" data-lang="make"><span>run: </span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">iso</span><span style="background-color:#282828;color:#569cd6;">)</span><span>
+</span><span>	</span><span style="color:#569cd6;">@</span><span>qemu-system-x86_64 -cdrom </span><span style="color:#569cd6;">$(</span><span>iso</span><span style="color:#569cd6;">)</span><span> -s
+</span></code></pre>
+<p>This allows us to connect a debugger at any time, for example to investigate why a panic occurred.</p>
+<p>To wait for a debugger connection on startup, we add a <code>debug</code> target to the Makefile:</p>
+<pre data-lang="make" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-make "><code class="language-make" data-lang="make"><span>debug: </span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">iso</span><span style="background-color:#282828;color:#569cd6;">)</span><span>
+</span><span>	</span><span style="color:#569cd6;">@</span><span>qemu-system-x86_64 -cdrom </span><span style="color:#569cd6;">$(</span><span>iso</span><span style="color:#569cd6;">)</span><span> -s -S
+</span></code></pre>
+<p>It is identical to the <code>run</code> target except for the additional <code>-S</code> flag. This flag causes QEMU to freeze on startup and wait until a debugger is connected. Now it <em>should</em> be possible to connect gdb.</p>
+<h3 id="the-annoying-issue"><a class="zola-anchor" href="index.html#the-annoying-issue" aria-label="Anchor link for: the-annoying-issue">🔗</a>The annoying issue</h3>
+<p>Unfortunately gdb has an issue with the switch to long mode. If we connect when the CPU is already in long mode, everything works fine. But if we use <code>make debug</code> and thus connect right at the start, we get an error when we set a breakpoint in 64-bit mode:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>Remote &#39;g&#39; packet reply is too long: [a very long number]
+</span></code></pre>
+<p>This issue is known <a href="https://web.archive.org/web/20190114181420/https://www.cygwin.com/ml/gdb-patches/2012-03/msg00116.html">since 2012</a> but it is still not fixed. Maybe we find the reason in the <a href="https://sourceware.org/bugzilla/show_bug.cgi?id=13984#c11">issue thread</a>:</p>
+<blockquote>
+<p>from my (limited) experience, unless you ping the gdb-patches list weekly, this patch is more likely to remain forgotten :-)</p>
+</blockquote>
+<p>Pretty frustrating, especially since the patch is <a href="https://github.com/phil-opp/binutils-gdb/commit/9e88c451844ad38bb82fe77d1f388c87c41b4520">very small</a>.</p>
+<h3 id="building-the-patched-gdb"><a class="zola-anchor" href="index.html#building-the-patched-gdb" aria-label="Anchor link for: building-the-patched-gdb">🔗</a>Building the patched GDB</h3>
+<p>So the only way to use gdb with <code>make debug</code> is to build a modified gdb version that includes the patch. I created a repository with the patched GDB to make this easy. Just follow <a href="https://github.com/phil-opp/binutils-gdb#gdb-for-64-bit-rust-operating-systems">the build instructions</a>.</p>
+<h3 id="connecting-gdb"><a class="zola-anchor" href="index.html#connecting-gdb" aria-label="Anchor link for: connecting-gdb">🔗</a>Connecting GDB</h3>
+<p>Now you should have a <code>rust-os-gdb</code> subfolder. In its <code>bin</code> directory you find the <code>gdb</code> executable and the <code>rust-gdb</code> script, which <a href="https://michaelwoerister.github.io/2015/03/27/rust-xxdb.html">improves rendering of Rust types</a>. To make it easy to use it for our OS, we add a <code>make gdb</code> target to our Makefile:</p>
+<pre data-lang="make" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-make "><code class="language-make" data-lang="make"><span>gdb:
+</span><span>	</span><span style="color:#569cd6;">@</span><span>rust-os-gdb/bin/rust-gdb </span><span style="color:#d69d85;">&quot;build/kernel-x86_64.bin&quot;</span><span> -ex </span><span style="color:#d69d85;">&quot;target remote :1234&quot;
+</span></code></pre>
+<p>It loads the debug information from our kernel binary and connects to the <code>localhost:1234</code> port, on which QEMU listens by default.</p>
+<h3 id="using-gdb"><a class="zola-anchor" href="index.html#using-gdb" aria-label="Anchor link for: using-gdb">🔗</a>Using GDB</h3>
+<p>After connecting to QEMU, you can use various gdb commands to control execution and examine data. All commands can be abbreviated as long they are still unique. For example, you can write <code>c</code> or <code>cont</code> instead of <code>continue</code>. The most important commands are:</p>
+<ul>
+<li><code>help</code> or <code>h</code>: Show the help.</li>
+<li><code>break</code> or <code>b</code>: Set a breakpoint. It possible to break on functions such as <code>rust_main</code> or on source lines such as <code>lib.rs:42</code>. You can use tab for autocompletion and omit parts of the path as long it’s still unique. To modify breakpoints, you can use <code>disable</code>, <code>enable</code>, and <code>delete</code> plus the breakpoint number.</li>
+<li><code>continue</code> or <code>c</code>: Continue execution until a breakpoint is reached.</li>
+<li><code>next</code> or <code>n</code>: Step over the current line and break on the next line of the function. Sometimes this doesn’t work in Rust OSes.</li>
+<li><code>step</code> or <code>s</code>: Step into the current line, i.e. jump to the called function. Sometimes this doesn’t work in Rust OSes.</li>
+<li><code>list</code> or <code>l</code>: Shows the source code around the current position.</li>
+<li><code>print</code> or <code>p</code>: Prints the value of a variable. You can use Cs <code>*</code> and <code>&amp;</code> operators. To print in hexadecimal, use <code>p/x</code>.</li>
+<li><code>tui enable</code>: Enables the text user interface, which provides a graphical interface (see below). To disable it again, run <code>tui disable</code>.</li>
+</ul>
+<p><img src="gdb-tui-screenshot.png" alt="gdb text user interface" /></p>
+<p>Of course there are many more commands. Feel free to send a PR if you think this list is missing something important. For a more complete GDB overview, check out <a href="https://beej.us/guide/bggdb/">Beej’s Quick Guide</a> or the <a href="https://www.eecs.harvard.edu/~cs161/resources/gdb.html">website for Harvard’s CS161 course</a>.</p>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

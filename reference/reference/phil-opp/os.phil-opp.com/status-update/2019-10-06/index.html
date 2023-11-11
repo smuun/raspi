@@ -1,0 +1,168 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Updates in September 2019 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Updates in September 2019</h1>
+    <time datetime="2019-10-06" class="post-date">
+        Oct 06, 2019
+        
+    </time>
+    <p>This post gives an overview of the recent updates to the <em>Writing an OS in Rust</em> blog and the used libraries and tools.</p>
+<p>I finished my master thesis and got my degree this month, so I only had limited time for my open source work. I still managed to perform a few minor updates, including code simplications for the <em>Paging Implementation</em> post and the evaluation of GitHub Actions as a CI service.</p>
+<h2 id="blog-os"><code>blog_os</code></h2>
+<ul>
+<li><a href="https://github.com/phil-opp/blog_os/pull/666">Improve Paging Implementation Post</a>: Improves and simplifies the code in multiple places</li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/660">Use GitHub Actions to build and deploy blog</a></li>
+<li>Set up GitHub Actions for <code>post-XX</code> branches: <a href="https://github.com/phil-opp/blog_os/pull/661"><code>post-01</code></a>, <a href="https://github.com/phil-opp/blog_os/pull/662"><code>post-02</code></a>, <a href="https://github.com/phil-opp/blog_os/pull/663"><code>post-04</code></a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/664">Update to bootloader 0.8.0</a>: Considerably reduces compile times</li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/670">Update to Zola 0.9.0</a>: Updates the used static site generator to the latest version</li>
+</ul>
+<h2 id="cargo-xbuild"><code>cargo-xbuild</code></h2>
+<ul>
+<li><a href="https://github.com/rust-osdev/cargo-xbuild/pull/44">Print a warning when building for the host target</a></li>
+</ul>
+<h2 id="bootloader"><code>bootloader</code></h2>
+<ul>
+<li><a href="https://github.com/rust-osdev/bootloader/pull/77">Add a Cargo Feature for Enabling SSE</a></li>
+</ul>
+<h2 id="uart-16550"><code>uart_16550</code></h2>
+<ul>
+<li><a href="https://github.com/rust-osdev/uart_16550/pull/1">Update to x86_64 0.7.3 and bitflags</a></li>
+<li><a href="https://github.com/rust-osdev/uart_16550/pull/2">Document how serial port is configured by default</a> by <a href="https://github.com/edigaryev">@edigaryev</a></li>
+</ul>
+<h2 id="x86-64"><code>x86_64</code></h2>
+<p>No updates were merged in September. However, I’m planning some breaking changes for the crate, namely:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/91">Replace <code>ux</code> dependency with custom wrapper structs</a> to reduce compile times</li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/89">Add new UnsafePhysFrame type and use it in Mapper::map_to</a></li>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/84">Make Mapper trait object safe by adding <code>Self: Sized</code> bounds on generic functions</a></li>
+</ul>
+<!--
+## `bootimage`
+
+No updates were merged in September.
+-->
+
+
+    <div>
+        <h2>Thank You!</h2>
+        <p>Thanks a lot to all the contributors this month!</p>
+        <p>I also want to thank all the people who support me on <a href="https://github.com/sponsors/phil-opp">GitHub</a>, <a href="https://www.patreon.com/phil_opp">Patreon</a>, and <a href="https://donorbox.org/phil-opp">Donorbox</a>. It means a lot to me!</p>
+    </div>
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../2019-12-02/index.html">&laquo; Updates in October and November 2019</a>
+        
+        
+            <a class="next" href="../2019-09-09/index.html">Updates in August 2019 &raquo;</a>
+        
+    </div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20September%202019%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Updates in September 2019"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20September%202019%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

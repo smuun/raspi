@@ -1,0 +1,673 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="To complete the testing picture we implement a basic integration test framework, which allows us to run tests on the target system. The idea is to run…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Integration Tests | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#requirements">Requirements</a>
+            
+        </li><li>
+            <a href="index.html#overview">Overview</a>
+            
+        </li><li>
+            <a href="index.html#the-serial-port">The Serial Port</a>
+            <ol>
+                <li>
+                    <a href="index.html#port-i-o">Port I/O</a>
+                </li><li>
+                    <a href="index.html#implementation">Implementation</a>
+                </li><li>
+                    <a href="index.html#qemu-arguments">QEMU Arguments</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#shutting-down-qemu">Shutting Down QEMU</a>
+            
+        </li><li>
+            <a href="index.html#hiding-qemu">Hiding QEMU</a>
+            
+        </li><li>
+            <a href="index.html#test-organization">Test Organization</a>
+            <ol>
+                <li>
+                    <a href="index.html#additional-test-executables">Additional Test Executables</a>
+                </li><li>
+                    <a href="index.html#split-off-a-library">Split Off A Library</a>
+                </li><li>
+                    <a href="index.html#test-basic-boot">Test Basic Boot</a>
+                </li><li>
+                    <a href="index.html#test-panic">Test Panic</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#a-test-runner">A Test Runner</a>
+            <ol>
+                <li>
+                    <a href="index.html#bootimage-test">Bootimage Test</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Integration Tests</h1>
+    <time datetime="2018-06-15" class="post-date">
+        Jun 15, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+             <b>Deprecated: </b> 
+            This post is deprecated in favor of the <a href="https://os.phil-opp.com/testing"><em>Testing</em></a> post and will no longer receive updates.
+        </div>
+    
+
+    <div class="">
+    <p>To complete the testing picture we implement a basic integration test framework, which allows us to run tests on the target system. The idea is to run tests inside QEMU and report the results back to the host through the serial port.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-05"><code>post-05</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#requirements">Requirements</a>
+                
+            </li><li>
+                <a href="index.html#overview">Overview</a>
+                
+            </li><li>
+                <a href="index.html#the-serial-port">The Serial Port</a>
+                <ul>
+                    <li>
+                        <a href="index.html#port-i-o">Port I/O</a>
+                    </li><li>
+                        <a href="index.html#implementation">Implementation</a>
+                    </li><li>
+                        <a href="index.html#qemu-arguments">QEMU Arguments</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#shutting-down-qemu">Shutting Down QEMU</a>
+                
+            </li><li>
+                <a href="index.html#hiding-qemu">Hiding QEMU</a>
+                
+            </li><li>
+                <a href="index.html#test-organization">Test Organization</a>
+                <ul>
+                    <li>
+                        <a href="index.html#additional-test-executables">Additional Test Executables</a>
+                    </li><li>
+                        <a href="index.html#split-off-a-library">Split Off A Library</a>
+                    </li><li>
+                        <a href="index.html#test-basic-boot">Test Basic Boot</a>
+                    </li><li>
+                        <a href="index.html#test-panic">Test Panic</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#a-test-runner">A Test Runner</a>
+                <ul>
+                    <li>
+                        <a href="index.html#bootimage-test">Bootimage Test</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="requirements"><a class="zola-anchor" href="index.html#requirements" aria-label="Anchor link for: requirements">🔗</a>Requirements</h2>
+<p>This post builds upon the <a href="../unit-testing/index.html"><em>Unit Testing</em></a> post, so you need to follow it first. Alternatively, consider reading the new <a href="../testing/index.html"><em>Testing</em></a> post instead, which replaces both <em>Unit Testing</em> and this post. The new posts implements similar functionality, but integrates it directly in <code>cargo xtest</code>, so that both unit and integration tests run in a realistic environment inside QEMU.</p>
+<h2 id="overview"><a class="zola-anchor" href="index.html#overview" aria-label="Anchor link for: overview">🔗</a>Overview</h2>
+<p>In the previous post we added support for unit tests. The goal of unit tests is to test small components in isolation to ensure that each of them works as intended. The tests are run on the host machine and thus shouldn’t rely on architecture specific functionality.</p>
+<p>To test the interaction of the components, both with each other and the system environment, we can write <em>integration tests</em>. Compared to unit tests, ìntegration tests are more complex, because they need to run in a realistic environment. What this means depends on the application type. For example, for webserver applications it often means to set up a database instance. For an operating system kernel like ours, it means that we run the tests on the target hardware without an underlying operating system.</p>
+<p>Running on the target architecture allows us to test all hardware specific code such as the VGA buffer or the effects of <a href="https://en.wikipedia.org/wiki/Page_table">page table</a> modifications. It also allows us to verify that our kernel boots without problems and that no <a href="https://wiki.osdev.org/Exceptions">CPU exception</a> occurs.</p>
+<p>In this post we will implement a very basic test framework that runs integration tests inside instances of the <a href="https://www.qemu.org/">QEMU</a> virtual machine. It is not as realistic as running them on real hardware, but it is much simpler and should be sufficient as long as we only use standard hardware that is well supported in QEMU.</p>
+<h2 id="the-serial-port"><a class="zola-anchor" href="index.html#the-serial-port" aria-label="Anchor link for: the-serial-port">🔗</a>The Serial Port</h2>
+<p>The naive way of doing an integration test would be to add some assertions in the code, launch QEMU, and manually check if a panic occurred or not. This is very cumbersome and not practical if we have hundreds of integration tests. So we want an automated solution that runs all tests and fails if not all of them pass.</p>
+<p>Such an automated test framework needs to know whether a test succeeded or failed. It can’t look at the screen output of QEMU, so we need a different way of retrieving the test results on the host system. A simple way to achieve this is by using the <a href="https://en.wikipedia.org/wiki/Serial_port">serial port</a>, an old interface standard which is no longer found in modern computers. It is easy to program and QEMU can redirect the bytes sent over serial to the host’s standard output or a file.</p>
+<p>The chips implementing a serial interface are called <a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter">UARTs</a>. There are <a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter#UART_models">lots of UART models</a> on x86, but fortunately the only differences between them are some advanced features we don’t need. The common UARTs today are all compatible to the <a href="https://en.wikipedia.org/wiki/16550_UART">16550 UART</a>, so we will use that model for our testing framework.</p>
+<h3 id="port-i-o"><a class="zola-anchor" href="index.html#port-i-o" aria-label="Anchor link for: port-i-o">🔗</a>Port I/O</h3>
+<p>There are two different approaches for communicating between the CPU and peripheral hardware on x86, <strong>memory-mapped I/O</strong> and <strong>port-mapped I/O</strong>. We already used memory-mapped I/O for accessing the <a href="../vga-text-mode/index.html">VGA text buffer</a> through the memory address <code>0xb8000</code>. This address is not mapped to RAM, but to some memory on the GPU.</p>
+<p>In contrast, port-mapped I/O uses a separate I/O bus for communication. Each connected peripheral has one or more port numbers. To communicate with such an I/O port there are special CPU instructions called <code>in</code> and <code>out</code>, which take a port number and a data byte (there are also variations of these commands that allow sending an <code>u16</code> or <code>u32</code>).</p>
+<p>The UART uses port-mapped I/O. Fortunately there are already several crates that provide abstractions for I/O ports and even UARTs, so we don’t need to invoke the <code>in</code> and <code>out</code> assembly instructions manually.</p>
+<h3 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h3>
+<p>We will use the <a href="https://docs.rs/uart_16550"><code>uart_16550</code></a> crate to initialize the UART and send data over the serial port. To add it as a dependency, we update our <code>Cargo.toml</code> and <code>main.rs</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">uart_16550 </span><span>= </span><span style="color:#d69d85;">&quot;0.1.0&quot;
+</span></code></pre>
+<p>The <code>uart_16550</code> crate contains a <code>SerialPort</code> struct that represents the UART registers, but we still need to construct an instance of it ourselves. For that we create a new <code>serial</code> module with the following content:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>serial;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>uart_16550::SerialPort;
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">SERIAL1</span><span>: Mutex&lt;SerialPort&gt; = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> serial_port = SerialPort::new(</span><span style="color:#b5cea8;">0x3F8</span><span>);
+</span><span>        serial_port.init();
+</span><span>        Mutex::new(serial_port)
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>Like with the <a href="../vga-text-mode/index.html#lazy-statics">VGA text buffer</a>, we use <code>lazy_static</code> and a spinlock to create a <code>static</code>. However, this time we use <code>lazy_static</code> to ensure that the <code>init</code> method is called before first use. We’re using the port address <code>0x3F8</code>, which is the standard port number for the first serial interface.</p>
+<p>To make the serial port easily usable, we add <code>serial_print!</code> and <code>serial_println!</code> macros:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: ::core::fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">SERIAL1</span><span>.lock().write_fmt(args).expect(</span><span style="color:#d69d85;">&quot;Printing to serial failed&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Prints to the host through the serial interface.
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        $crate::serial::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Prints to the host through the serial interface, appending a newline.
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>)));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>, </span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(
+</span><span>        concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>), </span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>}
+</span></code></pre>
+<p>The <code>SerialPort</code> type already implements the <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>fmt::Write</code></a> trait, so we don’t need to provide an implementation.</p>
+<p>Now we can print to the serial interface in our <code>main.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>serial;
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>); </span><span style="color:#608b4e;">// prints to vga buffer
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Hello Host{}&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Note that the <code>serial_println</code> macro lives directly under the root namespace because we used the <code>#[macro_export]</code> attribute, so importing it through <code>use crate::serial::serial_println</code> will not work.</p>
+<h3 id="qemu-arguments"><a class="zola-anchor" href="index.html#qemu-arguments" aria-label="Anchor link for: qemu-arguments">🔗</a>QEMU Arguments</h3>
+<p>To see the serial output in QEMU, we can use the <code>-serial</code> argument to redirect the output to stdout:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; qemu-system-x86_64 \
+</span><span>    -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin \
+</span><span>    -serial mon:stdio
+</span><span>warning: TCG doesn&#39;t support requested feature: CPUID.01H:ECX.vmx [bit 5]
+</span><span>Hello Host!
+</span></code></pre>
+<p>If you chose a different name than <code>blog_os</code>, you need to update the paths of course. Note that you can no longer exit QEMU through <code>Ctrl+c</code>. As an alternative you can use <code>Ctrl+a</code> and then <code>x</code>.</p>
+<p>As an alternative to this long command, we can pass the argument to <code>bootimage run</code>, with an additional <code>--</code> to separate the build arguments (passed to cargo) from the run arguments (passed to QEMU).</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>bootimage run -- -serial mon:stdio
+</span></code></pre>
+<p>Instead of standard output, QEMU supports <a href="https://qemu.weilnetz.de/doc/5.2/system/invocation.html#hxtool-9">many more target devices</a>. For redirecting the output to a file, the argument is:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>-serial file:output-file.txt
+</span></code></pre>
+<h2 id="shutting-down-qemu"><a class="zola-anchor" href="index.html#shutting-down-qemu" aria-label="Anchor link for: shutting-down-qemu">🔗</a>Shutting Down QEMU</h2>
+<p>Right now we have an endless loop at the end of our <code>_start</code> function and need to close QEMU manually. This does not work for automated tests. We could try to kill QEMU automatically from the host, for example after some special output was sent over serial, but this would be a bit hacky and difficult to get right. The cleaner solution would be to implement a way to shutdown our OS. Unfortunately this is relatively complex, because it requires implementing support for either the <a href="https://wiki.osdev.org/APM">APM</a> or <a href="https://wiki.osdev.org/ACPI">ACPI</a> power management standard.</p>
+<p>Luckily, there is an escape hatch: QEMU supports a special <code>isa-debug-exit</code> device, which provides an easy way to exit QEMU from the guest system. To enable it, we add the following argument to our QEMU command:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>-device isa-debug-exit,iobase=0xf4,iosize=0x04
+</span></code></pre>
+<p>The <code>iobase</code> specifies on which port address the device should live (<code>0xf4</code> is a <a href="https://wiki.osdev.org/I/O_Ports#The_list">generally unused</a> port on the x86’s IO bus) and the <code>iosize</code> specifies the port size (<code>0x04</code> means four bytes). Now the guest can write a value to the <code>0xf4</code> port and QEMU will exit with <a href="https://en.wikipedia.org/wiki/Exit_status">exit status</a> <code>(passed_value &lt;&lt; 1) | 1</code>.</p>
+<p>To write to the I/O port, we use the <a href="https://docs.rs/x86_64/0.5.2/x86_64/"><code>x86_64</code></a> crate:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">x86_64 </span><span>= </span><span style="color:#d69d85;">&quot;0.5.2&quot;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>exit_qemu() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::&lt;</span><span style="color:#569cd6;">u32</span><span>&gt;::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>    port.write(</span><span style="color:#b5cea8;">0</span><span>);
+</span><span>}
+</span></code></pre>
+<p>We mark the function as <code>unsafe</code> because it relies on the fact that a special QEMU device is attached to the I/O port with address <code>0xf4</code>. For the port type we choose <code>u32</code> because the <code>iosize</code> is 4 bytes. As value we write a zero, which causes QEMU to exit with exit status <code>(0 &lt;&lt; 1) | 1 = 1</code>.</p>
+<p>Note that we could also use the exit status instead of the serial interface for sending the test results, for example <code>1</code> for success and <code>2</code> for failure. However, this wouldn’t allow us to send panic messages like the serial interface does and would also prevent us from replacing <code>exit_qemu</code> with a proper shutdown someday. Therefore we continue to use the serial interface and just always write a <code>0</code> to the port.</p>
+<p>We can now test the QEMU shutdown by calling <code>exit_qemu</code> from our <code>_start</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>); </span><span style="color:#608b4e;">// prints to vga buffer
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Hello Host{}&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ exit_qemu(); }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>You should see that QEMU immediately closes after booting when executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>bootimage run -- -serial mon:stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04
+</span></code></pre>
+<h2 id="hiding-qemu"><a class="zola-anchor" href="index.html#hiding-qemu" aria-label="Anchor link for: hiding-qemu">🔗</a>Hiding QEMU</h2>
+<p>We are now able to launch a QEMU instance that writes its output to the serial port and automatically exits itself when it’s done. So we no longer need the VGA buffer output or the graphical representation that still pops up. We can disable it by passing the <code>-display none</code> parameter to QEMU. The full command looks like this:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>qemu-system-x86_64 \
+</span><span>    -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin \
+</span><span>    -serial mon:stdio \
+</span><span>    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+</span><span>    -display none
+</span></code></pre>
+<p>Or, with <code>bootimage run</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>bootimage run -- \
+</span><span>    -serial mon:stdio \
+</span><span>    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+</span><span>    -display none
+</span></code></pre>
+<p>Now QEMU runs completely in the background and no window is opened anymore. This is not only less annoying, but also allows our test framework to run in environments without a graphical user interface, such as <a href="https://travis-ci.com/">Travis CI</a>.</p>
+<h2 id="test-organization"><a class="zola-anchor" href="index.html#test-organization" aria-label="Anchor link for: test-organization">🔗</a>Test Organization</h2>
+<p>Right now we’re doing the serial output and the QEMU exit from the <code>_start</code> function in our <code>main.rs</code> and can no longer run our kernel in a normal way. We could try to fix this by adding an <code>integration-test</code> <a href="https://doc.rust-lang.org/cargo/reference/features.html#the-features-section">cargo feature</a> and using <a href="https://doc.rust-lang.org/reference/conditional-compilation.html">conditional compilation</a>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">features</span><span>]
+</span><span style="color:#569cd6;">integration-test </span><span>= []
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(not(feature </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;integration-test&quot;</span><span>))] </span><span style="color:#608b4e;">// new
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>); </span><span style="color:#608b4e;">// prints to vga buffer
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// normal execution
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(feature </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;integration-test&quot;</span><span>)] </span><span style="color:#608b4e;">// new
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Hello Host{}&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    run_test_1();
+</span><span>    run_test_2();
+</span><span>    </span><span style="color:#608b4e;">// run more tests
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ exit_qemu(); }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>However, this approach has a big problem: All tests run in the same kernel instance, which means that they can influence each other. For example, if <code>run_test_1</code> misconfigures the system by loading an invalid <a href="https://en.wikipedia.org/wiki/Page_table">page table</a>, it can cause <code>run_test_2</code> to fail. This isn’t something that we want because it makes it very difficult to find the actual cause of an error.</p>
+<p>Instead, we want our test instances to be as independent as possible. If a test wants to destroy most of the system configuration to ensure that some property still holds in catastrophic situations, it should be able to do so without needing to restore a correct system state afterwards. This means that we need to launch a separate QEMU instance for each test.</p>
+<p>With the above conditional compilation we only have two modes: Run the kernel normally or execute <em>all</em> integration tests. To run each test in isolation we would need a separate cargo feature for each test with that approach, which would result in very complex conditional compilation bounds and confusing code.</p>
+<p>A better solution is to create an additional executable for each test.</p>
+<h3 id="additional-test-executables"><a class="zola-anchor" href="index.html#additional-test-executables" aria-label="Anchor link for: additional-test-executables">🔗</a>Additional Test Executables</h3>
+<p>Cargo allows to add <a href="https://doc.rust-lang.org/cargo/guide/project-layout.html">additional executables</a> to a project by putting them inside <code>src/bin</code>. We can use that feature to create a separate executable for each integration test. For example, a <code>test-something</code> executable could be added like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/bin/test-something.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_std)]
+</span><span>#![cfg_attr(not(test), no_main)]
+</span><span>#![cfg_attr(test, allow(unused_imports))]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// run tests
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>By providing a new implementation for <code>_start</code> we can create a minimal test case that only tests one specific thing and is independent of the rest. For example, if we don’t print anything to the VGA buffer, the test still succeeds even if the <code>vga_buffer</code> module is broken.</p>
+<p>We can now run this executable in QEMU by passing a <code>--bin</code> argument to <code>bootimage</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>bootimage run --bin test-something
+</span></code></pre>
+<p>It should build the <code>test-something.rs</code> executable instead of <code>main.rs</code> and launch an empty QEMU window (since we don’t print anything). So this approach allows us to create completely independent executables without cargo features or conditional compilation, and without cluttering our <code>main.rs</code>.</p>
+<p>However, there is a problem: This is a completely separate executable, which means that we can’t access any functions from our <code>main.rs</code>, including <code>serial_println</code> and <code>exit_qemu</code>. Duplicating the code would work, but we would also need to copy everything we want to test. This would mean that we no longer test the original function but only a possibly outdated copy.</p>
+<p>Fortunately there is a way to share most of the code between our <code>main.rs</code> and the testing binaries: We move most of the code from our <code>main.rs</code> to a library that we can include from all executables.</p>
+<h3 id="split-off-a-library"><a class="zola-anchor" href="index.html#split-off-a-library" aria-label="Anchor link for: split-off-a-library">🔗</a>Split Off A Library</h3>
+<p>Cargo supports hybrid projects that are both a library and a binary. We only need to create a <code>src/lib.rs</code> file and split the contents of our <code>main.rs</code> in the following way:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/lib.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_std)] </span><span style="color:#608b4e;">// don&#39;t link the Rust standard library
+</span><span>
+</span><span style="color:#608b4e;">// NEW: We need to add `pub` here to make them accessible from the outside
+</span><span style="color:#569cd6;">pub mod </span><span>vga_buffer;
+</span><span style="color:#569cd6;">pub mod </span><span>serial;
+</span><span>
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>exit_qemu() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::&lt;</span><span style="color:#569cd6;">u32</span><span>&gt;::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>    port.write(</span><span style="color:#b5cea8;">0</span><span>);
+</span><span>}
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_std)]
+</span><span>#![cfg_attr(not(test), no_main)]
+</span><span>#![cfg_attr(test, allow(unused_imports))]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::println;
+</span><span>
+</span><span style="color:#608b4e;">/// This function is the entry point, since the linker looks for a function
+</span><span style="color:#608b4e;">/// named `_start` by default.
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>So we move everything except <code>_start</code> and <code>panic</code> to <code>lib.rs</code> and make the <code>vga_buffer</code> and <code>serial</code> modules public. Everything should work exactly as before, including <code>bootimage run</code> and <code>cargo test</code>. To run tests only for the library part of our crate and avoid the additional output we can execute <code>cargo test --lib</code>.</p>
+<h3 id="test-basic-boot"><a class="zola-anchor" href="index.html#test-basic-boot" aria-label="Anchor link for: test-basic-boot">🔗</a>Test Basic Boot</h3>
+<p>We are finally able to create our first integration test executable. We start simple and only test that the basic boot sequence works and the <code>_start</code> function is called:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/bin/test-basic-boot.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_std)]
+</span><span>#![cfg_attr(not(test), no_main)] </span><span style="color:#608b4e;">// disable all Rust-level entry points
+</span><span>#![cfg_attr(test, allow(unused_imports))]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, serial_println};
+</span><span>
+</span><span style="color:#608b4e;">/// This function is the entry point, since the linker looks for a function
+</span><span style="color:#608b4e;">/// named `_start` by default.
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;ok&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ exit_qemu(); }
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;failed&quot;</span><span>);
+</span><span>
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;{}&quot;</span><span>, info);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ exit_qemu(); }
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>We don’t do something special here, we just print <code>ok</code> if <code>_start</code> is called and <code>failed</code> with the panic message when a panic occurs. Let’s try it:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; bootimage run --bin test-basic-boot -- \
+</span><span>    -serial mon:stdio -display none \
+</span><span>    -device isa-debug-exit,iobase=0xf4,iosize=0x04
+</span><span>Building kernel
+</span><span>   Compiling blog_os v0.2.0 (file:///…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.19s
+</span><span>    Updating registry `https://github.com/rust-lang/crates.io-index`
+</span><span>Creating disk image at target/x86_64-blog_os/debug/bootimage-test-basic-boot.bin
+</span><span>warning: TCG doesn&#39;t support requested feature: CPUID.01H:ECX.vmx [bit 5]
+</span><span>ok
+</span></code></pre>
+<p>We got our <code>ok</code>, so it worked! Try inserting a <code>panic!()</code> before the <code>ok</code> printing, you should see output like this:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>failed
+</span><span>panicked at &#39;explicit panic&#39;, src/bin/test-basic-boot.rs:19:5
+</span></code></pre>
+<h3 id="test-panic"><a class="zola-anchor" href="index.html#test-panic" aria-label="Anchor link for: test-panic">🔗</a>Test Panic</h3>
+<p>To test that our panic handler is really invoked on a panic, we create a <code>test-panic</code> test:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/bin/test-panic.rs
+</span><span>
+</span><span>#![cfg_attr(not(test), no_std)]
+</span><span>#![cfg_attr(not(test), no_main)]
+</span><span>#![cfg_attr(test, allow(unused_imports))]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, serial_println};
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    panic!();
+</span><span>}
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;ok&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ exit_qemu(); }
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>This executable is almost identical to <code>test-basic-boot</code>, the only difference is that we print <code>ok</code> from our panic handler and invoke an explicit <code>panic()</code> in our <code>_start</code> function.</p>
+<h2 id="a-test-runner"><a class="zola-anchor" href="index.html#a-test-runner" aria-label="Anchor link for: a-test-runner">🔗</a>A Test Runner</h2>
+<p>The final step is to create a test runner, a program that executes all integration tests and checks their results. The basic steps that it should do are:</p>
+<ul>
+<li>Look for integration tests in the current project, maybe by some convention (e.g. executables starting with <code>test-</code>).</li>
+<li>Run all integration tests and interpret their results.
+<ul>
+<li>Use a timeout to ensure that an endless loop does not block the test runner forever.</li>
+</ul>
+</li>
+<li>Report the test results to the user and set a successful or failing exit status.</li>
+</ul>
+<p>Such a test runner is useful to many projects, so we decided to add one to the <code>bootimage</code> tool.</p>
+<h3 id="bootimage-test"><a class="zola-anchor" href="index.html#bootimage-test" aria-label="Anchor link for: bootimage-test">🔗</a>Bootimage Test</h3>
+<p>The test runner of the <code>bootimage</code> tool can be invoked via <code>bootimage test</code>. It uses the following conventions:</p>
+<ul>
+<li>All executables starting with <code>test-</code> are treated as integration tests.</li>
+<li>Tests must print either <code>ok</code> or <code>failed</code> over the serial port. When printing <code>failed</code> they can print additional information such as a panic message (in the next lines).</li>
+<li>Tests are run with a timeout of 1 minute. If the test has not completed in time, it is reported as “timed out”.</li>
+</ul>
+<p>The <code>test-basic-boot</code> and <code>test-panic</code> tests we created above begin with <code>test-</code> and follow the <code>ok</code>/<code>failed</code> conventions, so they should work with <code>bootimage test</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; bootimage test
+</span><span>test-panic
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.01s
+</span><span>Ok
+</span><span>
+</span><span>test-basic-boot
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.01s
+</span><span>Ok
+</span><span>
+</span><span>test-something
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.01s
+</span><span>Timed Out
+</span><span>
+</span><span>The following tests failed:
+</span><span>    test-something: TimedOut
+</span></code></pre>
+<p>We see that our <code>test-panic</code> and <code>test-basic-boot</code> succeeded and that the <code>test-something</code> test timed out after one minute. We no longer need <code>test-something</code>, so we delete it (if you haven’t done already). Now <code>bootimage test</code> should execute successfully.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>In this post we learned about the serial port and port-mapped I/O and saw how to configure QEMU to print serial output to the command line. We also learned a trick how to exit QEMU without needing to implement a proper shutdown.</p>
+<p>We then split our crate into a library and binary part in order to create additional executables for integration tests. We added two example tests for testing that the <code>_start</code> function is correctly called and that a <code>panic</code> invokes our panic handler. Finally, we presented <code>bootimage test</code> as a basic test runner for our integration tests.</p>
+<p>We now have a working integration test framework and can finally start to implement functionality in our kernel. We will continue to use the test framework over the next posts to test new components we add.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>In the next post, we will explore <em>CPU exceptions</em>. These exceptions are thrown by the CPU when something illegal happens, such as a division by zero or an access to an unmapped memory page (a so-called “page fault”). Being able to catch and examine these exceptions is very important for debugging future errors. Exception handling is also very similar to the handling of hardware interrupts, which is required for keyboard support.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../unit-testing/index.html">&laquo; Unit Testing</a>
+        
+        
+            <a class="next" href="../advanced-paging/index.html">Advanced Paging &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Integration%20Tests%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Integration Tests"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Integration%20Tests%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

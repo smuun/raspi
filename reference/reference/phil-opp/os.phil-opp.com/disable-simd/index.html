@@ -1,0 +1,131 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Single Instruction Multiple Data (SIMD) instructions are able to perform an operation (e.g., addition) simultaneously on multiple data words, which ca…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Disable SIMD | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Disable SIMD</h1>
+    <p><a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a> instructions are able to perform an operation (e.g., addition) simultaneously on multiple data words, which can speed up programs significantly. The <code>x86_64</code> architecture supports various SIMD standards:</p>
+<span id="continue-reading"></span>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/MMX_(instruction_set)">MMX</a>: The <em>Multi Media Extension</em> instruction set was introduced in 1997 and defines eight 64-bit registers called <code>mm0</code> through <code>mm7</code>. These registers are just aliases for the registers of the <a href="https://en.wikipedia.org/wiki/X87">x87 floating point unit</a>.</li>
+<li><a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a>: The <em>Streaming SIMD Extensions</em> instruction set was introduced in 1999. Instead of re-using the floating point registers, it adds a completely new register set. The sixteen new registers are called <code>xmm0</code> through <code>xmm15</code> and are 128 bits each.</li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a>: The <em>Advanced Vector Extensions</em> are extensions that further increase the size of the multimedia registers. The new registers are called <code>ymm0</code> through <code>ymm15</code> and are 256 bits each. They extend the <code>xmm</code> registers, so e.g. <code>xmm0</code> is the lower half of <code>ymm0</code>.</li>
+</ul>
+<p>By using such SIMD standards, programs can often speed up significantly. Good compilers are able to transform normal loops into such SIMD code automatically through a process called <a href="https://en.wikipedia.org/wiki/Automatic_vectorization">auto-vectorization</a>.</p>
+<p>However, the large SIMD registers lead to problems in OS kernels. The reason is that the kernel has to backup all registers that it uses to memory on each hardware interrupt, because they need to have their original values when the interrupted program continues. So if the kernel uses SIMD registers, it has to backup a lot more data (512–1600 bytes), which noticeably decreases performance. To avoid this performance loss, we want to disable the <code>sse</code> and <code>mmx</code> features (the <code>avx</code> feature is disabled by default).</p>
+<p>We can do that through the <code>features</code> field in our target specification. To disable the <code>mmx</code> and <code>sse</code> features, we add them prefixed with a minus:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse&quot;
+</span></code></pre>
+<h2 id="floating-point"><a class="zola-anchor" href="index.html#floating-point" aria-label="Anchor link for: floating-point">🔗</a>Floating Point</h2>
+<p>Unfortunately for us, the <code>x86_64</code> architecture uses SSE registers for floating point operations. Thus, every use of floating point with disabled SSE causes an error in LLVM. The problem is that Rust’s core library already uses floats (e.g., it implements traits for <code>f32</code> and <code>f64</code>), so avoiding floats in our kernel does not suffice.</p>
+<p>Fortunately, LLVM has support for a <code>soft-float</code> feature that emulates all floating point operations through software functions based on normal integers. This makes it possible to use floats in our kernel without SSE; it will just be a bit slower.</p>
+<p>To turn on the <code>soft-float</code> feature for our kernel, we add it to the <code>features</code> line in our target specification, prefixed with a plus:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span></code></pre>
+
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Disable%20SIMD%20%28Extra%20Post%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Disable SIMD (Extra Post)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Disable%20SIMD%20%28Extra%20Post%29%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

@@ -1,0 +1,166 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Updates in April 2019 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Updates in April 2019</h1>
+    <time datetime="2019-05-01" class="post-date">
+        May 01, 2019
+        
+    </time>
+    <p>Lot’s of things changed in the <em>Writing an OS in Rust</em> series in the past month, both on the blog itself and in the tools behind the scenes. This post gives an overview of the most important updates.</p>
+<p>This post is an experiment inspired by <a href="https://this-week-in-rust.org/"><em>This Week in Rust</em></a> and similar series. The goal is to provide a resource that allows following the project more closely and staying up-to-date with the changes in the tools/libraries behind the scenes. If enough people find this useful, I will try to turn this in a semi-regular series.</p>
+<h2 id="bootloader">Bootloader</h2>
+<ul>
+<li>The build system of the bootloader was rewritten to do a proper linking instead of appending the kernel executable manually like before. The relevant pull requests are <a href="https://github.com/rust-osdev/bootloader/pull/51"><em>Rewrite build system</em></a> and <a href="https://github.com/rust-osdev/bootloader/pull/53"><em>Updates for new build system</em></a>. These (breaking) changes were released as version <code>0.5.0</code> (<a href="https://github.com/rust-osdev/bootloader/blob/master/Changelog.md#050">changelog</a>).</li>
+<li>To make the bootloader work with future versions of <code>bootimage</code>, a <a href="https://github.com/rust-osdev/bootloader/commit/33b8ce6059e90485c56883b23d4834d06ddfd517"><code>package.metadata.bootloader.target</code> key was added</a> to the <code>Cargo.toml</code> of the bootloader. This key specifies the name of the target JSON file, so that <code>bootimage</code> knows which <code>--target</code> argument to pass. This change was released as version <code>0.5.1</code> (<a href="https://github.com/rust-osdev/bootloader/blob/master/Changelog.md#051">changelog</a>)</li>
+<li>In the <a href="https://github.com/rust-osdev/bootloader/pull/55"><em>Version 0.6.0</em></a> pull request, the <code>#[cfg(not(test))]</code> attribute was removed from the <code>entry_point</code> macro. This makes it possible to use the macro together with <code>cargo xtest</code> and a custom test framework. Since the change is breaking, it was released as version <code>0.6.0</code> (<a href="https://github.com/rust-osdev/bootloader/blob/master/Changelog.md#060">changelog</a>).</li>
+</ul>
+<h2 id="bootimage">Bootimage</h2>
+<ul>
+<li>The <a href="https://github.com/rust-osdev/bootimage/pull/34"><em>Rewrite bootimage for new bootloader build system</em></a> pull request completely revamped the implementation of the crate. This was released as version <code>0.7.0</code>. See the <a href="https://github.com/rust-osdev/bootimage/blob/master/Changelog.md#070">changelog</a> for a list of changes.
+<ul>
+<li>The rewrite had the unintended side-effect that <code>bootimage run</code> no longer ignored executables named <code>test-*</code>, so that an additional <code>--bin</code> argument was required for specifying which executable to run. To avoid breaking users of <code>bootimage test</code>, we yanked version <code>0.7.0</code>. After <a href="https://github.com/rust-osdev/bootimage/commit/8746c15bf326cf8438a4e64ffdda332fbe59e30d">fixing the issue</a>, version <code>0.7.1</code> was released (<a href="https://github.com/rust-osdev/bootimage/blob/master/Changelog.md#071">changelog</a>).</li>
+</ul>
+</li>
+<li>The <a href="https://github.com/rust-osdev/bootimage/pull/36"><em>New features for <code>bootimage runner</code></em></a> pull request added support for additional arguments and various functionality for supporting <code>cargo xtest</code>. The changes were released as version <code>0.7.2</code> (<a href="https://github.com/rust-osdev/bootimage/blob/master/Changelog.md#072">changelog</a>).</li>
+<li>An argument parsing bug that broke the new <code>cargo bootimage</code> subcommand on Windows was <a href="https://github.com/rust-osdev/bootimage/commit/101eb43de403fd9f3cb3f044e2c263356d2c179a">fixed</a>. The fix was released as version <code>0.7.3</code>.</li>
+</ul>
+<h2 id="blog-os">Blog OS</h2>
+<ul>
+<li>Performed an <a href="https://github.com/phil-opp/blog_os/pull/575"><em>Update to new bootloader 0.5.1 and bootimage 0.7.2</em></a>. Apart from requiring the <code>llvm-tools-preview</code> rustup component, this only changes version numbers.</li>
+<li>The <a href="https://github.com/phil-opp/blog_os/pull/577"><em>Rewrite the linking section of “A Freestanding Rust Binary”</em></a> pull request updated the first post to compile for the bare-metal <code>thumbv7em-none-eabihf</code> target instead of adding linker arguments for Linux/Windows/macOS.</li>
+<li>Since the blog came close to the free bandwidth limit of Netlify, we needed to <a href="https://github.com/phil-opp/blog_os/pull/579"><em>Migrate from Netlify to Github Pages</em></a> to avoid additional fees.</li>
+<li>With the <a href="https://github.com/phil-opp/blog_os/pull/582"><em>Minimal Rust Kernel: Use a runner to make cargo xrun work</em></a> pull request, we integrated the new <code>bootimage runner</code> into the blog.
+<ul>
+<li>The required updates to the <code>post-02</code> and <code>post-03</code> branches were performed in the <a href="https://github.com/phil-opp/blog_os/pull/585"><em>Add <code>.cargo/config</code> file to post-02 branch</em></a> and <a href="https://github.com/phil-opp/blog_os/pull/586"><em>Merge the changes from #585 into the post-03 branch</em></a> pull requests.</li>
+</ul>
+</li>
+<li>In the <a href="https://github.com/phil-opp/blog_os/pull/584"><em>New testing post</em></a> pull request, we replaced the previous <a href="../../unit-testing/index.html"><em>Unit Testing</em></a> and <a href="../../integration-tests/index.html"><em>Integration Tests</em></a> with the new <a href="../../testing/index.html"><em>Testing</em></a> post, which uses <code>cargo xtest</code> and a custom test framework for running tests.
+<ul>
+<li>The required updates for the <code>post-04</code> branch were performed in the <a href="https://github.com/phil-opp/blog_os/pull/587"><em>Implement code for new testing post in post-xx branches</em></a> pull request. The updates for the other <code>post-*</code> branches were pushed manually to avoid spamming the repository with pull requests. You can find a list of the commits in the pull request description.</li>
+</ul>
+</li>
+<li>The <a href="https://github.com/phil-opp/blog_os/pull/595"><em>Avoid generic impl trait parameters in BootInfoFrameAllocator</em></a> pull request made the <code>BootInfoFrameAllocator</code> non-generic by reconstructing the frame iterator on every allocation. This way, we avoid using a <code>impl Trait</code> type parameter, which makes it <a href="https://github.com/phil-opp/blog_os/issues/593">impossible to store the type in a <code>static</code></a>. See <a href="https://github.com/rust-lang/rust/issues/60367">rust-lang/rust#60367</a> for the fundamental problem.</li>
+</ul>
+
+
+    <div>
+        <h2>Thank You!</h2>
+        <p>Thanks a lot to all the contributors this month!</p>
+        <p>I also want to thank all the people who support me on <a href="https://github.com/sponsors/phil-opp">GitHub</a>, <a href="https://www.patreon.com/phil_opp">Patreon</a>, and <a href="https://donorbox.org/phil-opp">Donorbox</a>. It means a lot to me!</p>
+    </div>
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../2019-06-03/index.html">&laquo; Updates in May 2019</a>
+        
+        
+    </div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20April%202019%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Updates in April 2019"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20April%202019%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

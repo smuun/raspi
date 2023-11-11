@@ -1,0 +1,123 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="红区 是 System V ABI 提供的一种优化技术，它使得函数可以在不修改栈指针的前提下，临时使用其栈帧下方的128个字节。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Disable the Red Zone | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Disable the Red Zone</h1>
+    <p><a href="https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64#the-red-zone">红区</a> 是 <a href="https://wiki.osdev.org/System_V_ABI">System V ABI</a> 提供的一种优化技术，它使得函数可以在不修改栈指针的前提下，临时使用其栈帧下方的128个字节。</p>
+<span id="continue-reading"></span>
+<p><img src="red-zone.svg" alt="stack frame with red zone" /></p>
+<p>上图展示了一个包含了 <code>n</code> 个局部变量的栈帧。当方法开始执行时，栈指针会被调整到一个合适的位置，为返回值和局部变量留出足够的空间。</p>
+<p>红区是位于调整后的栈指针下方，长度为128字节的区域，函数会使用这部分空间存储不会被跨函数调用的临时数据。所以在某些情况下（比如逻辑简短的叶函数），红区可以节省用于调整栈指针的两条机器指令。</p>
+<p>然而红区优化有时也会引发无法处理的巨大问题（异常或者硬件中断），如果使用红区时发生了某种异常：</p>
+<p><img src="red-zone-overwrite.svg" alt="red zone overwritten by exception handler" /></p>
+<p>CPU和异常处理机制会把红色区域内的数据覆盖掉，但是被中断的函数依然在引用着这些数据。当函数从错误中恢复时，错误的数据就会引发更大的错误，这类错误往往需要<a href="https://forum.osdev.org/viewtopic.php?t=21720">追踪数周</a>才能找到。</p>
+<p>要在编写异常处理机制时避免这些隐蔽而难以追踪的bug，我们需要从一开始就禁用红区优化，具体到配置文件中的配置项，就是 <code>&quot;disable-redzone&quot;: true</code>。</p>
+
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Disable%20the%20Red%20Zone%20%28Extra%20Post%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Disable the Red Zone (Extra Post)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Disable%20the%20Red%20Zone%20%28Extra%20Post%29%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

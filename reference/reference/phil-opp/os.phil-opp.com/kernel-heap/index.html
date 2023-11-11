@@ -1,0 +1,810 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Kernel Heap | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Kernel Heap</h1>
+    <time datetime="2016-04-11" class="post-date">
+        Apr 11, 2016
+         (updated on Nov 19, 2017) 
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#introduction">Introduction</a>
+                
+            </li><li>
+                <a href="index.html#the-allocator-interface">The Allocator Interface</a>
+                
+            </li><li>
+                <a href="index.html#including-the-alloc-crate">Including the alloc crate</a>
+                
+            </li><li>
+                <a href="index.html#a-bump-allocator">A Bump Allocator</a>
+                <ol>
+                    <li>
+                        <a href="index.html#alignment">Alignment</a>
+                    </li><li>
+                        <a href="index.html#reusing-freed-memory">Reusing Freed Memory</a>
+                    </li><li>
+                        <a href="index.html#using-it-as-system-allocator">Using it as System Allocator</a>
+                    </li><li>
+                        <a href="index.html#testing">Testing</a>
+                    </li><li>
+                        <a href="index.html#some-refactoring">Some Refactoring</a>
+                    </li><li>
+                        <a href="index.html#safety">Safety</a>
+                    </li><li>
+                        <a href="index.html#mapping-the-heap">Mapping the Heap</a>
+                    </li><li>
+                        <a href="index.html#it-works">It works!</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#a-better-allocator">A better Allocator</a>
+                <ol>
+                    <li>
+                        <a href="index.html#creating-a-list-of-freed-blocks">Creating a List of freed Blocks</a>
+                    </li><li>
+                        <a href="index.html#implementation">Implementation</a>
+                    </li><li>
+                        <a href="index.html#performance">Performance</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In the previous posts we created a <a href="../allocating-frames/index.html">frame allocator</a> and a <a href="../page-tables/index.html">page table module</a>. Now we are ready to create a kernel heap and a memory allocator. Thus, we will unlock <code>Box</code>, <code>Vec</code>, <code>BTreeMap</code>, and the rest of the <a href="https://doc.rust-lang.org/nightly/alloc/index.html">alloc</a> crate.</p>
+<span id="continue-reading"></span>
+<p>As always, you can find the complete source code on <a href="https://github.com/phil-opp/blog_os/tree/first_edition_post_8">GitHub</a>. Please file <a href="https://github.com/phil-opp/blog_os/issues">issues</a> for any problems, questions, or improvement suggestions. There is also a comment section at the end of this page.</p>
+<h2 id="introduction"><a class="zola-anchor" href="index.html#introduction" aria-label="Anchor link for: introduction">🔗</a>Introduction</h2>
+<p>The <em>heap</em> is the memory area for long-lived allocations. The programmer can access it by using types like <a href="https://doc.rust-lang.org/rust-by-example/std/box.html">Box</a> or <a href="https://doc.rust-lang.org/book/vectors.html">Vec</a>. Behind the scenes, the compiler manages that memory by inserting calls to some memory allocator. By default, Rust links to the <a href="http://jemalloc.net/">jemalloc</a> allocator (for binaries) or the system allocator (for libraries). However, both rely on <a href="https://en.wikipedia.org/wiki/System_call">system calls</a> such as <a href="https://en.wikipedia.org/wiki/Sbrk">sbrk</a> and are thus unusable in our kernel. So we need to create and link our own allocator.</p>
+<p>A good allocator is fast and reliable. It also effectively utilizes the available memory and keeps <a href="https://en.wikipedia.org/wiki/Fragmentation_(computing)">fragmentation</a> low. Furthermore, it works well for concurrent applications and scales to any number of processors. It even optimizes the memory layout with respect to the CPU caches to improve <a href="https://www.geeksforgeeks.org/locality-of-reference-and-cache-operation-in-cache-memory/">cache locality</a> and avoid <a href="https://mechanical-sympathy.blogspot.de/2011/07/false-sharing.html">false sharing</a>.</p>
+<p>These requirements make good allocators pretty complex. For example, <a href="http://jemalloc.net/">jemalloc</a> has over 30.000 lines of code. This complexity is out of scope for our kernel, so we will create a much simpler allocator. Nevertheless, it should suffice for the foreseeable future, since we’ll allocate only when it’s absolutely necessary.</p>
+<h2 id="the-allocator-interface"><a class="zola-anchor" href="index.html#the-allocator-interface" aria-label="Anchor link for: the-allocator-interface">🔗</a>The Allocator Interface</h2>
+<p>The allocator interface in Rust is defined through the <a href="https://doc.rust-lang.org/1.20.0/alloc/allocator/trait.Alloc.html"><code>Alloc</code> trait</a>, which looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub unsafe trait </span><span>Alloc {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; Result&lt;</span><span style="color:#569cd6;">*mut u8</span><span>, AllocErr&gt;;
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout);
+</span><span>    […] </span><span style="color:#608b4e;">// about 13 methods with default implementations
+</span><span>}
+</span></code></pre>
+<p>The <code>alloc</code> method should allocate a memory block with the size and alignment given through <code>Layout</code> parameter. The <code>deallocate</code> method should free such memory blocks again. Both methods are <code>unsafe</code>, as is the trait itself. This has different reasons:</p>
+<ul>
+<li>Implementing the <code>Alloc</code> trait is unsafe, because the implementation must satisfy a set of contracts. Among other things, pointers returned by <code>alloc</code> must point to valid memory and adhere to the <code>Layout</code> requirements.</li>
+<li>Calling <code>alloc</code> is unsafe because the caller must ensure that the passed layout does not have size zero. I think this is because of compatibility reasons with existing C-allocators, where zero-sized allocations are undefined behavior.</li>
+<li>Calling <code>dealloc</code> is unsafe because the caller must guarantee that the passed parameters adhere to the contract. For example, <code>ptr</code> must denote a valid memory block allocated via this allocator.</li>
+</ul>
+<p>To set the system allocator, the <code>global_allocator</code> attribute can be added to a <code>static</code> that implements <code>Alloc</code> for a shared reference of itself. For example:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">MY_ALLOCATOR</span><span>: MyAllocator = MyAllocator {</span><span style="color:#569cd6;">...</span><span>};
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;</span><span style="color:#569cd6;">&#39;a</span><span>&gt; Alloc </span><span style="color:#569cd6;">for &amp;&#39;a </span><span>MyAllocator {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; Result&lt;</span><span style="color:#569cd6;">*mut u8</span><span>, AllocErr&gt; {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>}
+</span></code></pre>
+<p>Note that <code>Alloc</code> needs to be implemented for <code>&amp;MyAllocator</code>, not for <code>MyAllocator</code>. The reason is that the <code>alloc</code> and <code>dealloc</code> methods require mutable <code>self</code> references, but there’s no way to get such a reference safely from a <code>static</code>. By requiring implementations for <code>&amp;MyAllocator</code>, the global allocator interface avoids this problem and pushes the burden of synchronization onto the user.</p>
+<h2 id="including-the-alloc-crate"><a class="zola-anchor" href="index.html#including-the-alloc-crate" aria-label="Anchor link for: including-the-alloc-crate">🔗</a>Including the alloc crate</h2>
+<p>The <code>Alloc</code> trait is part of the <code>alloc</code> crate, which like <code>core</code> is a subset of Rust’s standard library. Apart from the trait, the crate also contains the standard types that require allocations such as <code>Box</code>, <code>Vec</code> and <code>Arc</code>. We can include it through a simple <code>extern crate</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>#![feature(alloc)] </span><span style="color:#608b4e;">// the alloc crate is still unstable
+</span><span>
+</span><span>[</span><span style="color:#569cd6;">...</span><span>]
+</span><span>
+</span><span>#[macro_use]
+</span><span style="color:#569cd6;">extern crate</span><span> alloc;
+</span></code></pre>
+<p>We don’t need to add anything to our Cargo.toml, since the <code>alloc</code> crate is part of the standard library and shipped with the Rust compiler. The <code>alloc</code> crate provides the <a href="https://doc.rust-lang.org/1.10.0/collections/macro.format!.html">format!</a> and <a href="https://doc.rust-lang.org/1.10.0/collections/macro.vec!.html">vec!</a> macros, so we use <code>#[macro_use]</code> to import them.</p>
+<p>When we try to compile our crate now, the following error occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0463]: can&#39;t find crate for `alloc`
+</span><span>  --&gt; src/lib.rs:10:1
+</span><span>   |
+</span><span>16 | extern crate alloc;
+</span><span>   | ^^^^^^^^^^^^^^^^^^^ can&#39;t find crate
+</span></code></pre>
+<p>The problem is that <a href="https://github.com/japaric/xargo"><code>xargo</code></a> only cross compiles <code>libcore</code> by default. To also cross compile the <code>alloc</code> crate, we need to create a file named <code>Xargo.toml</code> in our project root (right next to the <code>Cargo.toml</code>) with the following content:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">target.x86_64-blog_os.dependencies</span><span>]
+</span><span style="color:#569cd6;">alloc </span><span>= {}
+</span></code></pre>
+<p>This instructs <code>xargo</code> that we also need <code>alloc</code>. It still doesn’t compile, since we need to define a global allocator in order to use the <code>alloc</code> crate:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: no #[default_lib_allocator] found but one is required; is libstd not linked?
+</span></code></pre>
+<h2 id="a-bump-allocator"><a class="zola-anchor" href="index.html#a-bump-allocator" aria-label="Anchor link for: a-bump-allocator">🔗</a>A Bump Allocator</h2>
+<p>For our first allocator, we start simple. We create a <code>memory::heap_allocator</code> module containing a so-called <em>bump allocator</em>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>heap_allocator;
+</span><span>
+</span><span style="color:#608b4e;">// in src/memory/heap_allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::heap::{Alloc, AllocErr, Layout};
+</span><span>
+</span><span style="color:#608b4e;">/// A simple allocator that allocates memory linearly and ignores freed memory.
+</span><span>#[derive(Debug)]
+</span><span style="color:#569cd6;">pub struct </span><span>BumpAllocator {
+</span><span>    heap_start: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    heap_end: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    next: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new(heap_start: </span><span style="color:#569cd6;">usize</span><span>, heap_end: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        </span><span style="color:#569cd6;">Self </span><span>{ heap_start, heap_end, next: heap_start }
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>Alloc </span><span style="color:#569cd6;">for </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; Result&lt;</span><span style="color:#569cd6;">*mut u8</span><span>, AllocErr&gt; {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_start = align_up(self.next, layout.align());
+</span><span>        </span><span style="color:#569cd6;">let</span><span> alloc_end = alloc_start.saturating_add(layout.size());
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">if</span><span> alloc_end &lt;= self.heap_end {
+</span><span>            self.next = alloc_end;
+</span><span>            Ok(alloc_start </span><span style="color:#569cd6;">as *mut u8</span><span>)
+</span><span>        } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>            Err(AllocErr::Exhausted{ request: layout })
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>        </span><span style="color:#608b4e;">// do nothing, leak memory
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We also need to add <code>#![feature(allocator_api)]</code> to our <code>lib.rs</code>, since the allocator API is still unstable.</p>
+<p>The <code>heap_start</code> and <code>heap_end</code> fields contain the start and end address of our kernel heap. The <code>next</code> field contains the next free address and is increased after every allocation. To <code>allocate</code> a memory block we align the <code>next</code> address using the <code>align_up</code> function (described below). Then we add up the desired <code>size</code> and make sure that we don’t exceed the end of the heap. We use a saturating add so that the <code>alloc_end</code> cannot overflow, which could lead to an invalid allocation. If everything goes well, we update the <code>next</code> address and return a pointer to the start address of the allocation. Else, we return <code>None</code>.</p>
+<h3 id="alignment"><a class="zola-anchor" href="index.html#alignment" aria-label="Anchor link for: alignment">🔗</a>Alignment</h3>
+<p>In order to simplify alignment, we add <code>align_down</code> and <code>align_up</code> functions:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">/// Align downwards. Returns the greatest x with alignment `align`
+</span><span style="color:#608b4e;">/// so that x &lt;= addr. The alignment must be a power of 2.
+</span><span style="color:#569cd6;">pub fn </span><span>align_down(addr: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>    </span><span style="color:#569cd6;">if</span><span> align.is_power_of_two() {
+</span><span>        addr </span><span style="color:#569cd6;">&amp; !</span><span>(align - </span><span style="color:#b5cea8;">1</span><span>)
+</span><span>    } </span><span style="color:#569cd6;">else if</span><span> align == </span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>        addr
+</span><span>    } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>        panic!(</span><span style="color:#d69d85;">&quot;`align` must be a power of 2&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Align upwards. Returns the smallest x with alignment `align`
+</span><span style="color:#608b4e;">/// so that x &gt;= addr. The alignment must be a power of 2.
+</span><span style="color:#569cd6;">pub fn </span><span>align_up(addr: </span><span style="color:#569cd6;">usize</span><span>, align: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>    align_down(addr + align - </span><span style="color:#b5cea8;">1</span><span>, align)
+</span><span>}
+</span></code></pre>
+<p>Let’s start with <code>align_down</code>: If the alignment is a valid power of two (i.e. in <code>{1,2,4,8,…}</code>), we use some bitwise operations to return the aligned address. It works because every power of two has exactly one bit set in its binary representation. For example, the numbers <code>{1,2,4,8,…}</code> are <code>{1,10,100,1000,…}</code> in binary. By subtracting 1 we get <code>{0,01,011,0111,…}</code>. These binary numbers have a <code>1</code> at exactly the positions that need to be zeroed in <code>addr</code>. For example, the last 3 bits need to be zeroed for a alignment of 8.</p>
+<p>To align <code>addr</code>, we create a <a href="https://en.wikipedia.org/wiki/Mask_(computing)">bitmask</a> from <code>align-1</code>. We want a <code>0</code> at the position of each <code>1</code>, so we invert it using <code>!</code>. After that, the binary numbers look like this: <code>{…11111,…11110,…11100,…11000,…}</code>. Finally, we zero the correct bits using a binary <code>AND</code>.</p>
+<p>Aligning upwards is simple now. We just increase <code>addr</code> by <code>align-1</code> and call <code>align_down</code>. We add <code>align-1</code> instead of <code>align</code> because we would otherwise waste <code>align</code> bytes for already aligned addresses.</p>
+<h3 id="reusing-freed-memory"><a class="zola-anchor" href="index.html#reusing-freed-memory" aria-label="Anchor link for: reusing-freed-memory">🔗</a>Reusing Freed Memory</h3>
+<p>The heap memory is limited, so we should reuse freed memory for new allocations. This sounds simple, but is not so easy in practice since allocations can live arbitrarily long (and can be freed in an arbitrary order). This means that we need some kind of data structure to keep track of which memory areas are free and which are in use. This data structure should be very optimized since it causes overheads in both space (i.e. it needs backing memory) and time (i.e. accessing and organizing it needs CPU cycles).</p>
+<p>Our bump allocator only keeps track of the next free memory address, which doesn’t suffice to keep track of freed memory areas. So our only choice is to ignore deallocations and leak the corresponding memory. Thus our allocator quickly runs out of memory in a real system, but it suffices for simple testing. Later in this post, we will introduce a better allocator that does not leak freed memory.</p>
+<h3 id="using-it-as-system-allocator"><a class="zola-anchor" href="index.html#using-it-as-system-allocator" aria-label="Anchor link for: using-it-as-system-allocator">🔗</a>Using it as System Allocator</h3>
+<p>Above we saw that we can use a static allocator as system allocator through the <code>global_allocator</code> attribute:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: MyAllocator = MyAllocator {</span><span style="color:#569cd6;">...</span><span>};
+</span></code></pre>
+<p>This requires an implementation of <code>Alloc</code> for <code>&amp;MyAllocator</code>, i.e. a shared reference. If we try to add such an implementation for our bump allocator (<code>unsafe impl&lt;'a&gt; Alloc for &amp;'a BumpAllocator</code>), we have a problem: Our <code>alloc</code> method requires updating the <code>next</code> field, which is not possible for a shared reference.</p>
+<p>One solution could be to put the bump allocator behind a Mutex and wrap it into a new type, for which we can implement <code>Alloc</code> for a shared reference:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">struct </span><span>LockedBumpAllocator(Mutex&lt;BumpAllocator&gt;);
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;</span><span style="color:#569cd6;">&#39;a</span><span>&gt; Alloc </span><span style="color:#569cd6;">for &amp;&#39;a </span><span>LockedBumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; Result&lt;</span><span style="color:#569cd6;">*mut u8</span><span>, AllocErr&gt; {
+</span><span>        self.</span><span style="color:#b5cea8;">0.</span><span>lock().alloc(layout)
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>        self.</span><span style="color:#b5cea8;">0.</span><span>lock().dealloc(ptr, layout)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>However, there is a more interesting solution for our bump allocator that avoids locking altogether. The idea is to exploit that we only need to update a single <code>usize</code> field byusing an <code>AtomicUsize</code> type. This type uses special synchronized hardware instructions to ensure data race freedom without requiring locks.</p>
+<h4 id="a-lock-free-bump-allocator"><a class="zola-anchor" href="index.html#a-lock-free-bump-allocator" aria-label="Anchor link for: a-lock-free-bump-allocator">🔗</a>A lock-free Bump Allocator</h4>
+<p>A lock-free implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>core::sync::atomic::{AtomicUsize, Ordering};
+</span><span>
+</span><span style="color:#608b4e;">/// A simple allocator that allocates memory linearly and ignores freed memory.
+</span><span>#[derive(Debug)]
+</span><span style="color:#569cd6;">pub struct </span><span>BumpAllocator {
+</span><span>    heap_start: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    heap_end: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    next: AtomicUsize,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">pub const fn </span><span>new(heap_start: </span><span style="color:#569cd6;">usize</span><span>, heap_end: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// NOTE: requires adding #![feature(const_atomic_usize_new)] to lib.rs
+</span><span>        </span><span style="color:#569cd6;">Self </span><span>{ heap_start, heap_end, next: AtomicUsize::new(heap_start) }
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl</span><span>&lt;</span><span style="color:#569cd6;">&#39;a</span><span>&gt; Alloc </span><span style="color:#569cd6;">for &amp;&#39;a </span><span>BumpAllocator {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, layout: Layout) -&gt; Result&lt;</span><span style="color:#569cd6;">*mut u8</span><span>, AllocErr&gt; {
+</span><span>        </span><span style="color:#569cd6;">loop </span><span>{
+</span><span>            </span><span style="color:#608b4e;">// load current state of the `next` field
+</span><span>            </span><span style="color:#569cd6;">let</span><span> current_next = self.next.load(Ordering::Relaxed);
+</span><span>            </span><span style="color:#569cd6;">let</span><span> alloc_start = align_up(current_next, layout.align());
+</span><span>            </span><span style="color:#569cd6;">let</span><span> alloc_end = alloc_start.saturating_add(layout.size());
+</span><span>
+</span><span>            </span><span style="color:#569cd6;">if</span><span> alloc_end &lt;= self.heap_end {
+</span><span>                </span><span style="color:#608b4e;">// update the `next` pointer if it still has the value `current_next`
+</span><span>                </span><span style="color:#569cd6;">let</span><span> next_now = self.next.compare_and_swap(current_next, alloc_end,
+</span><span>                    Ordering::Relaxed);
+</span><span>                </span><span style="color:#569cd6;">if</span><span> next_now == current_next {
+</span><span>                    </span><span style="color:#608b4e;">// next address was successfully updated, allocation succeeded
+</span><span>                    </span><span style="color:#569cd6;">return </span><span>Ok(alloc_start </span><span style="color:#569cd6;">as *mut u8</span><span>);
+</span><span>                }
+</span><span>            } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>                </span><span style="color:#569cd6;">return </span><span>Err(AllocErr::Exhausted{ request: layout })
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;mut </span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout) {
+</span><span>        </span><span style="color:#608b4e;">// do nothing, leak memory
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The implementation is a bit more complicated now. First, there is now a <code>loop</code> around the whole method body, since we might need multiple tries until we succeed (e.g. if multiple threads try to allocate at the same time). Also, the loads operation is an explicit method call now, i.e. <code>self.next.load(Ordering::Relaxed)</code> instead of just <code>self.next</code>. The ordering parameter makes it possible to restrict the automatic instruction reordering performed by both the compiler and the CPU itself. For example, it is used when implementing locks to ensure that no write to the locked variable happens before the lock is acquired. We don’t have such requirements, so we use the less restrictive <code>Relaxed</code> ordering.</p>
+<p>The heart of this lock-free method is the <code>compare_and_swap</code> call that updates the <code>next</code> address:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">...
+</span><span style="color:#569cd6;">let</span><span> next_now = self.next.compare_and_swap(current_next, alloc_end,
+</span><span>    Ordering::Relaxed);
+</span><span style="color:#569cd6;">if</span><span> next_now == current_next {
+</span><span>    </span><span style="color:#608b4e;">// next address was successfully updated, allocation succeeded
+</span><span>    </span><span style="color:#569cd6;">return </span><span>Ok(alloc_start </span><span style="color:#569cd6;">as *mut u8</span><span>);
+</span><span>}
+</span><span style="color:#569cd6;">...
+</span></code></pre>
+<p>Compare-and-swap is a special CPU instruction that updates a variable with a given value if it still contains the value we expect. If it doesn’t, it means that another thread updated the value simultaneously, so we need to try again. The important feature is that this happens in a single uninteruptible operation (thus the name <code>atomic</code>), so no partial updates or intermediate states are possible.</p>
+<p>In detail, <code>compare_and_swap</code> works by comparing <code>next</code> with the first argument and, in case they’re equal, updates <code>next</code> with the second parameter (the previous value is returned). To find out whether a switch happened, we check the returned previous value of <code>next</code>. If it is equal to the first parameter, the values were swapped. Otherwise, we try again in the next loop iteration.</p>
+<h4 id="setting-the-global-allocator"><a class="zola-anchor" href="index.html#setting-the-global-allocator" aria-label="Anchor link for: setting-the-global-allocator">🔗</a>Setting the Global Allocator</h4>
+<p>Now we can define a static bump allocator, that we can set as system allocator:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">HEAP_START</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">0o_000_001_000_000_0000</span><span>;
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">100 </span><span>* </span><span style="color:#b5cea8;">1024</span><span>; </span><span style="color:#608b4e;">// 100 KiB
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HEAP_ALLOCATOR</span><span>: BumpAllocator = BumpAllocator::new(</span><span style="color:#b4cea8;">HEAP_START</span><span>,
+</span><span>    </span><span style="color:#b4cea8;">HEAP_START </span><span>+ </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>);
+</span></code></pre>
+<p>We use <code>0o_000_001_000_000_0000</code> as heap start address, which is the address starting at the second <code>P3</code> entry. It doesn’t really matter which address we choose here as long as it’s unused. We use a heap size of 100 KiB, which should be large enough for the near future.</p>
+<p>Putting the above in the <code>memory::heap_allocator</code> module would make most sense, but unfortunately there is currently a <a href="https://github.com/rust-lang/rust/issues/44113">weird bug</a> in the global allocator implementation that requires putting the global allocator in the root module. I hope it’s fixed soon, but until then we need to put the above lines in <code>src/lib.rs</code>. For that, we need to make the <code>memory::heap_allocator</code> module public and add an import for <code>BumpAllocator</code>. We also need to add the <code>#![feature(global_allocator)]</code> at the top of our <code>lib.rs</code>, since the <code>global_allocator</code> attribute is still unstable.</p>
+<p>That’s it! We have successfully created and linked a custom system allocator. Now we’re ready to test it.</p>
+<h3 id="testing"><a class="zola-anchor" href="index.html#testing" aria-label="Anchor link for: testing">🔗</a>Testing</h3>
+<p>We should be able to allocate memory on the heap now. Let’s try it in our <code>rust_main</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::boxed::Box;
+</span><span style="color:#569cd6;">let</span><span> heap_test = Box::new(</span><span style="color:#b5cea8;">42</span><span>);
+</span></code></pre>
+<p>When we run it, a triple fault occurs and causes permanent rebooting. Let’s try debug it using QEMU and objdump as described <a href="../remap-the-kernel/index.html#debugging">in the previous post</a>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; qemu-system-x86_64 -d int -no-reboot -cdrom build/os-x86_64.iso
+</span><span>…
+</span><span>check_exception old: 0xffffffff new 0xe
+</span><span>     0: v=0e e=0002 i=0 cpl=0 IP=0008:0000000000102860 pc=0000000000102860
+</span><span>        SP=0010:0000000000116af0 CR2=0000000040000000
+</span><span>…
+</span></code></pre>
+<p>Aha! It’s a <a href="https://wiki.osdev.org/Exceptions#Page_Fault">page fault</a> (<code>v=0e</code>) and was caused by the code at <code>0x102860</code>. The code tried to write (<code>e=0002</code>) to address <code>0x40000000</code>. This address is <code>0o_000_001_000_000_0000</code> in octal, which is the <code>HEAP_START</code> address defined above. Of course it page-faults: We have forgotten to map the heap memory to some physical memory.</p>
+<h3 id="some-refactoring"><a class="zola-anchor" href="index.html#some-refactoring" aria-label="Anchor link for: some-refactoring">🔗</a>Some Refactoring</h3>
+<p>In order to map the heap cleanly, we do a bit of refactoring first. We move all memory initialization from our <code>rust_main</code> to a new <code>memory::init</code> function. Now our <code>rust_main</code> looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>rust_main(multiboot_information_address: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>    </span><span style="color:#608b4e;">// ATTENTION: we have a very small stack and no guard page
+</span><span>    vga_buffer::clear_screen();
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> boot_info = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        multiboot2::load(multiboot_information_address)
+</span><span>    };
+</span><span>    enable_nxe_bit();
+</span><span>    enable_write_protect_bit();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// set up guard page and map the heap pages
+</span><span>    memory::init(boot_info);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">use </span><span>alloc::boxed::Box;
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_test = Box::new(</span><span style="color:#b5cea8;">42</span><span>);
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>The <code>memory::init</code> function looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>multiboot2::BootInformation;
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init(boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation) {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> memory_map_tag = boot_info.memory_map_tag().expect(
+</span><span>        </span><span style="color:#d69d85;">&quot;Memory map tag required&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> elf_sections_tag = boot_info.elf_sections_tag().expect(
+</span><span>        </span><span style="color:#d69d85;">&quot;Elf sections tag required&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> kernel_start = elf_sections_tag.sections()
+</span><span>        .filter(|s| s.is_allocated()).map(|s| s.addr).min().unwrap();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> kernel_end = elf_sections_tag.sections()
+</span><span>        .filter(|s| s.is_allocated()).map(|s| s.addr + s.size).max()
+</span><span>        .unwrap();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;kernel start: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">, kernel end: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>             kernel_start,
+</span><span>             kernel_end);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;multiboot start: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">, multiboot end: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>             boot_info.start_address(),
+</span><span>             boot_info.end_address());
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = AreaFrameAllocator::new(
+</span><span>        kernel_start </span><span style="color:#569cd6;">as usize</span><span>, kernel_end </span><span style="color:#569cd6;">as usize</span><span>,
+</span><span>        boot_info.start_address(), boot_info.end_address(),
+</span><span>        memory_map_tag.memory_areas());
+</span><span>
+</span><span>    paging::remap_the_kernel(</span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator, boot_info);
+</span><span>}
+</span></code></pre>
+<p>We’ve just moved the code to a new function. However, we’ve sneaked some improvements in:</p>
+<ul>
+<li>An additional <code>.filter(|s| s.is_allocated())</code> in the calculation of <code>kernel_start</code> and <code>kernel_end</code>. This ignores all sections that aren’t loaded to memory (such as debug sections). Thus, the kernel end address is no longer artificially increased by such sections.</li>
+<li>We use the <code>start_address()</code> and <code>end_address()</code> methods of <code>boot_info</code> instead of calculating the addresses manually.</li>
+<li>We use the alternate <code>{:#x}</code> form when printing kernel/multiboot addresses. Before, we used <code>0x{:x}</code>, which leads to the same result. For a complete list of these “alternate” formatting forms, check out the <a href="https://doc.rust-lang.org/nightly/std/fmt/index.html#sign0">std::fmt documentation</a>.</li>
+</ul>
+<h3 id="safety"><a class="zola-anchor" href="index.html#safety" aria-label="Anchor link for: safety">🔗</a>Safety</h3>
+<p>It is important that the <code>memory::init</code> function is called only once, because it creates a new frame allocator based on kernel and multiboot start/end. When we call it a second time, a new frame allocator is created that reassigns the same frames, even if they are already in use.</p>
+<p>In the second call it would use an identical frame allocator to remap the kernel. The <code>remap_the_kernel</code> function would request a frame from the frame allocator to create a new page table. But the returned frame is already in use, since we used it to create our current page table in the first call. In order to initialize the new table, the function zeroes it. This is the point where everything breaks, since we zero our current page table. The CPU is unable to read the next instruction  and throws a page fault.</p>
+<p>So we need to ensure that <code>memory::init</code> can be only called once. We could mark it as <code>unsafe</code>, which would bring it in line with Rust’s memory safety rules. However, that would just push the unsafety to the caller. The caller can still accidentally call the function twice, the only difference is that the mistake needs to happen inside <code>unsafe</code> blocks.</p>
+<p>A better solution is to insert a check at the function’s beginning, that panics if the function is called a second time. This approach has a small runtime cost, but we only call it once, so it’s negligible. And we avoid two <code>unsafe</code> blocks (one at the calling site and one at the function itself), which is always good.</p>
+<p>In order to make such checks easy, I created a small crate named <a href="https://crates.io/crates/once">once</a>. To add it, we run <code>cargo add once</code> and add the following to our <code>src/lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[macro_use]
+</span><span style="color:#569cd6;">extern crate</span><span> once;
+</span></code></pre>
+<p>The crate provides an <a href="https://docs.rs/once/0.3.2/once/macro.assert_has_not_been_called!.html">assert_has_not_been_called!</a> macro (sorry for the long name :D). We can use it to fix the safety problem easily:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init(boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation) {
+</span><span>    assert_has_not_been_called!(</span><span style="color:#d69d85;">&quot;memory::init must be called only once&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> memory_map_tag = </span><span style="color:#569cd6;">...
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p>That’s it. Now our <code>memory::init</code> function can only be called once. The macro works by creating a static <a href="https://doc.rust-lang.org/nightly/core/sync/atomic/struct.AtomicBool.html">AtomicBool</a> named <code>CALLED</code>, which is initialized to <code>false</code>. When the macro is invoked, it checks the value of <code>CALLED</code> and sets it to <code>true</code>. If the value was already <code>true</code> before, the macro panics.</p>
+<h3 id="mapping-the-heap"><a class="zola-anchor" href="index.html#mapping-the-heap" aria-label="Anchor link for: mapping-the-heap">🔗</a>Mapping the Heap</h3>
+<p>Now we’re ready to map the heap pages. In order to do it, we need access to the <code>ActivePageTable</code> or <code>Mapper</code> instance (see the <a href="../page-tables/index.html">page table</a> and <a href="../remap-the-kernel/index.html">kernel remapping</a> posts). For that we return it from the <code>paging::remap_the_kernel</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>remap_the_kernel&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A, boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation)
+</span><span>    -&gt; ActivePageTable </span><span style="color:#608b4e;">// new
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;guard page at </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">&quot;</span><span>, old_p4_page.start_address());
+</span><span>
+</span><span>    active_table </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>Now we have full page table access in the <code>memory::init</code> function. This allows us to map the heap pages to physical frames:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init(boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation) {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = </span><span style="color:#569cd6;">...</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// below is the new part
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> active_table = paging::remap_the_kernel(</span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator,
+</span><span>        boot_info);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">use </span><span>self::paging::Page;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>{</span><span style="color:#b4cea8;">HEAP_START</span><span>, </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>};
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_start_page = Page::containing_address(</span><span style="color:#b4cea8;">HEAP_START</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_end_page = Page::containing_address(</span><span style="color:#b4cea8;">HEAP_START </span><span>+ </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>-</span><span style="color:#b5cea8;">1</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for</span><span> page </span><span style="color:#569cd6;">in </span><span>Page::range_inclusive(heap_start_page, heap_end_page) {
+</span><span>        active_table.map(page, paging::</span><span style="color:#b4cea8;">WRITABLE</span><span>, </span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>Page::range_inclusive</code> function is just a copy of the <code>Frame::range_inclusive</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span>#[derive(…, PartialEq, Eq, PartialOrd, Ord)]
+</span><span style="color:#569cd6;">pub struct </span><span>Page {...}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Page {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>range_inclusive(start: Page, end: Page) -&gt; PageIter {
+</span><span>        PageIter {
+</span><span>            start: start,
+</span><span>            end: end,
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>PageIter {
+</span><span>    start: Page,
+</span><span>    end: Page,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Iterator </span><span style="color:#569cd6;">for </span><span>PageIter {
+</span><span>    </span><span style="color:#569cd6;">type </span><span style="color:#4ec9b0;">Item </span><span>= Page;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>next(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Page&gt; {
+</span><span>        </span><span style="color:#569cd6;">if </span><span>self.start &lt;= self.end {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> page = self.start;
+</span><span>            self.start.number += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            Some(page)
+</span><span>        } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>            None
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Now we map the whole heap to physical pages. This needs some time and might introduce a noticeable delay when we increase the heap size in the future. Another drawback is that we consume a large amount of physical frames even though we might not need the whole heap space. We will fix these problems in a future post by mapping the pages lazily.</p>
+<h3 id="it-works"><a class="zola-anchor" href="index.html#it-works" aria-label="Anchor link for: it-works">🔗</a>It works!</h3>
+<p>Now <code>Box</code> and <code>Vec</code> should work. For example:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::boxed::Box;
+</span><span style="color:#569cd6;">let mut</span><span> heap_test = Box::new(</span><span style="color:#b5cea8;">42</span><span>);
+</span><span>*heap_test -= </span><span style="color:#b5cea8;">15</span><span>;
+</span><span style="color:#569cd6;">let</span><span> heap_test2 = Box::new(</span><span style="color:#d69d85;">&quot;hello&quot;</span><span>);
+</span><span>println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?} {:?}</span><span style="color:#d69d85;">&quot;</span><span>, heap_test, heap_test2);
+</span><span>
+</span><span style="color:#569cd6;">let mut</span><span> vec_test = vec![</span><span style="color:#b5cea8;">1</span><span>,</span><span style="color:#b5cea8;">2</span><span>,</span><span style="color:#b5cea8;">3</span><span>,</span><span style="color:#b5cea8;">4</span><span>,</span><span style="color:#b5cea8;">5</span><span>,</span><span style="color:#b5cea8;">6</span><span>,</span><span style="color:#b5cea8;">7</span><span>];
+</span><span>vec_test[</span><span style="color:#b5cea8;">3</span><span>] = </span><span style="color:#b5cea8;">42</span><span>;
+</span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in &amp;</span><span>vec_test {
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{} </span><span style="color:#d69d85;">&quot;</span><span>, i);
+</span><span>}
+</span></code></pre>
+<p>We can also use all other types of the <code>alloc</code> crate, including:</p>
+<ul>
+<li>the reference counted pointers <a href="https://doc.rust-lang.org/1.10.0/alloc/rc/">Rc</a> and <a href="https://doc.rust-lang.org/1.10.0/alloc/arc/">Arc</a></li>
+<li>the owned string type <a href="https://doc.rust-lang.org/1.10.0/collections/string/struct.String.html">String</a> and the <a href="https://doc.rust-lang.org/1.10.0/collections/macro.format!.html">format!</a> macro</li>
+<li><a href="https://doc.rust-lang.org/1.10.0/collections/linked_list/struct.LinkedList.html">Linked List</a></li>
+<li>the growable ring buffer <a href="https://doc.rust-lang.org/1.10.0/collections/vec_deque/struct.VecDeque.html">VecDeque</a></li>
+<li><a href="https://doc.rust-lang.org/1.10.0/collections/binary_heap/struct.BinaryHeap.html">BinaryHeap</a></li>
+<li><a href="https://doc.rust-lang.org/1.10.0/collections/btree_map/struct.BTreeMap.html">BTreeMap</a> and <a href="https://doc.rust-lang.org/1.10.0/collections/btree_set/struct.BTreeSet.html">BTreeSet</a></li>
+</ul>
+<h2 id="a-better-allocator"><a class="zola-anchor" href="index.html#a-better-allocator" aria-label="Anchor link for: a-better-allocator">🔗</a>A better Allocator</h2>
+<p>Right now, we leak every freed memory block. Thus, we run out of memory quickly, for example, by creating a new <code>String</code> in each iteration of a loop:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">10000 </span><span>{
+</span><span>    format!(</span><span style="color:#d69d85;">&quot;Some String&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>To fix this, we need to create an allocator that keeps track of freed memory blocks and reuses them if possible. This introduces some challenges:</p>
+<ul>
+<li>We need to keep track of a possibly unlimited number of freed blocks. For example, an application could allocate <code>n</code> one-byte sized blocks and free every second block, which creates <code>n/2</code> freed blocks. We can’t rely on any upper bound of freed block since <code>n</code> could be arbitrarily large.</li>
+<li>We can’t use any of the collections from above, since they rely on allocations themselves. (It might be possible as soon as <a href="https://github.com/rust-lang/rfcs/blob/master/text/1398-kinds-of-allocators.md">RFC #1398</a> is <a href="https://github.com/rust-lang/rust/issues/32838">implemented</a>, which allows user-defined allocators for specific collection instances.)</li>
+<li>We need to merge adjacent freed blocks if possible. Otherwise, the freed memory is no longer usable for large allocations. We will discuss this point in more detail below.</li>
+<li>Our allocator should search the set of freed blocks quickly and keep fragmentation low.</li>
+</ul>
+<h3 id="creating-a-list-of-freed-blocks"><a class="zola-anchor" href="index.html#creating-a-list-of-freed-blocks" aria-label="Anchor link for: creating-a-list-of-freed-blocks">🔗</a>Creating a List of freed Blocks</h3>
+<p>Where do we store the information about an unlimited number of freed blocks? We can’t use any fixed size data structure since it could always be too small for some allocation sequences. So we need some kind of dynamically growing set.</p>
+<p>One possible solution could be to use an array-like data structure that starts at some unused virtual address. If the array becomes full, we increase its size and map new physical frames as backing storage. This approach would require a large part of the virtual address space since the array could grow significantly. We would need to create a custom implementation of a growable array and manipulate the page tables when deallocating. It would also consume a possibly large number of physical frames as backing storage.</p>
+<p>We will choose another solution with different tradoffs. It’s not clearly “better” than the approach above and has significant disadvantages itself. However, it has one big advantage: It does not need any additional physical or virtual memory at all. This makes it less complex since we don’t need to manipulate any page tables. The idea is the following:</p>
+<p>A freed memory block is not used anymore and no one needs the stored information. It is still mapped to a virtual address and backed by a physical page. So we just store the information about the freed block <em>in the block itself</em>.  We keep a pointer to the first block and store a pointer to the next block in each block. Thus, we create a single linked list:</p>
+<p><img src="overview.svg" alt="Linked List Allocator" /></p>
+<p>In the following, we call a freed block a <em>hole</em>. Each hole stores its size and a pointer to the next hole. If a hole is larger than needed, we leave the remaining memory unused. By storing a pointer to the first hole, we are able to traverse the complete list.</p>
+<h4 id="initialization"><a class="zola-anchor" href="index.html#initialization" aria-label="Anchor link for: initialization">🔗</a>Initialization</h4>
+<p>When the heap is created, all of its memory is unused. Thus, it forms a single large hole:</p>
+<p><img src="initialization.svg" alt="Heap Initialization" /></p>
+<p>The optional pointer to the next hole is set to <code>None</code>.</p>
+<h4 id="allocation"><a class="zola-anchor" href="index.html#allocation" aria-label="Anchor link for: allocation">🔗</a>Allocation</h4>
+<p>In order to allocate a block of memory, we need to find a hole that satisfies the size and alignment requirements. If the found hole is larger than required, we split it into two smaller holes. For example, when we allocate a 24 byte block right after initialization, we split the single hole into a hole of size 24 and a hole with the remaining size:</p>
+<p><img src="split-hole.svg" alt="split hole" /></p>
+<p>Then we use the new 24 byte hole to perform the allocation:</p>
+<p><img src="allocate.svg" alt="24 bytes allocated" /></p>
+<p>To find a suitable hole, we can use several search strategies:</p>
+<ul>
+<li><strong>best fit</strong>: Search the whole list and choose the <em>smallest</em> hole that satisfies the requirements.</li>
+<li><strong>worst fit</strong>: Search the whole list and choose the <em>largest</em> hole that satisfies the requirements.</li>
+<li><strong>first fit</strong>: Search the list from the beginning and choose the <em>first</em> hole that satisfies the requirements.</li>
+</ul>
+<p>Each strategy has its advantages and disadvantages. Best fit uses the smallest hole possible and leaves larger holes for large allocations. But splitting the smallest hole might create a tiny hole, which is too small for most allocations. In contrast, the worst fit strategy always chooses the largest hole. Thus, it does not create tiny holes, but it consumes the large block, which might be required for large allocations.</p>
+<p>For our use case, the best fit strategy is better than worst fit. The reason is that we have a minimal hole size of 16 bytes, since each hole needs to be able to store a size (8 bytes) and a pointer to the next hole (8 bytes). Thus, even the best fit strategy leads to holes of usable size. Furthermore, we will need to allocate very large blocks occasionally (e.g. for <a href="https://en.wikipedia.org/wiki/Direct_memory_access">DMA</a> buffers).</p>
+<p>However, both best fit and worst fit have a significant problem: They need to scan the whole list for each allocation in order to find the optimal block. This leads to long allocation times if the list is long. The first fit strategy does not have this problem, as it returns as soon as it finds a suitable hole. It is fairly fast for small allocations and might only need to scan the whole list for large allocations.</p>
+<h4 id="deallocation"><a class="zola-anchor" href="index.html#deallocation" aria-label="Anchor link for: deallocation">🔗</a>Deallocation</h4>
+<p>To deallocate a block of memory, we can just insert its corresponding hole somewhere into the list. However, we need to merge adjacent holes. Otherwise, we are unable to reuse the freed memory for larger allocations. For example:</p>
+<p><img src="deallocate.svg" alt="deallocate memory, which leads to adjacent holes" /></p>
+<p>In order to use these adjacent holes for a large allocation, we need to merge them to a single large hole first:</p>
+<p><img src="merge-holes-and-allocate.svg" alt="merge adjacent holes and allocate large block" /></p>
+<p>The easiest way to ensure that adjacent holes are always merged, is to keep the hole list sorted by address. Thus, we only need to check the predecessor and the successor in the list when we free a memory block. If they are adjacent to the freed block, we merge the corresponding holes. Else, we insert the freed block as a new hole at the correct position.</p>
+<h3 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h3>
+<p>The detailed implementation would go beyond the scope of this post, since it contains several hidden difficulties. For example:</p>
+<ul>
+<li>Several merge cases: Merge with the previous hole, merge with the next hole, merge with both holes.</li>
+<li>We need to satisfy the alignment requirements, which requires additional splitting logic.</li>
+<li>The minimal hole size of 16 bytes: We must not create smaller holes when splitting a hole.</li>
+</ul>
+<p>I created the <a href="https://docs.rs/crate/linked_list_allocator/0.4.1">linked_list_allocator</a> crate to handle all of these cases. It consists of a <a href="https://docs.rs/linked_list_allocator/0.4.1/linked_list_allocator/struct.Heap.html">Heap struct</a> that provides an <code>allocate_first_fit</code> and a <code>deallocate</code> method. It also contains a <a href="https://docs.rs/linked_list_allocator/0.4.1/linked_list_allocator/struct.LockedHeap.html">LockedHeap</a> type that wraps <code>Heap</code> into spinlock so that it’s usable as a static system allocator. If you are interested in the implementation details, check out the <a href="https://github.com/phil-opp/linked-list-allocator">source code</a>.</p>
+<p>We need to add the extern crate to our <code>Cargo.toml</code> and our <code>lib.rs</code>:</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; cargo add linked_list_allocator
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">extern crate</span><span> linked_list_allocator;
+</span></code></pre>
+<p>Now we can change our global allocator:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>linked_list_allocator::LockedHeap;
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HEAP_ALLOCATOR</span><span>: LockedHeap = LockedHeap::empty();
+</span></code></pre>
+<p>We can’t initialize the linked list allocator statically, since it needs to initialize the first hole (like described <a href="index.html#initialization">above</a>). This can’t be done at compile time, so the function can’t be a <code>const</code> function. Therefore we can only create an empty heap and initialize it later at runtime. For that, we add the following lines to our <code>rust_main</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>rust_main(multiboot_information_address: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>    […]
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// set up guard page and map the heap pages
+</span><span>    memory::init(boot_info);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// initialize the heap allocator
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">HEAP_ALLOCATOR</span><span>.lock().init(</span><span style="color:#b4cea8;">HEAP_START</span><span>, </span><span style="color:#b4cea8;">HEAP_START </span><span>+ </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>);
+</span><span>    }
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>It is important that we initialize the heap <em>after</em> mapping the heap pages, since the init function writes to the heap memory (the first hole).</p>
+<p>Our kernel uses the new allocator now, so we can deallocate memory without leaking it. The example from above should work now without causing an OOM situation:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">10000 </span><span>{
+</span><span>    format!(</span><span style="color:#d69d85;">&quot;Some String&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<h3 id="performance"><a class="zola-anchor" href="index.html#performance" aria-label="Anchor link for: performance">🔗</a>Performance</h3>
+<p>The linked list based approach has some performance problems. Each allocation or deallocation might need to scan the complete list of holes in the worst case. However, I think it’s good enough for now, since our heap will stay relatively small for the near future. When our allocator becomes a performance problem eventually, we can just replace it with a faster alternative.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>Now we’re able to use heap storage in our kernel without leaking memory. This allows us to effectively process dynamic data such as user supplied strings in the future. We can also use <code>Rc</code> and <code>Arc</code> to create types with shared ownership. And we have access to various data structures such as <code>Vec</code> or <code>Linked List</code>, which will make our lives much easier. We even have some well tested and optimized <a href="https://en.wikipedia.org/wiki/Binary_heap">binary heap</a> and <a href="https://en.wikipedia.org/wiki/B-tree">B-tree</a> implementations!</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>This post concludes the section about memory management for now. We will revisit this topic eventually, but now it’s time to explore other topics. The upcoming posts will be about CPU exceptions and interrupts. We will catch all page, double, and triple faults and create a driver to read keyboard input. The <a href="../handling-exceptions/index.html">next post</a> starts by setting up a so-called <em>Interrupt Descriptor Table</em>.</p>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../remap-the-kernel/index.html">&laquo; Remap the Kernel</a>
+        
+        
+            <a class="next" href="../handling-exceptions/index.html">Handling Exceptions &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-184" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="550e455fa548"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Maksadbek </span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-184" class="permalink"><time title="Tue Apr 12 2016 14:50:41 GMT+0200 (Central European Summer Time)" datetime="2016-03-02T12:50:41Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Nice article, thanks</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-185" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="ef7f9927b8cb"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Janus Troelsen</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-185" class="permalink"><time title="Wed Apr 13 2016 17:41:12 GMT+0200 (Central European Summer Time)" datetime="2016-03-03T15:41:12Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>"We have some well tested B-tree" Where can I find the source code for that B-tree implementation?</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-186" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-186" class="permalink"><time title="Wed Apr 13 2016 22:25:16 GMT+0200 (Central European Summer Time)" datetime="2016-03-03T20:25:16Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>In the btree module of libcollections: <a rel="nofollow" href="https://github.com/rust-lang/rust/tree/1.10.0/src/libcollections/btree">https://github.com/rust-lan...</a></p><p>The rendered documentation is <a rel="nofollow" href="https://doc.rust-lang.org/std/collections/struct.BTreeMap.html">here. </a></p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-187" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-187" class="permalink"><time title="Fri Apr 22 2016 23:02:55 GMT+0200 (Central European Summer Time)" datetime="2016-03-05T21:02:55Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>There is some discussion on <a rel="nofollow" href="https://www.reddit.com/r/rust/comments/4ef3xv/writing_an_os_in_rust_kernel_heap/">/r/rust</a>, <a rel="nofollow" href="https://news.ycombinator.com/item?id=11477856">hacker news</a>, and <a rel="nofollow" href="https://www.reddit.com/r/programming/comments/4eggjw/writing_an_os_in_rust_kernel_heap/">/r/programming</a>.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-188" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="e826c391e2fe"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Ryan Breen</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-188" class="permalink"><time title="Mon Apr 25 2016 02:20:33 GMT+0200 (Central European Summer Time)" datetime="2016-03-01T00:20:33Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Love this series of articles!  I'm very new to Rust and kernel development, and I've really enjoyed following along and trying to experiment a bit with alternative implementations.  In that vein, I ported the inimitable gz's rust-slabmalloc (<a rel="nofollow" href="https://github.com/gz">https://github.com/gz)</a> to run in my implementation of these tutorials: <a rel="nofollow" href="https://github.com/ryanbreen/breenix/tree/master/src/memory">https://github.com/ryanbree...</a></p><p>One potentially interesting approach I tried, taking a bit of a page from Linux which I know uses a dumbed down allocator for the early allocation during kernel boot, is to have my Rust allocator be tiered: during early kernel boot, it uses a bump allocator.  The only allocations done by the bump allocator are to set up the memory to be used by the slab_allocator.  This meant I could get the benefit of collections when porting slab_allocator, so I dropped its internal data structure in favor of a plain old vec.</p><p>Thanks for this series!  You're doing awesome work and giving people a world of new educational opportunities.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-189" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-189" class="permalink"><time title="Mon Apr 25 2016 13:53:27 GMT+0200 (Central European Summer Time)" datetime="2016-03-01T11:53:27Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks so much!</p><p>I really like your approach of building allocators on top of each other (and I will take a closer look when I have some time). Maybe it's even possible to create an allocator based on a B-tree…?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-328" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8c9119b1b577"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Johan M</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-328" class="permalink"><time title="Wed Oct 18 2017 20:20:13 GMT+0200 (Central European Summer Time)" datetime="2017-09-03T18:20:13Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Ahh, I see that the API to custom allocators changed :-0  I see that the code in git is updated but not for the bump_allocator. Even if one can work around it to conform to the new interface it is puzzling before you figure out what the problem is.</p>
+
+  <p>A guide to the new allocator:</p>
+
+  <p><a rel="nofollow" href="https://github.com/rust-lang/rfcs/blob/master/text/1974-global-allocators.md">https://github.com/rust-lang/rfcs/blob/master/text/1974-global-allocators.md</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-329" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8c9119b1b577"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Johan M</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-329" class="permalink"><time title="Thu Oct 19 2017 09:01:09 GMT+0200 (Central European Summer Time)" datetime="2017-09-04T07:01:09Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Best strategy might be to go directly to the hole_list_allocator but to start up simple and ignore trying to reclaim blocks; that way the transition is easier.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-330" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-330" class="permalink"><time title="Thu Oct 19 2017 09:08:53 GMT+0200 (Central European Summer Time)" datetime="2017-09-04T07:08:53Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>I didn't have the time to update this post yet, sorry. The code in the repository is up-to-date, but adjusting this post would be more work. I try to update it soon.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-333" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-333" class="permalink"><time title="Thu Oct 19 2017 09:29:41 GMT+0200 (Central European Summer Time)" datetime="2017-09-04T07:29:41Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>See <a rel="nofollow" href="https://github.com/phil-opp/blog_os/issues/341">https://github.com/phil-opp/blog_os/issues/341</a> for more information</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-334" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8c9119b1b577"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Johan Montelius</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-334" class="permalink"><time title="Thu Oct 19 2017 17:46:21 GMT+0200 (Central European Summer Time)" datetime="2017-09-04T15:46:21Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>I like the idea of introducing a simple Bump allocator since it show how little we need to do to get dynamic memory allocation working. My rust skills are still modest but I'll give it a try to rewrite it using the new interface.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-335" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-335" class="permalink"><time title="Thu Oct 19 2017 18:05:09 GMT+0200 (Central European Summer Time)" datetime="2017-09-04T16:05:09Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Yes, updating the bump allocator is definitely planned. Pull requests are always appreciated, if you like to submit it!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-loader-328" class="isso-comment-loader"><a rel="nofollow" href="index.html#" class="load_hidden">1 versteckt</a></div></div></div></div><div id="isso-339" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="cf022e3f6186"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-339" class="permalink"><time title="Fri Oct 27 2017 12:54:30 GMT+0200 (Central European Summer Time)" datetime="2017-09-05T10:54:30Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>The link to "the book" is not valid when talking about the allocator functions one needs to implement</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

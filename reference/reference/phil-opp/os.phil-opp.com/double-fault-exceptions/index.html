@@ -1,0 +1,668 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This post explores the double fault exception in detail, which occurs when the CPU fails to invoke an exception handler. By handling this exception, w…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Double Faults | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#what-is-a-double-fault">What is a Double Fault?</a>
+            <ol>
+                <li>
+                    <a href="index.html#triggering-a-double-fault">Triggering a Double Fault</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#a-double-fault-handler">A Double Fault Handler</a>
+            
+        </li><li>
+            <a href="index.html#causes-of-double-faults">Causes of Double Faults</a>
+            <ol>
+                <li>
+                    <a href="index.html#kernel-stack-overflow">Kernel Stack Overflow</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#switching-stacks">Switching Stacks</a>
+            <ol>
+                <li>
+                    <a href="index.html#the-ist-and-tss">The IST and TSS</a>
+                </li><li>
+                    <a href="index.html#creating-a-tss">Creating a TSS</a>
+                </li><li>
+                    <a href="index.html#the-global-descriptor-table">The Global Descriptor Table</a>
+                </li><li>
+                    <a href="index.html#the-final-steps">The Final Steps</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#a-stack-overflow-test">A Stack Overflow Test</a>
+            <ol>
+                <li>
+                    <a href="index.html#implementing-start">Implementing _start</a>
+                </li><li>
+                    <a href="index.html#the-test-idt">The Test IDT</a>
+                </li><li>
+                    <a href="index.html#the-double-fault-handler">The Double Fault Handler</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Double Faults</h1>
+    <time datetime="2018-06-18" class="post-date">
+        Jun 18, 2018
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>This post explores the double fault exception in detail, which occurs when the CPU fails to invoke an exception handler. By handling this exception, we avoid fatal <em>triple faults</em> that cause a system reset. To prevent triple faults in all cases, we also set up an <em>Interrupt Stack Table</em> to catch double faults on a separate kernel stack.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>.  The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-06"><code>post-06</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#what-is-a-double-fault">What is a Double Fault?</a>
+                <ul>
+                    <li>
+                        <a href="index.html#triggering-a-double-fault">Triggering a Double Fault</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#a-double-fault-handler">A Double Fault Handler</a>
+                
+            </li><li>
+                <a href="index.html#causes-of-double-faults">Causes of Double Faults</a>
+                <ul>
+                    <li>
+                        <a href="index.html#kernel-stack-overflow">Kernel Stack Overflow</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#switching-stacks">Switching Stacks</a>
+                <ul>
+                    <li>
+                        <a href="index.html#the-ist-and-tss">The IST and TSS</a>
+                    </li><li>
+                        <a href="index.html#creating-a-tss">Creating a TSS</a>
+                    </li><li>
+                        <a href="index.html#the-global-descriptor-table">The Global Descriptor Table</a>
+                    </li><li>
+                        <a href="index.html#the-final-steps">The Final Steps</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#a-stack-overflow-test">A Stack Overflow Test</a>
+                <ul>
+                    <li>
+                        <a href="index.html#implementing-start">Implementing _start</a>
+                    </li><li>
+                        <a href="index.html#the-test-idt">The Test IDT</a>
+                    </li><li>
+                        <a href="index.html#the-double-fault-handler">The Double Fault Handler</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="what-is-a-double-fault"><a class="zola-anchor" href="index.html#what-is-a-double-fault" aria-label="Anchor link for: what-is-a-double-fault">🔗</a>What is a Double Fault?</h2>
+<p>In simplified terms, a double fault is a special exception that occurs when the CPU fails to invoke an exception handler. For example, it occurs when a page fault is triggered but there is no page fault handler registered in the <a href="../cpu-exceptions/index.html#the-interrupt-descriptor-table">Interrupt Descriptor Table</a> (IDT). So it’s kind of similar to catch-all blocks in programming languages with exceptions, e.g., <code>catch(...)</code> in C++ or <code>catch(Exception e)</code> in Java or C#.</p>
+<p>A double fault behaves like a normal exception. It has the vector number <code>8</code> and we can define a normal handler function for it in the IDT. It is really important to provide a double fault handler, because if a double fault is unhandled, a fatal <em>triple fault</em> occurs. Triple faults can’t be caught, and most hardware reacts with a system reset.</p>
+<h3 id="triggering-a-double-fault"><a class="zola-anchor" href="index.html#triggering-a-double-fault" aria-label="Anchor link for: triggering-a-double-fault">🔗</a>Triggering a Double Fault</h3>
+<p>Let’s provoke a double fault by triggering an exception for which we didn’t define a handler function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a page fault
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        *(</span><span style="color:#b5cea8;">0xdeadbeef </span><span style="color:#569cd6;">as *mut u64</span><span>) = </span><span style="color:#b5cea8;">42</span><span>;
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// as before
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>We use <code>unsafe</code> to write to the invalid address <code>0xdeadbeef</code>. The virtual address is not mapped to a physical address in the page tables, so a page fault occurs. We haven’t registered a page fault handler in our <a href="../cpu-exceptions/index.html#the-interrupt-descriptor-table">IDT</a>, so a double fault occurs.</p>
+<p>When we start our kernel now, we see that it enters an endless boot loop. The reason for the boot loop is the following:</p>
+<ol>
+<li>The CPU tries to write to <code>0xdeadbeef</code>, which causes a page fault.</li>
+<li>The CPU looks at the corresponding entry in the IDT and sees that no handler function is specified. Thus, it can’t call the page fault handler and a double fault occurs.</li>
+<li>The CPU looks at the IDT entry of the double fault handler, but this entry does not specify a handler function either. Thus, a <em>triple</em> fault occurs.</li>
+<li>A triple fault is fatal. QEMU reacts to it like most real hardware and issues a system reset.</li>
+</ol>
+<p>So in order to prevent this triple fault, we need to either provide a handler function for page faults or a double fault handler. We want to avoid triple faults in all cases, so let’s start with a double fault handler that is invoked for all unhandled exception types.</p>
+<h2 id="a-double-fault-handler"><a class="zola-anchor" href="index.html#a-double-fault-handler" aria-label="Anchor link for: a-double-fault-handler">🔗</a>A Double Fault Handler</h2>
+<p>A double fault is a normal exception with an error code, so we can specify a handler function similar to our breakpoint handler:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        idt.double_fault.set_handler_fn(double_fault_handler); </span><span style="color:#608b4e;">// new
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// new
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>double_fault_handler(
+</span><span>    stack_frame: InterruptStackFrame, _error_code: </span><span style="color:#569cd6;">u64</span><span>) -&gt; </span><span style="color:#569cd6;">!
+</span><span>{
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;EXCEPTION: DOUBLE FAULT</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">{:#?}&quot;</span><span>, stack_frame);
+</span><span>}
+</span></code></pre>
+<p>Our handler prints a short error message and dumps the exception stack frame. The error code of the double fault handler is always zero, so there’s no reason to print it. One difference to the breakpoint handler is that the double fault handler is <a href="https://doc.rust-lang.org/stable/rust-by-example/fn/diverging.html"><em>diverging</em></a>. The reason is that the <code>x86_64</code> architecture does not permit returning from a double fault exception.</p>
+<p>When we start our kernel now, we should see that the double fault handler is invoked:</p>
+<p><img src="qemu-catch-double-fault.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and the exception stack frame" /></p>
+<p>It worked! Here is what happened this time:</p>
+<ol>
+<li>The CPU tries to write to <code>0xdeadbeef</code>, which causes a page fault.</li>
+<li>Like before, the CPU looks at the corresponding entry in the IDT and sees that no handler function is defined. Thus, a double fault occurs.</li>
+<li>The CPU jumps to the – now present – double fault handler.</li>
+</ol>
+<p>The triple fault (and the boot-loop) no longer occurs, since the CPU can now call the double fault handler.</p>
+<p>That was quite straightforward! So why do we need a whole post for this topic? Well, we’re now able to catch <em>most</em> double faults, but there are some cases where our current approach doesn’t suffice.</p>
+<h2 id="causes-of-double-faults"><a class="zola-anchor" href="index.html#causes-of-double-faults" aria-label="Anchor link for: causes-of-double-faults">🔗</a>Causes of Double Faults</h2>
+<p>Before we look at the special cases, we need to know the exact causes of double faults. Above, we used a pretty vague definition:</p>
+<blockquote>
+<p>A double fault is a special exception that occurs when the CPU fails to invoke an exception handler.</p>
+</blockquote>
+<p>What does <em>“fails to invoke”</em> mean exactly? The handler is not present? The handler is <a href="http://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf">swapped out</a>? And what happens if a handler causes exceptions itself?</p>
+<p>For example, what happens if:</p>
+<ol>
+<li>a breakpoint exception occurs, but the corresponding handler function is swapped out?</li>
+<li>a page fault occurs, but the page fault handler is swapped out?</li>
+<li>a divide-by-zero handler causes a breakpoint exception, but the breakpoint handler is swapped out?</li>
+<li>our kernel overflows its stack and the <em>guard page</em> is hit?</li>
+</ol>
+<p>Fortunately, the AMD64 manual (<a href="https://www.amd.com/system/files/TechDocs/24593.pdf">PDF</a>) has an exact definition (in Section 8.2.9). According to it, a “double fault exception <em>can</em> occur when a second exception occurs during the handling of a prior (first) exception handler”. The <em>“can”</em> is important: Only very specific combinations of exceptions lead to a double fault. These combinations are:</p>
+<table><thead><tr><th>First Exception</th><th>Second Exception</th></tr></thead><tbody>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Divide-by-zero_Error">Divide-by-zero</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td><td><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td></tr>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">Page Fault</a></td><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">Page Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td></tr>
+</tbody></table>
+<p>So, for example, a divide-by-zero fault followed by a page fault is fine (the page fault handler is invoked), but a divide-by-zero fault followed by a general-protection fault leads to a double fault.</p>
+<p>With the help of this table, we can answer the first three of the above questions:</p>
+<ol>
+<li>If a breakpoint exception occurs and the corresponding handler function is swapped out, a <em>page fault</em> occurs and the <em>page fault handler</em> is invoked.</li>
+<li>If a page fault occurs and the page fault handler is swapped out, a <em>double fault</em> occurs and the <em>double fault handler</em> is invoked.</li>
+<li>If a divide-by-zero handler causes a breakpoint exception, the CPU tries to invoke the breakpoint handler. If the breakpoint handler is swapped out, a <em>page fault</em> occurs and the <em>page fault handler</em> is invoked.</li>
+</ol>
+<p>In fact, even the case of an exception without a handler function in the IDT follows this scheme: When the exception occurs, the CPU tries to read the corresponding IDT entry. Since the entry is 0, which is not a valid IDT entry, a <em>general protection fault</em> occurs. We did not define a handler function for the general protection fault either, so another general protection fault occurs. According to the table, this leads to a double fault.</p>
+<h3 id="kernel-stack-overflow"><a class="zola-anchor" href="index.html#kernel-stack-overflow" aria-label="Anchor link for: kernel-stack-overflow">🔗</a>Kernel Stack Overflow</h3>
+<p>Let’s look at the fourth question:</p>
+<blockquote>
+<p>What happens if our kernel overflows its stack and the guard page is hit?</p>
+</blockquote>
+<p>A guard page is a special memory page at the bottom of a stack that makes it possible to detect stack overflows. The page is not mapped to any physical frame, so accessing it causes a page fault instead of silently corrupting other memory. The bootloader sets up a guard page for our kernel stack, so a stack overflow causes a <em>page fault</em>.</p>
+<p>When a page fault occurs, the CPU looks up the page fault handler in the IDT and tries to push the <a href="../cpu-exceptions/index.html#the-interrupt-stack-frame">interrupt stack frame</a> onto the stack. However, the current stack pointer still points to the non-present guard page. Thus, a second page fault occurs, which causes a double fault (according to the above table).</p>
+<p>So the CPU tries to call the <em>double fault handler</em> now. However, on a double fault, the CPU tries to push the exception stack frame, too. The stack pointer still points to the guard page, so a <em>third</em> page fault occurs, which causes a <em>triple fault</em> and a system reboot. So our current double fault handler can’t avoid a triple fault in this case.</p>
+<p>Let’s try it ourselves! We can easily provoke a kernel stack overflow by calling a function that recurses endlessly:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>        stack_overflow(); </span><span style="color:#608b4e;">// for each recursion, the return address is pushed
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a stack overflow
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), println(…), and loop {}
+</span><span>}
+</span></code></pre>
+<p>When we try this code in QEMU, we see that the system enters a bootloop again.</p>
+<p>So how can we avoid this problem? We can’t omit the pushing of the exception stack frame, since the CPU itself does it. So we need to ensure somehow that the stack is always valid when a double fault exception occurs. Fortunately, the x86_64 architecture has a solution to this problem.</p>
+<h2 id="switching-stacks"><a class="zola-anchor" href="index.html#switching-stacks" aria-label="Anchor link for: switching-stacks">🔗</a>Switching Stacks</h2>
+<p>The x86_64 architecture is able to switch to a predefined, known-good stack when an exception occurs. This switch happens at hardware level, so it can be performed before the CPU pushes the exception stack frame.</p>
+<p>The switching mechanism is implemented as an <em>Interrupt Stack Table</em> (IST). The IST is a table of 7 pointers to known-good stacks. In Rust-like pseudocode:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">struct </span><span>InterruptStackTable {
+</span><span>    stack_pointers: [Option&lt;StackPointer&gt;; 7],
+</span><span>}
+</span></code></pre>
+<p>For each exception handler, we can choose a stack from the IST through the <code>stack_pointers</code> field in the corresponding <a href="../cpu-exceptions/index.html#the-interrupt-descriptor-table">IDT entry</a>. For example, our double fault handler could use the first stack in the IST. Then the CPU automatically switches to this stack whenever a double fault occurs. This switch would happen before anything is pushed, preventing the triple fault.</p>
+<h3 id="the-ist-and-tss"><a class="zola-anchor" href="index.html#the-ist-and-tss" aria-label="Anchor link for: the-ist-and-tss">🔗</a>The IST and TSS</h3>
+<p>The Interrupt Stack Table (IST) is part of an old legacy structure called <em><a href="https://en.wikipedia.org/wiki/Task_state_segment">Task State Segment</a></em> (TSS). The TSS used to hold various pieces of information (e.g., processor register state) about a task in 32-bit mode and was, for example, used for <a href="https://wiki.osdev.org/Context_Switching#Hardware_Context_Switching">hardware context switching</a>. However, hardware context switching is no longer supported in 64-bit mode and the format of the TSS has changed completely.</p>
+<p>On x86_64, the TSS no longer holds any task-specific information at all. Instead, it holds two stack tables (the IST is one of them). The only common field between the 32-bit and 64-bit TSS is the pointer to the <a href="https://en.wikipedia.org/wiki/Task_state_segment#I.2FO_port_permissions">I/O port permissions bitmap</a>.</p>
+<p>The 64-bit TSS has the following format:</p>
+<table><thead><tr><th>Field</th><th>Type</th></tr></thead><tbody>
+<tr><td><span style="opacity: 0.5">(reserved)</span></td><td><code>u32</code></td></tr>
+<tr><td>Privilege Stack Table</td><td><code>[u64; 3]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(reserved)</span></td><td><code>u64</code></td></tr>
+<tr><td>Interrupt Stack Table</td><td><code>[u64; 7]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(reserved)</span></td><td><code>u64</code></td></tr>
+<tr><td><span style="opacity: 0.5">(reserved)</span></td><td><code>u16</code></td></tr>
+<tr><td>I/O Map Base Address</td><td><code>u16</code></td></tr>
+</tbody></table>
+<p>The <em>Privilege Stack Table</em> is used by the CPU when the privilege level changes. For example, if an exception occurs while the CPU is in user mode (privilege level 3), the CPU normally switches to kernel mode (privilege level 0) before invoking the exception handler. In that case, the CPU would switch to the 0th stack in the Privilege Stack Table (since 0 is the target privilege level). We don’t have any user-mode programs yet, so we will ignore this table for now.</p>
+<h3 id="creating-a-tss"><a class="zola-anchor" href="index.html#creating-a-tss" aria-label="Anchor link for: creating-a-tss">🔗</a>Creating a TSS</h3>
+<p>Let’s create a new TSS that contains a separate double fault stack in its interrupt stack table. For that, we need a TSS struct. Fortunately, the <code>x86_64</code> crate already contains a <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/tss/struct.TaskStateSegment.html"><code>TaskStateSegment</code> struct</a> that we can use.</p>
+<p>We create the TSS in a new <code>gdt</code> module (the name will make sense later):</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>gdt;
+</span><span>
+</span><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::tss::TaskStateSegment;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>: </span><span style="color:#569cd6;">u16 </span><span>= </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TSS</span><span>: TaskStateSegment = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> tss = TaskStateSegment::new();
+</span><span>        tss.interrupt_stack_table[</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX </span><span style="color:#569cd6;">as usize</span><span>] = {
+</span><span>            </span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">STACK_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">4096 </span><span>* </span><span style="color:#b5cea8;">5</span><span>;
+</span><span>            </span><span style="color:#569cd6;">static mut </span><span style="color:#b4cea8;">STACK</span><span>: [</span><span style="color:#569cd6;">u8</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>] = [</span><span style="color:#b5cea8;">0</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>];
+</span><span>
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_start = VirtAddr::from_ptr(</span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">STACK </span><span>});
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_end = stack_start + </span><span style="color:#b4cea8;">STACK_SIZE</span><span>;
+</span><span>            stack_end
+</span><span>        };
+</span><span>        tss
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>We use <code>lazy_static</code> because Rust’s const evaluator is not yet powerful enough to do this initialization at compile time. We define that the 0th IST entry is the double fault stack (any other IST index would work too). Then we write the top address of a double fault stack to the 0th entry. We write the top address because stacks on x86 grow downwards, i.e., from high addresses to low addresses.</p>
+<p>We haven’t implemented memory management yet, so we don’t have a proper way to allocate a new stack. Instead, we use a <code>static mut</code> array as stack storage for now. The <code>unsafe</code> is required because the compiler can’t guarantee race freedom when mutable statics are accessed. It is important that it is a <code>static mut</code> and not an immutable <code>static</code>, because otherwise the bootloader will map it to a read-only page. We will replace this with a proper stack allocation in a later post, then the <code>unsafe</code> will no longer be needed at this place.</p>
+<p>Note that this double fault stack has no guard page that protects against stack overflow. This means that we should not do anything stack-intensive in our double fault handler because a stack overflow might corrupt the memory below the stack.</p>
+<h4 id="loading-the-tss"><a class="zola-anchor" href="index.html#loading-the-tss" aria-label="Anchor link for: loading-the-tss">🔗</a>Loading the TSS</h4>
+<p>Now that we’ve created a new TSS, we need a way to tell the CPU that it should use it. Unfortunately, this is a bit cumbersome since the TSS uses the segmentation system (for historical reasons). Instead of loading the table directly, we need to add a new segment descriptor to the <a href="https://web.archive.org/web/20190217233448/https://www.flingos.co.uk/docs/reference/Global-Descriptor-Table/">Global Descriptor Table</a> (GDT). Then we can load our TSS by invoking the <a href="https://www.felixcloutier.com/x86/ltr"><code>ltr</code> instruction</a> with the respective GDT index. (This is the reason why we named our module <code>gdt</code>.)</p>
+<h3 id="the-global-descriptor-table"><a class="zola-anchor" href="index.html#the-global-descriptor-table" aria-label="Anchor link for: the-global-descriptor-table">🔗</a>The Global Descriptor Table</h3>
+<p>The Global Descriptor Table (GDT) is a relic that was used for <a href="https://en.wikipedia.org/wiki/X86_memory_segmentation">memory segmentation</a> before paging became the de facto standard. However, it is still needed in 64-bit mode for various things, such as kernel/user mode configuration or TSS loading.</p>
+<p>The GDT is a structure that contains the <em>segments</em> of the program. It was used on older architectures to isolate programs from each other before paging became the standard. For more information about segmentation, check out the equally named chapter of the free <a href="http://pages.cs.wisc.edu/~remzi/OSTEP/">“Three Easy Pieces” book</a>. While segmentation is no longer supported in 64-bit mode, the GDT still exists. It is mostly used for two things: Switching between kernel space and user space, and loading a TSS structure.</p>
+<h4 id="creating-a-gdt"><a class="zola-anchor" href="index.html#creating-a-gdt" aria-label="Anchor link for: creating-a-gdt">🔗</a>Creating a GDT</h4>
+<p>Let’s create a static <code>GDT</code> that includes a segment for our <code>TSS</code> static:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor};
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: GlobalDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        gdt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>As before, we use <code>lazy_static</code> again. We create a new GDT with a code segment and a TSS segment.</p>
+<h4 id="loading-the-gdt"><a class="zola-anchor" href="index.html#loading-the-gdt" aria-label="Anchor link for: loading-the-gdt">🔗</a>Loading the GDT</h4>
+<p>To load our GDT, we create a new <code>gdt::init</code> function that we call from our <code>init</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.load();
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>}
+</span></code></pre>
+<p>Now our GDT is loaded (since the <code>_start</code> function calls <code>init</code>), but we still see the boot loop on stack overflow.</p>
+<h3 id="the-final-steps"><a class="zola-anchor" href="index.html#the-final-steps" aria-label="Anchor link for: the-final-steps">🔗</a>The Final Steps</h3>
+<p>The problem is that the GDT segments are not yet active because the segment and TSS registers still contain the values from the old GDT. We also need to modify the double fault IDT entry so that it uses the new stack.</p>
+<p>In summary, we need to do the following:</p>
+<ol>
+<li><strong>Reload code segment register</strong>: We changed our GDT, so we should reload <code>cs</code>, the code segment register. This is required since the old segment selector could now point to a different GDT descriptor (e.g., a TSS descriptor).</li>
+<li><strong>Load the TSS</strong>: We loaded a GDT that contains a TSS selector, but we still need to tell the CPU that it should use that TSS.</li>
+<li><strong>Update the IDT entry</strong>: As soon as our TSS is loaded, the CPU has access to a valid interrupt stack table (IST). Then we can tell the CPU that it should use our new double fault stack by modifying our double fault IDT entry.</li>
+</ol>
+<p>For the first two steps, we need access to the <code>code_selector</code> and <code>tss_selector</code> variables in our <code>gdt::init</code> function. We can achieve this by making them part of the static through a new <code>Selectors</code> struct:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::SegmentSelector;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: (GlobalDescriptorTable, Selectors) = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        </span><span style="color:#569cd6;">let</span><span> tss_selector = gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        (gdt, Selectors { code_selector, tss_selector })
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Selectors {
+</span><span>    code_selector: SegmentSelector,
+</span><span>    tss_selector: SegmentSelector,
+</span><span>}
+</span></code></pre>
+<p>Now we can use the selectors to reload the <code>cs</code> register and load our <code>TSS</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::tables::load_tss;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::segmentation::{</span><span style="color:#b4cea8;">CS</span><span>, Segment};
+</span><span>    
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">0.</span><span>load();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">CS</span><span>::set_reg(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>code_selector);
+</span><span>        load_tss(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>tss_selector);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We reload the code segment register using <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/segmentation/fn.set_cs.html"><code>set_cs</code></a> and load the TSS using <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/tables/fn.load_tss.html"><code>load_tss</code></a>. The functions are marked as <code>unsafe</code>, so we need an <code>unsafe</code> block to invoke them. The reason is that it might be possible to break memory safety by loading invalid selectors.</p>
+<p>Now that we have loaded a valid TSS and interrupt stack table, we can set the stack index for our double fault handler in the IDT:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use crate</span><span>::gdt;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault.set_handler_fn(double_fault_handler)
+</span><span>                .set_stack_index(gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>The <code>set_stack_index</code> method is unsafe because the caller must ensure that the used index is valid and not already used for another exception.</p>
+<p>That’s it! Now the CPU should switch to the double fault stack whenever a double fault occurs. Thus, we are able to catch <em>all</em> double faults, including kernel stack overflows:</p>
+<p><img src="qemu-double-fault-on-stack-overflow.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and a dump of the exception stack frame" /></p>
+<p>From now on, we should never see a triple fault again! To ensure that we don’t accidentally break the above, we should add a test for this.</p>
+<h2 id="a-stack-overflow-test"><a class="zola-anchor" href="index.html#a-stack-overflow-test" aria-label="Anchor link for: a-stack-overflow-test">🔗</a>A Stack Overflow Test</h2>
+<p>To test our new <code>gdt</code> module and ensure that the double fault handler is correctly called on a stack overflow, we can add an integration test. The idea is to provoke a double fault in the test function and verify that the double fault handler is called.</p>
+<p>Let’s start with a minimal skeleton:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>Like our <code>panic_handler</code> test, the test will run <a href="../testing/index.html#no-harness-tests">without a test harness</a>. The reason is that we can’t continue execution after a double fault, so more than one test doesn’t make sense. To disable the test harness for the test, we add the following to our <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[[</span><span style="color:#808080;">test</span><span>]]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;stack_overflow&quot;
+</span><span style="color:#569cd6;">harness </span><span>= </span><span style="color:#569cd6;">false
+</span></code></pre>
+<p>Now <code>cargo test --test stack_overflow</code> should compile successfully. The test fails, of course, since the <code>unimplemented</code> macro panics.</p>
+<h3 id="implementing-start"><a class="zola-anchor" href="index.html#implementing-start" aria-label="Anchor link for: implementing-start">🔗</a>Implementing <code>_start</code></h3>
+<p>The implementation of the <code>_start</code> function looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::serial_print;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;stack_overflow::stack_overflow...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::gdt::init();
+</span><span>    init_test_idt();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a stack overflow
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;Execution continued after stack overflow&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span>#[allow(unconditional_recursion)]
+</span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>    stack_overflow(); </span><span style="color:#608b4e;">// for each recursion, the return address is pushed
+</span><span>    volatile::Volatile::new(</span><span style="color:#b5cea8;">0</span><span>).read(); </span><span style="color:#608b4e;">// prevent tail recursion optimizations
+</span><span>}
+</span></code></pre>
+<p>We call our <code>gdt::init</code> function to initialize a new GDT. Instead of calling our <code>interrupts::init_idt</code> function, we call an <code>init_test_idt</code> function that will be explained in a moment. The reason is that we want to register a custom double fault handler that does an <code>exit_qemu(QemuExitCode::Success)</code> instead of panicking.</p>
+<p>The <code>stack_overflow</code> function is almost identical to the function in our <code>main.rs</code>. The only difference is that at the end of the function, we perform an additional <a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a> read using the <a href="https://docs.rs/volatile/0.2.6/volatile/struct.Volatile.html"><code>Volatile</code></a> type to prevent a compiler optimization called <a href="https://en.wikipedia.org/wiki/Tail_call"><em>tail call elimination</em></a>. Among other things, this optimization allows the compiler to transform a function whose last statement is a recursive function call into a normal loop. Thus, no additional stack frame is created for the function call, so the stack usage remains constant.</p>
+<p>In our case, however, we want the stack overflow to happen, so we add a dummy volatile read statement at the end of the function, which the compiler is not allowed to remove. Thus, the function is no longer <em>tail recursive</em>, and the transformation into a loop is prevented. We also add the <code>allow(unconditional_recursion)</code> attribute to silence the compiler warning that the function recurses endlessly.</p>
+<h3 id="the-test-idt"><a class="zola-anchor" href="index.html#the-test-idt" aria-label="Anchor link for: the-test-idt">🔗</a>The Test IDT</h3>
+<p>As noted above, the test needs its own IDT with a custom double fault handler. The implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptDescriptorTable;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TEST_IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault
+</span><span>                .set_handler_fn(test_double_fault_handler)
+</span><span>                .set_stack_index(blog_os::gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>);
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_test_idt() {
+</span><span>    </span><span style="color:#b4cea8;">TEST_IDT</span><span>.load();
+</span><span>}
+</span></code></pre>
+<p>The implementation is very similar to our normal IDT in <code>interrupts.rs</code>. Like in the normal IDT, we set a stack index in the IST for the double fault handler in order to switch to a separate stack. The <code>init_test_idt</code> function loads the IDT on the CPU through the <code>load</code> method.</p>
+<h3 id="the-double-fault-handler"><a class="zola-anchor" href="index.html#the-double-fault-handler" aria-label="Anchor link for: the-double-fault-handler">🔗</a>The Double Fault Handler</h3>
+<p>The only missing piece is our double fault handler. It looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, QemuExitCode, serial_println};
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptStackFrame;
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>test_double_fault_handler(
+</span><span>    _stack_frame: InterruptStackFrame,
+</span><span>    _error_code: </span><span style="color:#569cd6;">u64</span><span>,
+</span><span>) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>When the double fault handler is called, we exit QEMU with a success exit code, which marks the test as passed. Since integration tests are completely separate executables, we need to set the <code>#![feature(abi_x86_interrupt)]</code> attribute again at the top of our test file.</p>
+<p>Now we can run our test through <code>cargo test --test stack_overflow</code> (or <code>cargo test</code> to run all tests). As expected, we see the <code>stack_overflow... [ok]</code> output in the console. Try to comment out the <code>set_stack_index</code> line; it should cause the test to fail.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>In this post, we learned what a double fault is and under which conditions it occurs. We added a basic double fault handler that prints an error message and added an integration test for it.</p>
+<p>We also enabled the hardware-supported stack switching on double fault exceptions so that it also works on stack overflow. While implementing it, we learned about the task state segment (TSS), the contained interrupt stack table (IST), and the global descriptor table (GDT), which was used for segmentation on older architectures.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>The next post explains how to handle interrupts from external devices such as timers, keyboards, or network controllers. These hardware interrupts are very similar to exceptions, e.g., they are also dispatched through the IDT. However, unlike exceptions, they don’t arise directly on the CPU. Instead, an <em>interrupt controller</em> aggregates these interrupts and forwards them to the CPU depending on their priority. In the next post, we will explore the <a href="https://en.wikipedia.org/wiki/Intel_8259">Intel 8259</a> (“PIC”) interrupt controller and learn how to implement keyboard support.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../cpu-exceptions/index.html">&laquo; CPU Exceptions</a>
+        
+        
+            <a class="next" href="../hardware-interrupts/index.html">Hardware Interrupts &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Double%20Faults%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Double Faults"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Double%20Faults%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="zh-CN" class=""><a href="../zh-CN/double-fault-exceptions/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../ja/double-fault-exceptions/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../fa/double-fault-exceptions/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../ko/double-fault-exceptions/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

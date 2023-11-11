@@ -1,0 +1,797 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事では、私たちのカーネルにヒープ割り当て (アロケーション) の機能を追加します。まず動的メモリの基礎を説明し、どのようにして借用チェッカがありがちなアロケーションエラーを防いでくれるのかを示します。その後Rustの基本的なアロケーションインターフェースを実装し、ヒープメモリ領域を作成し、アロ…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>ヒープ割り当て | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#ju-suo-rokaru-bian-shu-tojing-de-sutateituku-bian-shu">局所 (ローカル) 変数と静的 (スタティック) 変数</a>
+            <ol>
+                <li>
+                    <a href="index.html#ju-suo-bian-shu">局所変数</a>
+                </li><li>
+                    <a href="index.html#jing-de-bian-shu">静的変数</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#dong-de-dainamituku-memori">動的 (ダイナミック) メモリ</a>
+            <ol>
+                <li>
+                    <a href="index.html#yokuarumisu">よくあるミス</a>
+                </li><li>
+                    <a href="index.html#rustniokeruge-ridang-te">Rustにおける割り当て</a>
+                </li><li>
+                    <a href="index.html#shi-yong-li">使用例</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#aroketaintahuesu">アロケータインターフェース</a>
+            <ol>
+                <li>
+                    <a href="index.html#globalalloctoreito">GlobalAllocトレイト</a>
+                </li><li>
+                    <a href="index.html#dummyallocator">DummyAllocator</a>
+                </li><li>
+                    <a href="index.html#global-allocator-shu-xing">#[global_allocator]属性</a>
+                </li><li>
+                    <a href="index.html#alloc-error-handler-shu-xing">#[alloc_error_handler]属性</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#creating-a-kernel-heap">Creating a Kernel Heap</a>
+            
+        </li><li>
+            <a href="index.html#aroketakuretowoshi-u">アロケータクレートを使う</a>
+            
+        </li><li>
+            <a href="index.html#tesutowozhui-jia-suru">テストを追加する</a>
+            
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>ヒープ割り当て</h1>
+    <time datetime="2019-06-26" class="post-date">
+        Jun 26, 2019
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../heap-allocation/index.html">Heap Allocation</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/woodyZootopia">@woodyZootopia</a> 及び <a href="https://github.com/garasubo">@garasubo</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事では、私たちのカーネルにヒープ<ruby>割り当て<rp> (</rp><rt>アロケーション</rt><rp>) </rp></ruby>の機能を追加します。まず動的メモリの基礎を説明し、どのようにして借用チェッカがありがちなアロケーションエラーを防いでくれるのかを示します。その後Rustの基本的なアロケーションインターフェースを実装し、ヒープメモリ領域を作成し、アロケータクレートを設定します。この記事を終える頃には、Rustに組み込みの<code>alloc</code>クレートのすべてのアロケーション・コレクション型が私たちのカーネルで利用可能になっているでしょう。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-10"><code>post-10</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#ju-suo-rokaru-bian-shu-tojing-de-sutateituku-bian-shu">局所 (ローカル) 変数と静的 (スタティック) 変数</a>
+                <ul>
+                    <li>
+                        <a href="index.html#ju-suo-bian-shu">局所変数</a>
+                    </li><li>
+                        <a href="index.html#jing-de-bian-shu">静的変数</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#dong-de-dainamituku-memori">動的 (ダイナミック) メモリ</a>
+                <ul>
+                    <li>
+                        <a href="index.html#yokuarumisu">よくあるミス</a>
+                    </li><li>
+                        <a href="index.html#rustniokeruge-ridang-te">Rustにおける割り当て</a>
+                    </li><li>
+                        <a href="index.html#shi-yong-li">使用例</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#aroketaintahuesu">アロケータインターフェース</a>
+                <ul>
+                    <li>
+                        <a href="index.html#globalalloctoreito">GlobalAllocトレイト</a>
+                    </li><li>
+                        <a href="index.html#dummyallocator">DummyAllocator</a>
+                    </li><li>
+                        <a href="index.html#global-allocator-shu-xing">#[global_allocator]属性</a>
+                    </li><li>
+                        <a href="index.html#alloc-error-handler-shu-xing">#[alloc_error_handler]属性</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#creating-a-kernel-heap">Creating a Kernel Heap</a>
+                
+            </li><li>
+                <a href="index.html#aroketakuretowoshi-u">アロケータクレートを使う</a>
+                
+            </li><li>
+                <a href="index.html#tesutowozhui-jia-suru">テストを追加する</a>
+                
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="ju-suo-rokaru-bian-shu-tojing-de-sutateituku-bian-shu"><a class="zola-anchor" href="index.html#ju-suo-rokaru-bian-shu-tojing-de-sutateituku-bian-shu" aria-label="Anchor link for: ju-suo-rokaru-bian-shu-tojing-de-sutateituku-bian-shu">🔗</a><ruby>局所<rp> (</rp><rt>ローカル</rt><rp>) </rp></ruby>変数と<ruby>静的<rp> (</rp><rt>スタティック</rt><rp>) </rp></ruby>変数</h2>
+<p>私たちのカーネルでは現在二種類の変数が使用されています：局所変数と<code>static</code>変数です。局所変数は<a href="https://ja.wikipedia.org/wiki/%E3%82%B3%E3%83%BC%E3%83%AB%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF">コールスタック</a>に格納されており、変数の定義された関数がリターンするまでの間のみ有効です。静的変数はメモリ上の固定された場所に格納されており、プログラムのライフタイム全体で常に生存しています。</p>
+<h3 id="ju-suo-bian-shu"><a class="zola-anchor" href="index.html#ju-suo-bian-shu" aria-label="Anchor link for: ju-suo-bian-shu">🔗</a>局所変数</h3>
+<p>局所変数は<a href="https://ja.wikipedia.org/wiki/%E3%82%B3%E3%83%BC%E3%83%AB%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF">コールスタック</a>に格納されています。これはプッシュ (<code>push</code>) とポップ (<code>pop</code>) という命令をサポートする<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%82%BF%E3%83%83%E3%82%AF">スタックというデータ構造</a>です。関数に入るたびに、パラメータ、リターンアドレス、呼び出された関数の局所変数がコンパイラによってプッシュされます：</p>
+<p><img src="call-stack.svg" alt="outer()とinner(i: usize)関数。両方が局所変数を持っています。outerはinner(1)を呼びます。コールスタックには順に以下の領域があります：outerの局所変数、引数i=1、リターンアドレス、そしてinnerの局所変数。" /></p>
+<p>上の例は、<code>outer</code>関数が<code>inner</code>関数を呼び出した後のコールスタックを示しています。コールスタックは<code>outer</code>の局所変数を先に持っていることが分かります。<code>inner</code>を呼び出すと、パラメータ<code>1</code>とこの関数のリターンアドレスがプッシュされます。そこで制御は<code>inner</code>へと移り、<code>inner</code>は自身の局所変数をプッシュします。</p>
+<p><code>inner</code>関数がリターンすると、コールスタックのこの関数に対応する部分がポップされ、<code>outer</code>の局所変数のみが残ります：</p>
+<p><img src="call-stack-return.svg" alt="outerの局所変数しか持っていないコールスタック" /></p>
+<p><code>inner</code>関数の局所変数はリターンまでしか生存していないことが分かります。Rustコンパイラはこの<ruby>生存期間<rp> (</rp><rt>ライフタイム</rt><rp>) </rp></ruby>を強制し、私たちが値を長く使いすぎてしまうとエラーを投げます。例えば、局所変数への参照を返そうとしたときがそうです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>inner(i: </span><span style="color:#569cd6;">usize</span><span>) -&gt; </span><span style="color:#569cd6;">&amp;&#39;static u32 </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> z = [</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">2</span><span>, </span><span style="color:#b5cea8;">3</span><span>];
+</span><span>    </span><span style="color:#569cd6;">&amp;</span><span>z[i]
+</span><span>}
+</span></code></pre>
+<p>(<a href="https://play.rust-lang.org/?version=stable&amp;mode=debug&amp;edition=2018&amp;gist=6186a0f3a54f468e1de8894996d12819">この例をplaygroundで実行する</a>)</p>
+<p>上の例の場合、参照を返すことには意味がありませんが、変数に関数よりも長く生存して欲しいというケースは存在します。すでに私たちのカーネルでそのようなケースに遭遇しています。それは<a href="../cpu-exceptions/index.html#idtwodu-miip-mu">割り込み記述子表 (IDT) を読み込</a>もうとしたときで、ライフタイムを延ばすために<code>static</code>変数を使う必要がありました。</p>
+<h3 id="jing-de-bian-shu"><a class="zola-anchor" href="index.html#jing-de-bian-shu" aria-label="Anchor link for: jing-de-bian-shu">🔗</a>静的変数</h3>
+<p>静的変数は、スタックとは別の固定されたメモリ位置に格納されます。このメモリ位置はコンパイル時にリンカによって指定され、実行可能ファイルにエンコードされています。静的変数はプログラムの実行中ずっと生存するため、<code>'static</code>ライフタイムを持っており、局所変数によっていつでも参照することができます。</p>
+<p><img src="call-stack-static.svg" alt="同じouter/innerの例ですが、innerがstatic Z: [u32; 3] = [1,2,3];を持っており、参照&amp;Z[i]を返します" /></p>
+<p>上の例で<code>inner</code>関数がリターンするとき、それに対応するコールスタックは破棄されます。（しかし）静的変数は絶対に破棄されない別のメモリ領域にあるため、参照<code>&amp;Z[1]</code>はリターン後も有効です。</p>
+<p><code>'static</code>ライフタイムの他にも静的変数には利点があります。それらは位置がコンパイル時に分かるため、アクセスするために参照が必要ないのです。この特性を私たちの<code>println</code>マクロを作る際に利用しました：<a href="../vga-text-mode/index.html#da-yu-de-global-naintahuesu">静的な<code>Writer</code></a>をその内部で使うことで、マクロを呼び出す際に<code>&amp;mut Writer</code>参照が必要でなくなります。これは他の変数にアクセスできない<a href="../cpu-exceptions/index.html#shi-zhuang">例外処理関数</a>においてとても有用です。</p>
+<p>しかし、静的変数のこの特性には重大な欠点がついてきます：デフォルトでは読み込み専用なのです。Rustがこのルールを強制するのは、例えば二つのスレッドがある静的変数を同時に変更した場合<a href="https://doc.rust-jp.rs/rust-nomicon-ja/races.html">データ競合</a>が発生するためです。静的変数を変更する唯一の方法は、それを<a href="https://docs.rs/spin/0.5.2/spin/struct.Mutex.html"><code>Mutex</code></a>型にカプセル化し、あらゆる時刻において<code>&amp;mut</code>参照が一つしか存在しないことを保証することです。<code>Mutex</code>は<a href="../vga-text-mode/index.html#supinrotuku">VGAバッファへの静的な<code>Writer</code></a>を作ったときにすでに使いました。</p>
+<h2 id="dong-de-dainamituku-memori"><a class="zola-anchor" href="index.html#dong-de-dainamituku-memori" aria-label="Anchor link for: dong-de-dainamituku-memori">🔗</a><ruby>動的<rp> (</rp><rt>ダイナミック</rt><rp>) </rp></ruby>メモリ</h2>
+<p>局所変数と静的変数を組み合わせれば、それら自体とても強力であり、ほとんどのユースケースを満足します。しかし、どちらにも制限が存在することも見てきました：</p>
+<ul>
+<li>局所変数はそれを定義する関数やブロックが終わるまでしか生存しません。なぜなら、これらはコールスタックに存在し、関数がリターンした段階で破棄されるからです。</li>
+<li>静的変数はプログラムの実行中常に生存するため、必要なくなったときでもメモリを取り戻したり再利用したりする方法がありません。また、所有権のセマンティクスが不明瞭であり、すべての関数からアクセスできてしまうため、変更しようと思ったときには<a href="https://docs.rs/spin/0.5.2/spin/struct.Mutex.html"><code>Mutex</code></a>で保護してやらないといけません。</li>
+</ul>
+<p>局所変数・静的変数の制約としてもう一つ、固定サイズであることが挙げられます。従ってこれらは要素が追加されたときに動的に大きくなるコレクションを格納することができません（Rustにおいて動的サイズの局所変数を可能にする<a href="https://github.com/rust-lang/rust/issues/48055">unsized rvalues</a>の提案が行われていますが、これはいくつかの特定のケースでしかうまく動きません）。</p>
+<p>これらの欠点を回避するために、プログラミング言語はしばしば、変数を格納するための第三の領域である<strong>ヒープ</strong>をサポートします。ヒープは、<code>allocate</code>と<code>deallocate</code>という二つの関数を通じて、実行時の<strong>動的メモリ割り当て</strong>をサポートします。仕組みとしては以下のようになります：<code>allocate</code>関数は、変数を格納するのに使える、指定されたサイズの解放されたメモリの塊を返します。変数への参照を引数に<code>deallocate</code>関数を呼び出すことによってその変数を解放するまで、この変数は生存します。</p>
+<p>例を使って見てみましょう：</p>
+<p><img src="call-stack-heap.svg" alt="inner関数はallocate(size_of([u32; 3]))を呼び、z.write([1,2,3]);で書き込みを行い、(z as *mut u32).offset(i)を返します。outer関数は返された値yに対してdeallocate(y, size_of(u32))を行います。" /></p>
+<p>ここで<code>inner</code>関数は<code>z</code>を格納するために静的変数ではなくヒープメモリを使っています。まず要求されたサイズのメモリブロックを割り当て、<code>*mut u32</code>の<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#%E7%94%9F%E3%83%9D%E3%82%A4%E3%83%B3%E3%82%BF%E3%82%92%E5%8F%82%E7%85%A7%E5%A4%96%E3%81%97%E3%81%99%E3%82%8B">生ポインタ</a>を受け取ります。その後で<a href="https://doc.rust-lang.org/core/ptr/fn.write.html"><code>ptr::write</code></a>メソッドを使ってこれに配列<code>[1,2,3]</code>を書き込みます。最後のステップとして、<a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.offset"><code>offset</code></a>関数を使って<code>i</code>番目の要素へのポインタを計算しそれを返します（簡単のため、必要なキャストやunsafeブロックをいくつか省略しました）。</p>
+<p>割り当てられたメモリは<code>deallocate</code>の呼び出しによって明示的に解放されるまで生存します。したがって、返されたポインタは、<code>inner</code>がリターンしコールスタックの対応する部分が破棄された後も有効です。スタティックメモリと比較したときのヒープメモリの長所は、解放（<code>outer</code>内の<code>deallocate</code>呼び出しでまさにこれを行っています）後に再利用できるということです。この呼び出しの後、状況は以下のようになります。</p>
+<p><img src="call-stack-heap-freed.svg" alt="コールスタックはouterの局所変数を持っており、ヒープはz[0]とz[2]を持っているが、z[1]はもう持っていない。" /></p>
+<p><code>z[1]</code>スロットが解放され、次の<code>allocate</code>呼び出しで再利用できることが分かります。しかし、<code>z[0]</code>と<code>z[2]</code>は永久にdeallocateされず、したがって永久に解放されないことも分かります。このようなバグは<strong>メモリリーク</strong>と呼ばれており、しばしばプログラムの過剰なメモリ消費を引き起こします（<code>inner</code>をループで何度も呼び出したらどんなことになるか、想像してみてください）。これ自体良くないことに思われるかもしれませんが、動的割り当てはもっと危険性の高いバグを発生させうるのです。</p>
+<h3 id="yokuarumisu"><a class="zola-anchor" href="index.html#yokuarumisu" aria-label="Anchor link for: yokuarumisu">🔗</a>よくあるミス</h3>
+<p>メモリリークは困りものですが、プログラムを攻撃者に対して脆弱にはしません。しかしこのほかに、より深刻な結果を招く二種類のバグが存在します：</p>
+<ul>
+<li>もし変数に対して<code>deallocate</code>を呼んだ後にも間違ってそれを使い続けたら、いわゆる<ruby>use-after-free<rp> (</rp><rt>メモリ解放後に使用</rt><rp>) </rp></ruby>脆弱性が発生します。このようなバグは未定義動作を引き起こし、しばしば攻撃者が任意コードを実行するのに利用されます。</li>
+<li>間違ってある変数を二度解放したら、<ruby>double-free<rp> (</rp><rt>二重解放</rt><rp>) </rp></ruby>脆弱性が発生します。これが問題になるのは、最初の<code>deallocate</code>呼び出しの後に同じ場所にallocateされた別の割り当てを解放してしまうかもしれないからです。従って、これもまたuse-after-free脆弱性につながりかねません。</li>
+</ul>
+<p>これらの脆弱性は広く知られているため、回避する方法も解明されているはずだとお思いになるかもしれません。しかし答えはいいえで、このような脆弱性は未だ散見され、例えば最近でも任意コード実行を許す<a href="https://securityboulevard.com/2019/02/linux-use-after-free-vulnerability-found-in-linux-2-6-through-4-20-11/">Linuxのuse-after-free脆弱性</a>が存在しました。このことは、最高のプログラマーであっても、複雑なプロジェクトにおいて常に正しく動的メモリを扱えはしないということを示しています。</p>
+<p>これらの問題を回避するため、JavaやPythonといった多くの言語では<a href="https://ja.wikipedia.org/wiki/%E3%82%AC%E3%83%99%E3%83%BC%E3%82%B8%E3%82%B3%E3%83%AC%E3%82%AF%E3%82%B7%E3%83%A7%E3%83%B3"><strong>ガベージコレクション</strong></a>という技術を使って自動的に動的メモリを管理しています。発想としては、プログラマが絶対に自分の手で<code>deallocate</code>を呼び出すことがないようにするというものです。代わりに、プログラムが定期的に一時停止されてスキャンされ、未使用のヒープ変数が見つかったら自動的にdeallocateされるのです。従って、上のような脆弱性は絶対に発生し得ません。欠点としては，定期的にスキャンすることによる性能のオーバーヘッドが発生することと、一時停止の時間が長くなりがちであることが挙げられます。</p>
+<p>Rustはこの問題に対して別のアプローチを取ります：<a href="https://doc.rust-jp.rs/book-ja/ch04-01-what-is-ownership.html"><strong>所有権</strong></a>と呼ばれる概念を使って、動的メモリの操作の正確性をコンパイル時にチェックするのです。従って前述の脆弱性を回避するためのガベージコレクションの必要がなく、性能のオーバーヘッドが存在しません。このアプローチのもう一つの利点として、CやC++と同様、プログラマが動的メモリの使用に関して精緻な制御を行うことができるということが挙げられます。</p>
+<h3 id="rustniokeruge-ridang-te"><a class="zola-anchor" href="index.html#rustniokeruge-ridang-te" aria-label="Anchor link for: rustniokeruge-ridang-te">🔗</a>Rustにおける割り当て</h3>
+<p>プログラマーに自分の手で<code>allocate</code>と<code>deallocate</code>を呼ばせる代わりに、Rustの標準ライブラリはこれらの関数を暗黙の内に呼ぶ抽象型を提供しています。最も重要な型は<a href="https://doc.rust-lang.org/std/boxed/index.html"><strong><code>Box</code></strong></a>で、これはヒープに割り当てられた値の抽象化です。これは<a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html#method.new"><code>Box::new</code></a>コンストラクタ関数を提供しており、これは値を引数として、その値のサイズを引数に<code>allocate</code>を呼び出し、ヒープ上に新しく割り当てられたスロットにその値を<ruby>移動<rp> (</rp><rt>ムーブ</rt><rp>) </rp></ruby>します。ヒープメモリを解放するために、スコープから出た際に<code>deallocate</code>を呼ぶような<a href="https://doc.rust-jp.rs/book-ja/ch15-03-drop.html"><code>Drop</code>トレイト</a>を<code>Box</code>型は実装しています。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> z = Box::new([</span><span style="color:#b5cea8;">1</span><span>,</span><span style="color:#b5cea8;">2</span><span>,</span><span style="color:#b5cea8;">3</span><span>]);
+</span><span>    […]
+</span><span>} </span><span style="color:#608b4e;">// zがスコープから出たので`deallocate`が呼ばれる
+</span></code></pre>
+<p>このような記法のパターンは<a href="https://ja.wikipedia.org/wiki/RAII">リソース取得は初期化である</a>（resource acquisition is initialization、略してRAII）という奇妙な名前を持っています。C++で<a href="https://en.cppreference.com/w/cpp/memory/unique_ptr"><code>std::unique_ptr</code></a>という同じような抽象型を実装するのに使われたのが始まりです。</p>
+<p>このような型自体ではすべてのuse-after-freeバグを防ぐのに十分ではありません。なぜなら、プログラマは、<code>Box</code>がスコープ外に出て対応するヒープメモリスロットがdeallocateされた後でも参照を利用し続けることができてしまうからです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">let</span><span> x = {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> z = Box::new([</span><span style="color:#b5cea8;">1</span><span>,</span><span style="color:#b5cea8;">2</span><span>,</span><span style="color:#b5cea8;">3</span><span>]);
+</span><span>    </span><span style="color:#569cd6;">&amp;</span><span>z[</span><span style="color:#b5cea8;">1</span><span>]
+</span><span>}; </span><span style="color:#608b4e;">// zがスコープから出たので`deallocate`が呼ばれる
+</span><span>println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, x);
+</span></code></pre>
+<p>ここでRustの所有権の出番です。所有権システムは、参照が有効なスコープを表す抽象<a href="https://doc.rust-jp.rs/book-ja/ch10-03-lifetime-syntax.html">ライフタイム</a>をそれぞれの参照に指定します。上の例では、参照<code>x</code>は配列<code>z</code>から取られているので、<code>z</code>がスコープ外に出ると無効になります。<a href="https://play.rust-lang.org/?version=stable&amp;mode=debug&amp;edition=2018&amp;gist=28180d8de7b62c6b4a681a7b1f745a48">上の例をplaygroundで実行する</a>と、確かにRustコンパイラがエラーを投げるのが分かります：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0597]: `z[_]` does not live long enough
+</span><span> --&gt; src/main.rs:4:9
+</span><span>  |
+</span><span>2 |     let x = {
+</span><span>  |         - borrow later stored here
+</span><span>3 |         let z = Box::new([1,2,3]);
+</span><span>4 |         &amp;z[1]
+</span><span>  |         ^^^^^ borrowed value does not live long enough
+</span><span>5 |     }; // z goes out of scope and `deallocate` is called
+</span><span>  |     - `z[_]` dropped here while still borrowed
+</span></code></pre>
+<p>ここで使われている用語は初見では少しわかりにくいかもしれません。値の参照を取ることは値を借用する (borrow) と呼ばれています。これは現実での借用と似ているためです：オブジェクトに一時的にアクセスできるようになりますが、それをいつか返さなければならず、また破壊することも許されません。オブジェクトが破壊される前にすべての借用が終了することを確かめることにより、Rustコンパイラはuse-after-freeが起こりえないことを保証できるのです。</p>
+<p>Rustの所有権システムはさらに突き詰められており、use-after-freeバグを防ぐだけでなく、JavaやPythonのようなガベージコレクション型言語と同じ完全な<a href="https://ja.wikipedia.org/wiki/%E3%83%A1%E3%83%A2%E3%83%AA%E5%AE%89%E5%85%A8%E6%80%A7">メモリ<ruby>安全性<rp> (</rp><rt>セーフティ</rt><rp>) </rp></ruby></a>を提供しています。さらに<a href="https://ja.wikipedia.org/wiki/%E3%82%B9%E3%83%AC%E3%83%83%E3%83%89%E3%82%BB%E3%83%BC%E3%83%95">スレッド<ruby>安全性<rp> (</rp><rt>セーフティ</rt><rp>) </rp></ruby></a>も保証されており、マルチスレッドのプログラムにおいてはこれらの言語よりもさらに安全です。さらに最も重要なことに、これらのチェックは全てコンパイル時に行われるため、C言語で手書きされたメモリ管理と比べても実行時のオーバーヘッドはありません。</p>
+<h3 id="shi-yong-li"><a class="zola-anchor" href="index.html#shi-yong-li" aria-label="Anchor link for: shi-yong-li">🔗</a>使用例</h3>
+<p>Rustにおける動的メモリ割り当ての基礎を学んだわけですが、これをいつ使えば良いのでしょうか？私たちのカーネルは動的メモリ割り当てなしにこれだけやってこられたのに、どうして今になってこれが必要なのでしょうか？</p>
+<p>まず覚えておいて欲しいのは、割り当てを行うたびにヒープから空いているスロットを探してこないといけないので、動的メモリ割り当てには少しだけ性能オーバーヘッドがあるということです。このため、特に性能が重要となるカーネルのプログラムにおいては、一般に局所変数の方が好ましいです。しかし、動的メモリ割り当てが最良の選択肢であるようなケースも存在するのです。</p>
+<p>基本的なルールとして、動的メモリは動的なライフタイムや可変サイズを持つような変数に必要とされます。動的なライフタイムを持つ最も重要な型は<a href="https://doc.rust-lang.org/alloc/rc/index.html"><strong><code>Rc</code></strong></a>で、これはラップされた値に対する参照を数えておき、すべての参照がスコープから外れたらそれをdeallocateするというものです。可変サイズを持つ型の例には、<a href="https://doc.rust-lang.org/alloc/vec/index.html"><strong><code>Vec</code></strong></a>、<a href="https://doc.rust-lang.org/alloc/string/index.html"><strong><code>String</code></strong></a>、その他の<a href="https://doc.rust-lang.org/alloc/collections/index.html">コレクション型</a>といった、要素が追加されたときに動的に大きくなるような型が挙げられます。これらの型は、容量が一杯になると、より大きい量のメモリを割り当て、すべての要素をコピーし、古い割り当てをdeallocateすることにより対処します。</p>
+<p>私たちのカーネルでは主にコレクション型を必要とし、例えば、将来の記事でマルチタスキングを実行するときにアクティブなタスクのリストを格納するために使います。</p>
+<h2 id="aroketaintahuesu"><a class="zola-anchor" href="index.html#aroketaintahuesu" aria-label="Anchor link for: aroketaintahuesu">🔗</a>アロケータインターフェース</h2>
+<p>ヒープアロケータを実装するための最初のステップは、組み込みの<a href="https://doc.rust-lang.org/alloc/"><code>alloc</code></a>クレートへの依存関係を追加することです。<a href="https://doc.rust-lang.org/core/"><code>core</code></a>クレートと同様、これは標準ライブラリのサブセットであり、アロケーション型やコレクション型を含んでいます。<code>alloc</code>への依存関係を追加するために、以下を<code>lib.rs</code>に追加します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">extern crate</span><span> alloc;
+</span></code></pre>
+<p>通常の依存関係と異なり<code>Cargo.toml</code>を修正する必要はありません。その理由は、<code>alloc</code>クレートは標準ライブラリの一部としてRustコンパイラに同梱されているため、コンパイラはすでにこのクレートのことを知っているからです。この<code>extern crate</code>宣言を追加することで、コンパイラにこれをインクルードしようと試みるよう指定しています（昔はすべての依存関係が<code>extern crate</code>宣言を必要としていたのですが、いまは任意です）。</p>
+<div class="note">
+<p><strong>訳者注：</strong> 詳しくは<a href="https://doc.rust-jp.rs/edition-guide/rust-2018/path-changes.html#%E3%81%95%E3%82%88%E3%81%86%E3%81%AA%E3%82%89extern-crate">edition guideの対応するページ</a>をご覧ください。</p>
+</div>
+<p>カスタムターゲット向けにコンパイルしようとしているので、Rustインストール時に同梱されていたコンパイル済みの<code>alloc</code>を使用することはできません。代わりにcargoにこのクレートをソースから再コンパイルするよう命令する必要があります。これは、配列<code>unstable.build-std</code>を<code>.cargo/config.toml</code>ファイルに追加することで行えます。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>, </span><span style="color:#d69d85;">&quot;alloc&quot;</span><span>]
+</span></code></pre>
+<p>これでコンパイラは<code>alloc</code>クレートを再コンパイルして私たちのカーネルにインクルードしてくれます。</p>
+<p><code>alloc</code>クレートが<code>#[no_std]</code>なクレートで標準では無効化されている理由は、これが追加の要件を持っているからです。今私たちのプロジェクトをコンパイルしようとすると、その要件をエラーとして目にすることになります：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: no global memory allocator found but one is required; link to std or add
+</span><span>       #[global_allocator] to a static item that implements the GlobalAlloc trait.
+</span><span>（エラー：グローバルメモリアロケータが見つかりませんが、一つ必要です。
+</span><span>　stdをリンクするか、GlobalAllocトレイトを実装する静的な要素に#[global_allocator]を付けてください。）
+</span><span>
+</span><span>error: `#[alloc_error_handler]` function required, but not found
+</span><span>（エラー：`#[alloc_error_handler]`関数が必要ですが、見つかりません）
+</span></code></pre>
+<p>最初のエラーは、<code>alloc</code>クレートが、ヒープアロケータという<code>allocate</code>と<code>deallocate</code>関数を提供するオブジェクトを必要とするために発生します。Rustにおいては、ヒープアロケータ（の満たすべき性質）は<a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html"><code>GlobalAlloc</code></a>トレイトによって記述されており、エラーメッセージでもそのことについて触れられています。クレートのヒープアロケータを設定するためには、<code>#[global_allocator]</code>属性を<code>GlobalAlloc</code>トレイトを実装する何らかの<code>static</code>変数に適用する必要があります。</p>
+<p>二つ目のエラーは、（主にメモリが不足している場合）<code>allocate</code>の呼び出しが失敗しうるために発生します。私たちのプログラムはこのケースに対処できるようになっている必要があり、そのために使われる関数が<code>#[alloc_error_handler]</code>なのです。</p>
+<p>次のセクションでこのトレイトと属性について説明します。</p>
+<h3 id="globalalloctoreito"><a class="zola-anchor" href="index.html#globalalloctoreito" aria-label="Anchor link for: globalalloctoreito">🔗</a><code>GlobalAlloc</code>トレイト</h3>
+<p><a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html"><code>GlobalAlloc</code></a>トレイトはヒープアロケータの提供しなければならない関数を定義します。このトレイトは、プログラマが絶対に直接使わないという点において特別です。代わりに、<code>alloc</code>のアロケーション・コレクション型を使うときに、コンパイラがトレイトメソッドへの適切な呼び出しを自動的に挿入します。</p>
+<p>このトレイトを私たちのアロケータ型全てに実装しなければならないので、その宣言は詳しく見ておく価値があるでしょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub unsafe trait </span><span>GlobalAlloc {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8</span><span>;
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, layout: Layout);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc_zeroed(</span><span style="color:#569cd6;">&amp;</span><span>self, layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{ </span><span style="color:#569cd6;">... </span><span>}
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>realloc(
+</span><span>        </span><span style="color:#569cd6;">&amp;</span><span>self,
+</span><span>        ptr: </span><span style="color:#569cd6;">*mut u8</span><span>,
+</span><span>        layout: Layout,
+</span><span>        new_size: </span><span style="color:#569cd6;">usize
+</span><span>    ) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{ </span><span style="color:#569cd6;">... </span><span>}
+</span><span>}
+</span></code></pre>
+<p>このトレイトは<a href="https://doc.rust-lang.org/alloc/"><code>alloc</code></a>と<a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#tymethod.dealloc"><code>dealloc</code></a>という必須メソッドを定義しており、これは上の例で使った<code>allocate</code>と<code>deallocate</code>関数に相当します：</p>
+<ul>
+<li><a href="https://doc.rust-lang.org/alloc/"><code>alloc</code></a>メソッドは<a href="https://doc.rust-lang.org/alloc/alloc/struct.Layout.html"><code>Layout</code></a>インスタンス（割り当てられたメモリの持つべきサイズとアラインメントを記述する）を引数として取ります。メソッドは割り当てられたメモリブロックの最初のバイトへの<a href="https://doc.rust-jp.rs/book-ja/ch19-01-unsafe-rust.html#%E7%94%9F%E3%83%9D%E3%82%A4%E3%83%B3%E3%82%BF%E3%82%92%E5%8F%82%E7%85%A7%E5%A4%96%E3%81%97%E3%81%99%E3%82%8B">生ポインタ</a>を返します。割り当てエラーが起きたことを示す際は、明示的なエラー値を返す代わりにヌルポインタを返します。このやり方は（Rustの）慣習とはやや外れていますが、同じ慣習に従っている既存のシステムのアロケータをラップするのが簡単になるという利点があります。</li>
+<li><a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#tymethod.dealloc"><code>dealloc</code></a>はその対で、メモリブロックを開放する役割を持ちます。このメソッドは、<code>alloc</code>によって返されたポインタと割り当ての際に使われた<code>Layout</code>という二つの引数を取ります。</li>
+</ul>
+<p>このトレイトは<a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#method.alloc_zeroed"><code>alloc_zeroed</code></a>と<a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#method.realloc"><code>realloc</code></a>という二つのデフォルト実装付きメソッドも定義しています。</p>
+<ul>
+<li><a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#method.alloc_zeroed"><code>alloc_zeroed</code></a>メソッドは<code>alloc</code>を呼んでから割り当てられたメモリブロックの値を0にするのに等しく、デフォルト実装でもまさに同じことをしています。もし、より効率的なカスタム実装があるならば、デフォルト実装を上書きすることもできます。</li>
+<li><a href="https://doc.rust-lang.org/alloc/alloc/trait.GlobalAlloc.html#method.realloc"><code>realloc</code></a>メソッドは割り当てたメモリを拡大したり縮小したりすることができます。デフォルト実装では、要求されたサイズの新しいメモリブロックを割り当て、以前のアロケーションから中身を全てコピーします。同じく、アロケータの実装によってはこのメソッドをより効率的に実装することができるかもしれません。例えば、可能な場合はその場でアロケーションを拡大・縮小するなど。</li>
+</ul>
+<h4 id="unsafe"><a class="zola-anchor" href="index.html#unsafe" aria-label="Anchor link for: unsafe">🔗</a>Unsafe</h4>
+<p>トレイト自体とすべてのトレイトメソッドが<code>unsafe</code>として宣言されていることに気をつけましょう：</p>
+<ul>
+<li>トレイトを<code>unsafe</code>として宣言する理由は、プログラマがアロケータ型のトレイト実装が正しいことを保証しなければならないからです。例えば、<code>alloc</code>メソッドは他のどこかですでに使用されているメモリブロックを決して返してはならず、もしそうすると未定義動作が発生してしまいます。</li>
+<li>同様に、メソッドが<code>unsafe</code>である理由は、メソッドを呼び出す際に呼び出し元がいくつかの不変条件を保証しなければならないからです。例えば、<code>alloc</code>に渡される<code>Layout</code>の指定するサイズが非ゼロであることなどです。実際にはこれは大して重要ではなく、というのもこれらのメソッドはコンパイラによって直接呼び出されるため、これらの要件が満たされていることは保証されているからです。</li>
+</ul>
+<h3 id="dummyallocator"><a class="zola-anchor" href="index.html#dummyallocator" aria-label="Anchor link for: dummyallocator">🔗</a><code>DummyAllocator</code></h3>
+<p>アロケータ型が何を提供しないといけないかを理解したので、シンプルな<ruby>ダミー<rp> (</rp><rt>ハリボテ</rt><rp>) </rp></ruby>のアロケータを作ることができます。そのためまず新しく<code>allocator</code>モジュールを作りましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>allocator;
+</span></code></pre>
+<p>私たちのダミーアロケータでは、トレイトを実装するための最小限のことしかせず、<code>alloc</code>が呼び出されたら常にエラーを返すようにします。以下のようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::alloc::{GlobalAlloc, Layout};
+</span><span style="color:#569cd6;">use </span><span>core::ptr::null_mut;
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Dummy;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>GlobalAlloc </span><span style="color:#569cd6;">for </span><span>Dummy {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>alloc(</span><span style="color:#569cd6;">&amp;</span><span>self, _layout: Layout) -&gt; </span><span style="color:#569cd6;">*mut u8 </span><span>{
+</span><span>        null_mut()
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>dealloc(</span><span style="color:#569cd6;">&amp;</span><span>self, _ptr: </span><span style="color:#569cd6;">*mut u8</span><span>, _layout: Layout) {
+</span><span>        panic!(</span><span style="color:#d69d85;">&quot;dealloc should be never called&quot;</span><span>)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>この構造体はフィールドを必要としないので、<a href="https://doc.rust-jp.rs/rust-nomicon-ja/exotic-sizes.html#%E3%82%B5%E3%82%A4%E3%82%BA%E3%81%8C-0-%E3%81%AE%E5%9E%8Bzst-zero-sized-type">サイズがゼロの型</a>として作成します。上で述べたように、<code>alloc</code>は常に割り当てエラーに相当するヌルポインタを返すようにします。アロケータがメモリを返すことは絶対に起きないのだから、<code>dealloc</code>の呼び出しも絶対に起きないはずです。このため<code>dealloc</code>メソッドでは単にpanicすることにします。<code>alloc_zeroed</code>と<code>realloc</code>メソッドにはデフォルト実装があるので、これらを実装する必要はありません。</p>
+<p>こうして単純なアロケータを手に入れたわけですが、さらにRustコンパイラにこのアロケータを使うよう指示しないといけません。ここで<code>#[global_allocator]</code>属性の出番です。</p>
+<h3 id="global-allocator-shu-xing"><a class="zola-anchor" href="index.html#global-allocator-shu-xing" aria-label="Anchor link for: global-allocator-shu-xing">🔗</a><code>#[global_allocator]</code>属性</h3>
+<p><code>#[global_allocator]</code>属性は、どのアロケータインスタンスをグローバルヒープアロケータとして使うべきかをRustコンパイラに指示します。この属性は<code>GlobalAlloc</code>トレイトを実装する<code>static</code>にのみ適用できます。私たちの<code>Dummy</code>アロケータのインスタンスをグローバルアロケータとして登録してみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: Dummy = Dummy;
+</span></code></pre>
+<p><code>Dummy</code>アロケータは<a href="https://doc.rust-jp.rs/rust-nomicon-ja/exotic-sizes.html#%E3%82%B5%E3%82%A4%E3%82%BA%E3%81%8C-0-%E3%81%AE%E5%9E%8Bzst-zero-sized-type">サイズがゼロの型</a>なので、初期化式でフィールドを指定する必要はありません。</p>
+<p>これをコンパイルしようとすると、最初のエラーは消えているはずです。残っている二つ目のエラーを修正しましょう：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: `#[alloc_error_handler]` function required, but not found
+</span></code></pre>
+<h3 id="alloc-error-handler-shu-xing"><a class="zola-anchor" href="index.html#alloc-error-handler-shu-xing" aria-label="Anchor link for: alloc-error-handler-shu-xing">🔗</a><code>#[alloc_error_handler]</code>属性</h3>
+<p><code>GlobalAlloc</code>トレイトについて議論したときに学んだように、<code>alloc</code>関数はヌルポインタを返すことによって割り当てエラーを示します。ここで生じる疑問は、そのように割り当てが失敗したときRustランタイムはどう対処するべきなのかということです。ここで<code>#[alloc_error_handler]</code>属性の出番です。この属性は、パニックが起こったときにパニックハンドラが呼ばれるのと同じように、割り当てエラーが起こったときに呼ばれる関数を指定するのです。</p>
+<p>コンパイルエラーを修正するためにそのような関数を追加してみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#![feature(alloc_error_handler)] </span><span style="color:#608b4e;">// ファイルの先頭に書く
+</span><span>
+</span><span>#[alloc_error_handler]
+</span><span style="color:#569cd6;">fn </span><span>alloc_error_handler(layout: alloc::alloc::Layout) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;allocation error: {:?}&quot;</span><span>, layout)
+</span><span>}
+</span></code></pre>
+<p><code>alloc_error_handler</code>関数はまだunstableなので、feature gateによってこれを有効化する必要があります。この関数は引数を一つ取ります：割り当てエラーが起こったとき<code>alloc</code>関数に渡されていた<code>Layout</code>のインスタンスです。割り当ての失敗を解決するためにできることはないので、<code>Layout</code>インスタンスを含めたメッセージを表示してただpanicすることにしましょう。</p>
+<p>この関数を追加したことで、コンパイルエラーは修正されたはずです。これで<code>alloc</code>のアロケーション・コレクション型を使えるようになりました。例えば、<a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html"><code>Box</code></a>を使ってヒープに値を割り当てることができます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">extern crate</span><span> alloc;
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::boxed::Box;
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// […] &quot;Hello World!&quot;を表示, `init`の呼び出し, `mapper`と`frame_allocator`を作成
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> x = Box::new(</span><span style="color:#b5cea8;">41</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// […] テストモードでは`test_main`を呼ぶ
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();
+</span><span>}
+</span><span>
+</span></code></pre>
+<p><code>main.rs</code>においても<code>extern crate alloc</code>文を指定する必要があることに注意してください。<code>lib.rs</code>と<code>main.rs</code>は別のクレートとして取り扱われているためです。しかしながら、グローバルアロケータはプロジェクト内のすべてのクレートに適用されるため、<code>#[global_allocator]</code>静的変数をもう一つ作る必要はありません。実際、別のクレートで新しいアロケータを指定するとエラーになります。</p>
+<p>上のコードを実行すると、<code>alloc_error_handler</code>関数が呼ばれるのが分かります：</p>
+<p><img src="qemu-dummy-output.png" alt="QEMUが“panicked at `allocation error: Layout { size_: 4, align_: 4 }, src/lib.rs:89:5“と出力している。" /></p>
+<p><code>Box::new</code>関数は暗黙のうちにグローバルアロケータの<code>alloc</code>関数を呼び出すため、エラーハンドラが呼ばれました。私たちのダミーアロケータは常にヌルポインタを返すので、あらゆる割り当てが失敗するのです。これを修正するためには、使用可能なメモリを実際に返すアロケータを作る必要があります。</p>
+<h2 id="creating-a-kernel-heap"><a class="zola-anchor" href="index.html#creating-a-kernel-heap" aria-label="Anchor link for: creating-a-kernel-heap">🔗</a>Creating a Kernel Heap</h2>
+<p>適切なアロケータを作りたいですが、その前にまず、そのアロケータがメモリを割り当てるためのヒープメモリ領域を作らないといけません。このために、ヒープ領域のための仮想メモリ範囲を定義し、その領域を物理フレームに対応付ける必要があります。仮想メモリとページテーブルの概要については、<a href="../paging-introduction/index.html">ページング入門</a>の記事を読んでください。</p>
+<p>最初のステップはヒープのための仮想メモリ領域を定義することです。他のメモリ領域に使われていない限り、どんな仮想アドレス範囲でも構いません。ここでは、あとからそこがヒープポインタだと簡単に分かるよう、<code>0x_4444_4444_0000</code>から始まるメモリとしましょう。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">HEAP_START</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">0x_4444_4444_0000</span><span>;
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">100 </span><span>* </span><span style="color:#b5cea8;">1024</span><span>; </span><span style="color:#608b4e;">// 100 KiB
+</span></code></pre>
+<p>今のところヒープの大きさは100 KiBとします。将来より多くの領域が必要になったら大きくすれば良いです。</p>
+<p>今このヒープ領域を使おうとすると、仮想メモリ領域が物理メモリにまだ対応付けられていないためページフォルトが発生します。これを解決するために、<a href="../paging-implementation/index.html">ページング入門</a>の記事で導入した<a href="../paging-implementation/index.html#offsetpagetablewoshi-u"><code>Mapper</code> API</a>を使ってヒープページを対応付ける関数<code>init_heap</code>を作ります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::{
+</span><span>    structures::paging::{
+</span><span>        mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+</span><span>    },
+</span><span>    VirtAddr,
+</span><span>};
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_heap(
+</span><span>    mapper: </span><span style="color:#569cd6;">&amp;mut</span><span> impl Mapper&lt;Size4KiB&gt;,
+</span><span>    frame_allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> impl FrameAllocator&lt;Size4KiB&gt;,
+</span><span>) -&gt; Result&lt;(), MapToError&lt;Size4KiB&gt;&gt; {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page_range = {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> heap_start = VirtAddr::new(</span><span style="color:#b4cea8;">HEAP_START </span><span style="color:#569cd6;">as u64</span><span>);
+</span><span>        </span><span style="color:#569cd6;">let</span><span> heap_end = heap_start + </span><span style="color:#b4cea8;">HEAP_SIZE </span><span>- </span><span style="color:#b5cea8;">1</span><span style="color:#569cd6;">u64</span><span>;
+</span><span>        </span><span style="color:#569cd6;">let</span><span> heap_start_page = Page::containing_address(heap_start);
+</span><span>        </span><span style="color:#569cd6;">let</span><span> heap_end_page = Page::containing_address(heap_end);
+</span><span>        Page::range_inclusive(heap_start_page, heap_end_page)
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for</span><span> page </span><span style="color:#569cd6;">in</span><span> page_range {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame = frame_allocator
+</span><span>            .allocate_frame()
+</span><span>            .ok_or(MapToError::FrameAllocationFailed)</span><span style="color:#569cd6;">?</span><span>;
+</span><span>        </span><span style="color:#569cd6;">let</span><span> flags = PageTableFlags::</span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span>PageTableFlags::</span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            mapper.map_to(page, frame, flags, frame_allocator)</span><span style="color:#569cd6;">?</span><span>.flush()
+</span><span>        };
+</span><span>    }
+</span><span>
+</span><span>    Ok(())
+</span><span>}
+</span></code></pre>
+<p>この関数は<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html"><code>Mapper</code></a>と<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/trait.FrameAllocator.html"><code>FrameAllocator</code></a>への可変参照を取ります。これらはどちらも<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/enum.Size4KiB.html"><code>Size4KiB</code></a>をジェネリックパラメータとすることで4KiBページのみに制限しています。この関数の戻り値は<a href="https://doc.rust-lang.org/core/result/enum.Result.html"><code>Result</code></a>で、成功ヴァリアントが<code>()</code>、失敗ヴァリアントが（<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>Mapper::map_to</code></a>メソッドによって失敗時に返されるエラー型である）<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/enum.MapToError.html"><code>MapToError</code></a>です。この関数における主なエラーの原因は<code>map_to</code>メソッドであるため、このエラー型を流用するのは理にかなっています。</p>
+<p>実装内容は以下の二つに分けられます：</p>
+<ul>
+<li>
+<p><strong>ページ範囲の作成:</strong> 対応付けたいページ領域を作成するために、ポインタ<code>HEAP_START</code>を<a href="https://docs.rs/x86_64/0.14.2/x86_64/addr/struct.VirtAddr.html"><code>VirtAddr</code></a>型に変換します。つぎに<code>HEAP_SIZE</code>を足すことによってヒープの終端アドレスを計算します。<ruby>端が含まれる境界<rp> (</rp><rt>インクルーシブレンジ</rt><rp>) </rp></ruby>にしたい（ヒープの最後のバイトのアドレスとしたい）ので1を引きます。次に、これらのアドレスを<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/struct.Page.html#method.containing_address"><code>containing_address</code></a>関数を使って<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/struct.Page.html"><code>Page</code></a>型に変換します。最後に、<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/struct.Page.html#method.range_inclusive"><code>Page::range_inclusive</code></a>関数を使って最初と最後のページからページ範囲を作成します。</p>
+</li>
+<li>
+<p><strong>ページの<ruby>対応付け<rp> (</rp><rt>マッピング</rt><rp>) </rp></ruby>:</strong> 二つ目のステップは、今作ったページ範囲のすべてのページに対して対応付けを行うことです。これを行うため、<code>for</code>ループを使ってこのページ範囲に対して繰り返し処理を行います。それぞれのページに対して以下を行います：</p>
+<ul>
+<li>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/trait.FrameAllocator.html#tymethod.allocate_frame"><code>FrameAllocator::allocate_frame</code></a>メソッドを使って、ページのマップされるべき物理フレームを割り当てます。このメソッドはもうフレームが残っていないとき<a href="https://doc.rust-lang.org/core/option/enum.Option.html#variant.None"><code>None</code></a>を返します。このケースに対処するため、<a href="https://doc.rust-lang.org/core/option/enum.Option.html#method.ok_or"><code>Option::ok_or</code></a>メソッドを使ってこれを<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/enum.MapToError.html#variant.FrameAllocationFailed"><code>MapToError::FrameAllocationFailed</code></a>に変換し、エラーの場合は<a href="https://doc.rust-jp.rs/book-ja/ch09-02-recoverable-errors-with-result.html#%E3%82%A8%E3%83%A9%E3%83%BC%E5%A7%94%E8%AD%B2%E3%81%AE%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88-%E6%BC%94%E7%AE%97%E5%AD%90"><code>?</code>演算子</a>を使って早期リターンしています。</p>
+</li>
+<li>
+<p>このページに対し、必要となる<code>PRESENT</code>フラグと<code>WRITABLE</code>フラグをセットします。これらのフラグにより読み書きのアクセスが許可されますが、これはヒープメモリとして理にかなっています。</p>
+</li>
+<li>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>Mapper::map_to</code></a>メソッドを使ってアクティブなページテーブルに対応付けを作成します。このメソッドは失敗しうるので、同様に<a href="https://doc.rust-jp.rs/book-ja/ch09-02-recoverable-errors-with-result.html#%E3%82%A8%E3%83%A9%E3%83%BC%E5%A7%94%E8%AD%B2%E3%81%AE%E3%82%B7%E3%83%A7%E3%83%BC%E3%83%88%E3%82%AB%E3%83%83%E3%83%88-%E6%BC%94%E7%AE%97%E5%AD%90"><code>?</code>演算子</a>を使ってエラーを呼び出し元に受け渡します。成功時には、このメソッドは<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html"><code>MapperFlush</code></a>インスタンスを返しますが、これを使って<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html#method.flush"><code>flush</code></a>メソッドを呼ぶことで<a href="../paging-introduction/index.html#toransuresiyonrutukuasaidobatuhua"><strong>トランスレーション・ルックアサイド・バッファ</strong></a>を更新することができます。</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>最後のステップは、この関数を<code>kernel_main</code>から呼び出すことです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::allocator; </span><span style="color:#608b4e;">// 新しいインポート
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::{self, BootInfoFrameAllocator};
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        BootInfoFrameAllocator::init(</span><span style="color:#569cd6;">&amp;</span><span>boot_info.memory_map)
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// ここを追加
+</span><span>    allocator::init_heap(</span><span style="color:#569cd6;">&amp;mut</span><span> mapper, </span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator)
+</span><span>        .expect(</span><span style="color:#d69d85;">&quot;heap initialization failed&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> x = Box::new(</span><span style="color:#b5cea8;">41</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// […] テストモードでは`test_main`を呼ぶ
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>ここで、文脈が分かるよう関数の全体を示しています。（しかし）新しい行は<code>blog_os::allocator</code>のインポートと<code>allocator::init_heap</code>の呼び出しだけです。<code>init_heap</code>関数がエラーを返した場合、これを処理する良い方法は今のところないため、<a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.expect"><code>Result::expect</code></a>メソッドを使ってパニックします。</p>
+<p>これで、使用する準備のできた、対応付けられたヒープメモリ領域を手に入れました。<code>Box::new</code>の呼び出しはまだ私たちの古い<code>Dummy</code>アロケータを使っているので、実行しても依然として「メモリ不足」のエラーを見ることになるでしょう。適切なアロケータを使うようにして、このエラーを修正してみましょう。</p>
+<h2 id="aroketakuretowoshi-u"><a class="zola-anchor" href="index.html#aroketakuretowoshi-u" aria-label="Anchor link for: aroketakuretowoshi-u">🔗</a>アロケータクレートを使う</h2>
+<p>アロケータを実装するのは少々複雑なので、まずは既製のアロケータを使うことにしましょう。アロケータを自作する方法については次の記事で学びます。</p>
+<p><code>no_std</code>のアプリケーションのためのシンプルなアロケータのひとつに<a href="https://github.com/phil-opp/linked-list-allocator/"><code>linked_list_allocator</code></a>クレートがあります。この名前は、割り当てられていないメモリ領域を連結リストを使って管理しているところから来ています。この手法のより詳しい説明については次の記事を読んでください。</p>
+<p>このクレートを使うためには、まず依存関係を<code>Cargo.toml</code>に追加する必要があります：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">linked_list_allocator </span><span>= </span><span style="color:#d69d85;">&quot;0.9.0&quot;
+</span></code></pre>
+<p>次に私たちのダミーアロケータをこのクレートによって提供されるアロケータで置き換えます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>linked_list_allocator::LockedHeap;
+</span><span>
+</span><span>#[global_allocator]
+</span><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">ALLOCATOR</span><span>: LockedHeap = LockedHeap::empty();
+</span></code></pre>
+<p>この構造体は同期のために<code>spinning_top::Spinlock</code>型を使うため<code>LockedHeap</code>という名前が付いています。これが必要なのは、<code>ALLOCATOR</code>静的変数に複数のスレッドが同時にアクセスすることがありえるからです。スピンロックやmutexを使うときはいつもそうであるように、誤ってデッドロックを起こさないように注意する必要があります。これが意味するのは、我々は割り込みハンドラ内で一切アロケーションを行ってはいけないと言うことです。なぜなら、割り込みハンドラはどんなタイミングでも走る可能性があるため、進行中のアロケーションに割り込んでいることがあるからです。</p>
+<p><code>LockedHeap</code>をグローバルアロケータとして設定するだけでは十分ではありません。いま<a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.LockedHeap.html#method.empty"><code>empty</code></a>コンストラクタ関数を使っていますが、この関数はメモリを与えることなくアロケータを作るからです。私たちのダミーアロケータと同じく、これ（今の状態の<code>LockedHeap</code>）は<code>alloc</code>を行うと常にエラーを返します。この問題を修正するため、ヒープを作った後でアロケータを初期化する必要があります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/allocator.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_heap(
+</span><span>    mapper: </span><span style="color:#569cd6;">&amp;mut</span><span> impl Mapper&lt;Size4KiB&gt;,
+</span><span>    frame_allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> impl FrameAllocator&lt;Size4KiB&gt;,
+</span><span>) -&gt; Result&lt;(), MapToError&lt;Size4KiB&gt;&gt; {
+</span><span>    </span><span style="color:#608b4e;">// […] すべてのヒープページを物理フレームにマップする
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// new
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">ALLOCATOR</span><span>.lock().init(</span><span style="color:#b4cea8;">HEAP_START</span><span>, </span><span style="color:#b4cea8;">HEAP_SIZE</span><span>);
+</span><span>    }
+</span><span>
+</span><span>    Ok(())
+</span><span>}
+</span></code></pre>
+<p><code>LockedHeap</code>型の内部のスピンロックの<a href="https://docs.rs/lock_api/0.3.3/lock_api/struct.Mutex.html#method.lock"><code>lock</code></a>メソッドを呼ぶことで、ラップされた<a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html"><code>Heap</code></a>インスタンスへの排他参照を得て、これの<a href="https://docs.rs/linked_list_allocator/0.9.0/linked_list_allocator/struct.Heap.html#method.init"><code>init</code></a>メソッドをヒープの境界を引数として呼んでいます。<code>init</code>関数自体がヒープメモリに書き込もうとするので、ヒープページを対応付けた <strong>後に</strong> ヒープを初期化することが重要です。</p>
+<p>ヒープを初期化できたら、組み込みの<a href="https://doc.rust-lang.org/alloc/"><code>alloc</code></a>クレートのあらゆるアロケーション・コレクション型がエラーなく使用できます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::{boxed::Box, vec, vec::Vec, rc::Rc};
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// […] initialize interrupts, mapper, frame_allocator, heap
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// ヒープに数字をアロケートする
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_value = Box::new(</span><span style="color:#b5cea8;">41</span><span>);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;heap_value at </span><span style="color:#b4cea8;">{:p}</span><span style="color:#d69d85;">&quot;</span><span>, heap_value);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 動的サイズのベクタを作成する
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> vec = Vec::new();
+</span><span>    </span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">500 </span><span>{
+</span><span>        vec.push(i);
+</span><span>    }
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;vec at </span><span style="color:#b4cea8;">{:p}</span><span style="color:#d69d85;">&quot;</span><span>, vec.as_slice());
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 参照カウントされたベクタを作成する -&gt; カウントが0になると解放される
+</span><span>    </span><span style="color:#569cd6;">let</span><span> reference_counted = Rc::new(vec![</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">2</span><span>, </span><span style="color:#b5cea8;">3</span><span>]);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> cloned_reference = reference_counted.clone();
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;current reference count is </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, Rc::strong_count(</span><span style="color:#569cd6;">&amp;</span><span>cloned_reference));
+</span><span>    core::mem::drop(reference_counted);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;reference count is </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> now&quot;</span><span>, Rc::strong_count(</span><span style="color:#569cd6;">&amp;</span><span>cloned_reference));
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// […] テストでは `test_main` を呼ぶ
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>このコード例では<a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html"><code>Box</code></a>, <a href="https://doc.rust-lang.org/alloc/vec/"><code>Vec</code></a>, <a href="https://doc.rust-lang.org/alloc/rc/"><code>Rc</code></a>型を使ってみました。<code>Box</code>型と<code>Vec</code>型については対応するヒープポインタを<a href="https://doc.rust-lang.org/core/fmt/trait.Pointer.html"><code>{:p}</code>フォーマット指定子</a>を使って出力しています。<code>Rc</code>についての例を示すために、参照カウントされたヒープ値を作成し、インスタンスを（<a href="https://doc.rust-lang.org/core/mem/fn.drop.html"><code>core::mem::drop</code></a>を使って）ドロップする前と後に<a href="https://doc.rust-lang.org/alloc/rc/struct.Rc.html#method.strong_count"><code>Rc::strong_count</code></a>関数を使って現在の参照カウントを出力しています。</p>
+<p>実行すると、以下のような結果を得ます：</p>
+<p><img src="qemu-alloc-showcase.png" alt="QEMUがheap_value at 0x444444440000 vec at 0x4444444408000 current reference count is 2 reference count is 1 nowと出力している" /></p>
+<p>ポインタが<code>0x_4444_4444_*</code>で始まることから、<code>Box</code>と<code>Vec</code>の値は想定通りヒープ上にあることが分かります。参照カウントされた値も期待したとおり振る舞っており、<code>clone</code>呼び出しの後では参照カウントは2になり、インスタンスの一方がドロップされた後では再び1になっています。</p>
+<p>ベクタがヒープメモリの先頭から<code>0x800</code>だけずれた場所から始まるのは、Box内の値が<code>0x800</code>バイトの大きさがあるためではなく、ベクタが容量を増やさなければならないときに発生する<a href="https://doc.rust-lang.org/alloc/vec/struct.Vec.html#capacity-and-reallocation"><ruby>再割り当て<rp> (</rp><rt>リアロケーション</rt><rp>) </rp></ruby></a>のためです。例えば、ベクタの容量が32の際に次の要素を追加しようとすると、ベクタは内部で容量64の配列を新たに割り当て、すべての要素をコピーします。その後古い割り当てを解放しています。</p>
+<p>もちろん<code>alloc</code>クレートにはもっと多くのアロケーション・コレクション型があり、今やそれらのすべてを私たちのカーネルで使うことができます。それには以下が含まれます：</p>
+<ul>
+<li>スレッドセーフな参照カウントポインタ<a href="https://doc.rust-lang.org/alloc/sync/struct.Arc.html"><code>Arc</code></a></li>
+<li>文字列を所有する型<a href="https://doc.rust-lang.org/alloc/string/struct.String.html"><code>String</code></a>と<a href="https://doc.rust-lang.org/alloc/macro.format.html"><code>format!</code></a>マクロ</li>
+<li><a href="https://doc.rust-lang.org/alloc/collections/linked_list/struct.LinkedList.html"><code>LinkedList</code></a></li>
+<li>必要に応じてサイズを大きくできるリングバッファ<a href="https://doc.rust-lang.org/alloc/collections/vec_deque/struct.VecDeque.html"><code>VecDeque</code></a></li>
+<li>プライオリティキューである<a href="https://doc.rust-lang.org/alloc/collections/binary_heap/struct.BinaryHeap.html"><code>BinaryHeap</code></a></li>
+<li><a href="https://doc.rust-lang.org/alloc/collections/btree_map/struct.BTreeMap.html"><code>BTreeMap</code></a>と<a href="https://doc.rust-lang.org/alloc/collections/btree_set/struct.BTreeSet.html"><code>BTreeSet</code></a></li>
+</ul>
+<p>これらの型は、スレッドリスト、スケジュールキュー、async/awaitのサポートを実装しようとするときにとても有用になります。</p>
+<h2 id="tesutowozhui-jia-suru"><a class="zola-anchor" href="index.html#tesutowozhui-jia-suru" aria-label="Anchor link for: tesutowozhui-jia-suru">🔗</a>テストを追加する</h2>
+<p>いま新しく作ったアロケーションコードを間違って壊してしまうことがないことを保証するために、<ruby>結合<rp> (</rp><rt>インテグレーション</rt><rp>) </rp></ruby>テストを追加するべきでしょう。まず、次のような内容のファイル<code>tests/heap_allocation.rs</code>を作成します。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(blog_os::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">extern crate</span><span> alloc;
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::{entry_point, BootInfo};
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>entry_point!(main);
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p><code>lib.rs</code>の<code>test_runner</code>関数と<code>test_panic_handler</code>関数を再利用します。私たちはアロケーションをテストしたいので、<code>extern crate alloc</code>宣言を使って<code>alloc</code>クレートを有効化します。テストに共通する定型部については<a href="../testing/index.html">テスト</a>の記事を読んでください。</p>
+<p><code>main</code>関数の実装は以下のようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::allocator;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::{self, BootInfoFrameAllocator};
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span>
+</span><span>    blog_os::init();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        BootInfoFrameAllocator::init(</span><span style="color:#569cd6;">&amp;</span><span>boot_info.memory_map)
+</span><span>    };
+</span><span>    allocator::init_heap(</span><span style="color:#569cd6;">&amp;mut</span><span> mapper, </span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator)
+</span><span>        .expect(</span><span style="color:#d69d85;">&quot;heap initialization failed&quot;</span><span>);
+</span><span>
+</span><span>    test_main();
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>私たちの<code>main.rs</code>内の<code>kernel_main</code>関数によく似ていますが、<code>println</code>を呼び出さず、例示のため行ったアロケーションも行わず、また<code>test_main</code>を無条件で呼び出しているという違いがあります。</p>
+<p>これでテストケースを追加する準備ができました。まず、<a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html"><code>Box</code></a>を使って単純な<ruby>割り当て<rp> (</rp><rt>アロケーション</rt><rp>) </rp></ruby>を行い、割り当てられた値を確かめることで基本的なアロケーションがうまくいっていることを確かめるテストを追加しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span style="color:#569cd6;">use </span><span>alloc::boxed::Box;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>simple_allocation() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_value_1 = Box::new(</span><span style="color:#b5cea8;">41</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> heap_value_2 = Box::new(</span><span style="color:#b5cea8;">13</span><span>);
+</span><span>    assert_eq!(*heap_value_1, </span><span style="color:#b5cea8;">41</span><span>);
+</span><span>    assert_eq!(*heap_value_2, </span><span style="color:#b5cea8;">13</span><span>);
+</span><span>}
+</span></code></pre>
+<p>最も重要なのは、このテストはアロケーションエラーが起きないことを検証してくれるということです。</p>
+<p>次に、反復によって少しずつ大きなベクタを作ることで、大きな割り当てと（再割り当てによる）複数回の割り当ての両方をテストしましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>alloc::vec::Vec;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>large_vec() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> n = </span><span style="color:#b5cea8;">1000</span><span>;
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> vec = Vec::new();
+</span><span>    </span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span>n {
+</span><span>        vec.push(i);
+</span><span>    }
+</span><span>    assert_eq!(vec.iter().sum::&lt;</span><span style="color:#569cd6;">u64</span><span>&gt;(), (n - </span><span style="color:#b5cea8;">1</span><span>) * n / </span><span style="color:#b5cea8;">2</span><span>);
+</span><span>}
+</span></code></pre>
+<p>このベクタの和を<a href="https://ja.wikipedia.org/wiki/1%2B2%2B3%2B4%2B%E2%80%A6">n次部分和</a>の公式と比較することで検証しています。これにより、割り当てられた値はすべて正しいことをある程度保証できます。</p>
+<p>3つ目のテストとして、10000回次々にアロケーションを行います：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/heap_allocation.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::allocator::</span><span style="color:#b4cea8;">HEAP_SIZE</span><span>;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>many_boxes() {
+</span><span>    </span><span style="color:#569cd6;">for</span><span> i </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">HEAP_SIZE </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let</span><span> x = Box::new(i);
+</span><span>        assert_eq!(*x, i);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>このテストではアロケータが解放されたメモリを次の割り当てで再利用していることを保証してくれます。もしそうなっていなければメモリ不足が起きるでしょう。こんなことアロケータにとって当たり前の要件だと思われるかもしれませんが、これを行わないようなアロケータの設計も存在するのです。その例として、次の記事で説明するbump allocatorがあります。</p>
+<p>では、私たちの新しい結合テストを実行してみましょう：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --test heap_allocation
+</span><span>[…]
+</span><span>Running 3 tests
+</span><span>simple_allocation... [ok]
+</span><span>large_vec... [ok]
+</span><span>many_boxes... [ok]
+</span></code></pre>
+<p>すべてのテストが成功しました！<code>cargo test</code>コマンドを（<code>--test</code>引数なしに）呼ぶことで、すべての結合テストを実行することもできます。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>この記事では動的メモリに入門し、なぜ、そしていつそれが必要になるのかを説明しました。Rustの借用チェッカがどのようにしてよくある脆弱性を防ぐのか、そしてRustのアロケーションAPIがどのような仕組みなのかを理解しました。</p>
+<p>ダミーアロケータでRustのアロケータインターフェースの最小限の実装を作成した後、私たちのカーネル用の適切なヒープメモリ領域を作成しました。これを行うために、ヒープ用の仮想アドレス範囲を定義し、前の記事で説明した<code>Mapper</code>と<code>FrameAllocator</code>を使ってその範囲のすべてのページを物理フレームに対応付けました。</p>
+<p>最後に、<code>linked_list_allocator</code>クレートへの依存関係を追加し、適切なアロケータを私たちのカーネルに追加しました。このアロケータのおかげで、<code>alloc</code>クレートに含まれる<code>Box</code>、<code>Vec</code>、その他のアロケーション・コレクション型を使えるようになりました。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>この記事ではヒープ割り当て機能のサポートを追加しましたが、ほとんどの仕事は<code>linked_list_allocator</code>クレートに任せてしまっています。次の記事では、アロケータをゼロから実装する方法を詳細にお伝えします。可能なアロケータの設計を複数提示し、それらを単純化したものを実装する方法を示し、それらの利点と欠点を説明します。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../paging-implementation/index.html">&laquo; ページングの実装</a>
+        
+        
+            <a class="next" href="../async-await/index.html">Async&#x2F;Await &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Heap%20Allocation%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Heap Allocation (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Heap%20Allocation%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../heap-allocation/index.html">
+                        English (original)
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

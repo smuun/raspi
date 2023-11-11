@@ -1,0 +1,1171 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Remap the Kernel | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Remap the Kernel</h1>
+    <time datetime="2016-01-01" class="post-date">
+        Jan 01, 2016
+         (updated on Mar 06, 2016) 
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#motivation">Motivation</a>
+                
+            </li><li>
+                <a href="index.html#preparation">Preparation</a>
+                
+            </li><li>
+                <a href="index.html#recap-the-paging-module">Recap: The Paging Module</a>
+                
+            </li><li>
+                <a href="index.html#overview">Overview</a>
+                
+            </li><li>
+                <a href="index.html#inactive-tables">Inactive Tables</a>
+                <ol>
+                    <li>
+                        <a href="index.html#temporary-mapping">Temporary Mapping</a>
+                    </li><li>
+                        <a href="index.html#zeroing-the-inactivepagetable">Zeroing the InactivePageTable</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#revisiting-recursive-mapping">Revisiting Recursive Mapping</a>
+                <ol>
+                    <li>
+                        <a href="index.html#implementation-draft">Implementation Draft</a>
+                    </li><li>
+                        <a href="index.html#refactoring">Refactoring</a>
+                    </li><li>
+                        <a href="index.html#restoring-the-recursive-mapping">Restoring the Recursive Mapping</a>
+                    </li><li>
+                        <a href="index.html#completing-the-implementation">Completing the Implementation</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#remapping-the-kernel">Remapping the Kernel</a>
+                <ol>
+                    <li>
+                        <a href="index.html#page-align-sections">Page Align Sections</a>
+                    </li><li>
+                        <a href="index.html#testing-it">Testing it</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#switching-tables">Switching Tables</a>
+                <ol>
+                    <li>
+                        <a href="index.html#debugging">Debugging</a>
+                    </li><li>
+                        <a href="index.html#fixing-the-frame-allocator">Fixing the Frame Allocator</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#using-the-correct-flags">Using the Correct Flags</a>
+                <ol>
+                    <li>
+                        <a href="index.html#the-nxe-bit">The NXE Bit</a>
+                    </li><li>
+                        <a href="index.html#the-write-protect-bit">The Write Protect Bit</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#creating-a-guard-page">Creating a Guard Page</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li><li>
+                <a href="index.html#footnotes">Footnotes</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In this post we will create a new page table to map the kernel sections correctly. Therefore we will extend the paging module to support modifications of <em>inactive</em> page tables as well. Then we will switch to the new table and secure our kernel stack by creating a guard page.</p>
+<span id="continue-reading"></span>
+<p>As always, you can find the source code on <a href="https://github.com/phil-opp/blog_os/tree/first_edition_post_7">GitHub</a>. Don’t hesitate to file issues there if you have any problems or improvement suggestions. There is also a comment section at the end of this page. Note that this post requires a current Rust nightly.</p>
+<h2 id="motivation"><a class="zola-anchor" href="index.html#motivation" aria-label="Anchor link for: motivation">🔗</a>Motivation</h2>
+<p>In the <a href="../page-tables/index.html">previous post</a>, we had a strange bug in the <code>unmap</code> function. Its reason was a silent stack overflow, which corrupted the page tables. Fortunately, our kernel stack is right above the page tables so that we noticed the overflow relatively quickly. This won’t be the case when we add threads with new stacks in the future. Then a silent stack overflow could overwrite some data without us noticing. But eventually some completely unrelated function fails because a variable changed its value.</p>
+<p>As you can imagine, these kinds of bugs are horrendous to debug. For that reason we will create a new hierarchical page table in this post, which has <em>guard page</em> below the stack. A guard page is basically an unmapped page that causes a page fault when accessed. Thus we can catch stack overflows right when they happen.</p>
+<p>Also, we will use the <a href="../allocating-frames/index.html#kernel-elf-sections">information about kernel sections</a> to map the various sections individually instead of blindly mapping the first gigabyte. To improve safety even further, we will set the correct page table flags for the various sections. Thus it won’t be possible to modify the contents of <code>.text</code> or to execute code from <code>.data</code> anymore.</p>
+<h2 id="preparation"><a class="zola-anchor" href="index.html#preparation" aria-label="Anchor link for: preparation">🔗</a>Preparation</h2>
+<p>There are many things that can go wrong when we switch to a new table. Therefore it’s a good idea to <a href="../set-up-gdb/index.html">set up a debugger</a>. You should not need it when you follow this post, but it’s good to know how to debug a problem when it occurs<sup class="footnote-reference"><a href="index.html#fn-debug-notes">1</a></sup>.</p>
+<p>We also update the <code>Page</code> and <code>Frame</code> types to make our lives easier. The <code>Page</code> struct gets some derived traits:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span style="color:#569cd6;">pub struct </span><span>Page {
+</span><span>    number: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span></code></pre>
+<p>By making it <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html">Copy</a>, we can still use it after passing it to functions such as <code>map_to</code>. We also make the <code>Page::containing_address</code> public (if it isn’t already).</p>
+<p>The <code>Frame</code> type gets a <code>clone</code> method too, but it does not implement the <a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html">Clone trait</a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Frame {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clone(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; Frame {
+</span><span>        Frame { number: self.number }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The big difference is that this <code>clone</code> method is private. If we implemented the <a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html">Clone trait</a>, it would be public and usable from other modules. For example they could abuse it to free the same frame twice in the frame allocator.</p>
+<p>So why do we implement <code>Copy</code> for <code>Page</code> and make even its constructor public, but keep <code>Frame</code> as private as possible? The reason is that we can easily check the status of a <code>Page</code> by looking at the page tables. For example, the <code>map_to</code> function can easily check that the given page is unused.</p>
+<p>We can’t do that for a <code>Frame</code>. If we wanted to be sure that a given frame is unused, we would need to look at all mapped <em>pages</em> and verify that none of them is mapped to the given frame. Since this is impractical, we need to rely on the fact that a passed <code>Frame</code> is always unused. For that reason it must not be possible to create a new <code>Frame</code> or to clone one from other modules. The only valid way to get a frame is to allocate it from a <code>FrameAllocator</code>.</p>
+<h2 id="recap-the-paging-module"><a class="zola-anchor" href="index.html#recap-the-paging-module" aria-label="Anchor link for: recap-the-paging-module">🔗</a>Recap: The Paging Module</h2>
+<p>This post builds upon the post about <a href="../page-tables/index.html">page tables</a>, so let’s start by quickly recapitulating what we’ve done there.</p>
+<p>We created a <code>memory::paging</code> module, which reads and modifies the hierarchical page table through recursive mapping. The owner of the active P4 table and thus all subtables is an <code>ActivePageTable</code> struct, which must be instantiated only once.</p>
+<p>The <code>ActivePageTable</code> struct provides the following interface:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">/// Translates a virtual to the corresponding physical address.
+</span><span style="color:#608b4e;">/// Returns `None` if the address is not mapped.
+</span><span style="color:#569cd6;">pub fn </span><span>translate(</span><span style="color:#569cd6;">&amp;</span><span>self, virtual_address: VirtualAddress) -&gt;
+</span><span>    Option&lt;PhysicalAddress&gt;
+</span><span>{</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Maps the page to the frame with the provided flags.
+</span><span style="color:#608b4e;">/// The `PRESENT` flag is added by default. Needs a
+</span><span style="color:#608b4e;">/// `FrameAllocator` as it might need to create new page tables.
+</span><span style="color:#569cd6;">pub fn </span><span>map_to&lt;A&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>                 page: Page,
+</span><span>                 frame: Frame,
+</span><span>                 flags: EntryFlags,
+</span><span>                 allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Maps the page to some free frame with the provided flags.
+</span><span style="color:#608b4e;">/// The free frame is allocated from the given `FrameAllocator`.
+</span><span style="color:#569cd6;">pub fn </span><span>map&lt;A&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self, page: Page, flags: EntryFlags, allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Identity map the the given frame with the provided flags.
+</span><span style="color:#608b4e;">/// The `FrameAllocator` is used to create new page tables if needed.
+</span><span style="color:#569cd6;">pub fn </span><span>identity_map&lt;A&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>                       frame: Frame,
+</span><span>                       flags: EntryFlags,
+</span><span>                       allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span>
+</span><span style="color:#608b4e;">/// Unmaps the given page and adds all freed frames to the given
+</span><span style="color:#608b4e;">/// `FrameAllocator`.
+</span><span style="color:#569cd6;">fn </span><span>unmap&lt;A&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self, page: Page, allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{</span><span style="color:#569cd6;">...</span><span>}
+</span></code></pre>
+<h2 id="overview"><a class="zola-anchor" href="index.html#overview" aria-label="Anchor link for: overview">🔗</a>Overview</h2>
+<p>Our goal is to use the <code>ActivePageTable</code> functions to map the kernel sections correctly in a new page table. In pseudo code:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>remap_the_kernel(boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation) {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> new_table = create_new_table();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> boot_info.elf_sections {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> frame </span><span style="color:#569cd6;">in</span><span> section {
+</span><span>            new_table.identity_map(frame, section.flags);
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    new_table.activate();
+</span><span>    create_guard_page_for_stack();
+</span><span>}
+</span></code></pre>
+<p>But the <code>ActivePageTable</code> methods – as the name suggests – only work for the <em>active table</em>. So we would need to activate <code>new_table</code> <em>before</em> we use <code>identity_map</code>. But this is not possible since it would cause an immediate page fault when the CPU tries to read the next instruction.</p>
+<p>So we need a way to use the <code>ActivePageTable</code> methods on <em>inactive</em> page tables as well.</p>
+<h2 id="inactive-tables"><a class="zola-anchor" href="index.html#inactive-tables" aria-label="Anchor link for: inactive-tables">🔗</a>Inactive Tables</h2>
+<p>Let’s start by creating a type for inactive page tables. Like an <code>ActivePageTable</code>, an <code>InactivePageTable</code> owns a P4 table. The difference is that the inactive P4 table is not used by the CPU.</p>
+<p>We create the struct in <code>memory/paging/mod.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub struct </span><span>InactivePageTable {
+</span><span>    p4_frame: Frame,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>InactivePageTable {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>new(frame: Frame) -&gt; InactivePageTable {
+</span><span>        </span><span style="color:#608b4e;">// TODO zero and recursive map the frame
+</span><span>        InactivePageTable { p4_frame: frame }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Without zeroing, the P4 table contains complete garbage and maps random memory. But we can’t zero it right now because the <code>p4_frame</code> is not mapped to a virtual address.</p>
+<p>Well, maybe it’s still part of the identity mapped first gigabyte. Then we could zero it without problems since the physical address would be a valid virtual address, too. But this “solution” is hacky and won’t work after this post anymore (since we will remove all needless identity mapping).</p>
+<p>Instead, we will try to temporary map the frame to some virtual address.</p>
+<h3 id="temporary-mapping"><a class="zola-anchor" href="index.html#temporary-mapping" aria-label="Anchor link for: temporary-mapping">🔗</a>Temporary Mapping</h3>
+<p>Therefor we add a <code>TemporaryPage</code> struct. We create it in a new <code>temporary_page</code> submodule to keep the paging module clean. It looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/memory/paging/mod.rs
+</span><span style="color:#569cd6;">mod </span><span>temporary_page;
+</span><span>
+</span><span style="color:#608b4e;">// src/memory/paging/temporary_page.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::Page;
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>TemporaryPage {
+</span><span>    page: Page,
+</span><span>}
+</span></code></pre>
+<p>We add methods to temporary map and unmap the page:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use super</span><span>::{ActivePageTable, VirtualAddress};
+</span><span style="color:#569cd6;">use </span><span>memory::Frame;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>TemporaryPage {
+</span><span>    </span><span style="color:#608b4e;">/// Maps the temporary page to the given frame in the active table.
+</span><span>    </span><span style="color:#608b4e;">/// Returns the start address of the temporary page.
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>map(</span><span style="color:#569cd6;">&amp;mut </span><span>self, frame: Frame, active_table: </span><span style="color:#569cd6;">&amp;mut</span><span> ActivePageTable)
+</span><span>        -&gt; VirtualAddress
+</span><span>    {
+</span><span>        </span><span style="color:#569cd6;">use super</span><span>::entry::</span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>
+</span><span>        assert!(active_table.translate_page(self.page).is_none(),
+</span><span>                </span><span style="color:#d69d85;">&quot;temporary page is already mapped&quot;</span><span>);
+</span><span>        active_table.map_to(self.page, frame, </span><span style="color:#b4cea8;">WRITABLE</span><span>, </span><span style="color:#569cd6;">???</span><span>);
+</span><span>        self.page.start_address()
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">/// Unmaps the temporary page in the active table.
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>unmap(</span><span style="color:#569cd6;">&amp;mut </span><span>self, active_table: </span><span style="color:#569cd6;">&amp;mut</span><span> ActivePageTable) {
+</span><span>        active_table.unmap(self.page, </span><span style="color:#569cd6;">???</span><span>)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>???</code> needs to be some <code>FrameAllocator</code>. We could just add an additional <code>allocator</code> argument but there is a better solution.</p>
+<p>It takes advantage of the fact that we always map the same page. So the allocator only needs to hold 3 frames: one P3, one P2, and one P1 table (the P4 table is always mapped). This allows us to create a tiny allocator and add it as field to the <code>TemporaryPage</code> struct itself:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub struct </span><span>TemporaryPage {
+</span><span>    page: Page,
+</span><span>    allocator: TinyAllocator,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>TemporaryPage {
+</span><span>    </span><span style="color:#608b4e;">// as above, but with `&amp;mut self.allocator` instead of `???`
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>TinyAllocator([Option&lt;Frame&gt;; 3]);
+</span></code></pre>
+<p>Our tiny allocator just consists of 3 slots to store frames. It will be empty when the temporary page is mapped and full when all corresponding page tables are unmapped.</p>
+<p>To turn <code>TinyAllocator</code> into a frame allocator, we need to add the trait implementation:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>memory::FrameAllocator;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>FrameAllocator </span><span style="color:#569cd6;">for </span><span>TinyAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Frame&gt; {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> frame_option </span><span style="color:#569cd6;">in &amp;mut </span><span>self.</span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>            </span><span style="color:#569cd6;">if</span><span> frame_option.is_some() {
+</span><span>                </span><span style="color:#569cd6;">return</span><span> frame_option.take();
+</span><span>            }
+</span><span>        }
+</span><span>        None
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deallocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self, frame: Frame) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> frame_option </span><span style="color:#569cd6;">in &amp;mut </span><span>self.</span><span style="color:#b5cea8;">0 </span><span>{
+</span><span>            </span><span style="color:#569cd6;">if</span><span> frame_option.is_none() {
+</span><span>                *frame_option = Some(frame);
+</span><span>                </span><span style="color:#569cd6;">return</span><span>;
+</span><span>            }
+</span><span>        }
+</span><span>        panic!(</span><span style="color:#d69d85;">&quot;Tiny allocator can hold only 3 frames.&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>On allocation, we use the <a href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html#method.take">Option::take</a> function to take an available frame from the first filled slot and on deallocation, we put the frame back into the first free slot.</p>
+<p>To finish the <code>TinyAllocator</code>, we add a constructor that fills it from some other allocator:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">impl </span><span>TinyAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A) -&gt; TinyAllocator
+</span><span>        </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>    {
+</span><span>        </span><span style="color:#569cd6;">let mut </span><span>f </span><span style="color:#569cd6;">= </span><span>|| allocator.allocate_frame();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frames = [f(), f(), f()];
+</span><span>        TinyAllocator(frames)
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We use a little closure here that saves us some typing.</p>
+<p>Now our <code>TemporaryPage</code> type is nearly complete. We only add one more method for convenience:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use super</span><span>::table::{Table, Level1};
+</span><span>
+</span><span style="color:#608b4e;">/// Maps the temporary page to the given page table frame in the active
+</span><span style="color:#608b4e;">/// table. Returns a reference to the now mapped table.
+</span><span style="color:#569cd6;">pub fn </span><span>map_table_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>                       frame: Frame,
+</span><span>                       active_table: </span><span style="color:#569cd6;">&amp;mut</span><span> ActivePageTable)
+</span><span>                       -&gt; </span><span style="color:#569cd6;">&amp;mut </span><span>Table&lt;Level1&gt; {
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(self.map(frame, active_table) </span><span style="color:#569cd6;">as *mut </span><span>Table&lt;Level1&gt;) }
+</span><span>}
+</span></code></pre>
+<p>This function interprets the given frame as a page table frame and returns a <code>Table</code> reference. We return a table of level 1 because it <a href="../page-tables/index.html#some-clever-solution">forbids calling the <code>next_table</code> methods</a>. Calling <code>next_table</code> must not be possible since it’s not a page of the recursive mapping. To be able to return a <code>Table&lt;Level1&gt;</code>, we need to make the <code>Level1</code> enum in <code>memory/paging/table.rs</code> public.</p>
+<p>The <code>unsafe</code> block is safe since the <code>VirtualAddress</code> returned by the <code>map</code> function is always valid and the type cast just reinterprets the frame’s content.</p>
+<p>To complete the <code>temporary_page</code> module, we add a <code>TemporaryPage::new</code> constructor:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub fn </span><span>new&lt;A&gt;(page: Page, allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A) -&gt; TemporaryPage
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    TemporaryPage {
+</span><span>        page: page,
+</span><span>        allocator: TinyAllocator::new(allocator),
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<h3 id="zeroing-the-inactivepagetable"><a class="zola-anchor" href="index.html#zeroing-the-inactivepagetable" aria-label="Anchor link for: zeroing-the-inactivepagetable">🔗</a>Zeroing the InactivePageTable</h3>
+<p>Now we can use <code>TemporaryPage</code> to fix our <code>InactivePageTable::new</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>self::temporary_page::TemporaryPage;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>InactivePageTable {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>new(frame: Frame,
+</span><span>               active_table: </span><span style="color:#569cd6;">&amp;mut</span><span> ActivePageTable,
+</span><span>               temporary_page: </span><span style="color:#569cd6;">&amp;mut</span><span> TemporaryPage)
+</span><span>               -&gt; InactivePageTable {
+</span><span>        {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> table = temporary_page.map_table_frame(frame.clone(),
+</span><span>                active_table);
+</span><span>            </span><span style="color:#608b4e;">// now we are able to zero the table
+</span><span>            table.zero();
+</span><span>            </span><span style="color:#608b4e;">// set up recursive mapping for the table
+</span><span>            table[</span><span style="color:#b5cea8;">511</span><span>].set(frame.clone(), </span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">WRITABLE</span><span>);
+</span><span>        }
+</span><span>        temporary_page.unmap(active_table);
+</span><span>
+</span><span>        InactivePageTable { p4_frame: frame }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We added two new arguments, <code>active_table</code> and <code>temporary_page</code>. We need an <a href="https://doc.rust-lang.org/rust-by-example/variable_bindings/scope.html">inner scope</a> to ensure that the <code>table</code> variable is dropped before we try to unmap the temporary page again. This is required since the <code>table</code> variable exclusively borrows <code>temporary_page</code> as long as it’s alive.</p>
+<p>Now we are able to create valid inactive page tables, which are zeroed and recursively mapped. But we still can’t modify them. To resolve this problem, we need to look at recursive mapping again.</p>
+<h2 id="revisiting-recursive-mapping"><a class="zola-anchor" href="index.html#revisiting-recursive-mapping" aria-label="Anchor link for: revisiting-recursive-mapping">🔗</a>Revisiting Recursive Mapping</h2>
+<p>Recursive mapping works by mapping the last P4 entry to the P4 table itself. Thus we can access the page tables by looping one or more times.</p>
+<p>For example, accessing a P3 table requires lopping three times:</p>
+<p><img src="recursive_mapping_access_p3.svg" alt="access active P3 table through recursive mapping" /></p>
+<p>We can use the same mechanism to access inactive tables. The trick is to change the recursive mapping of the active P4 table to point to the inactive P4 table:</p>
+<p><img src="recursive_mapping_access_p3_inactive_table.svg" alt="access inactive P3 table through recursive mapping" /></p>
+<p>Now the inactive table can be accessed exactly as the active table, even the magic addresses are the same. This allows us to use the <code>ActivePageTable</code> interface and the existing mapping methods for inactive tables, too. Note that everything besides the recursive mapping continues to work exactly as before since we’ve never changed the active table in the CPU.</p>
+<h3 id="implementation-draft"><a class="zola-anchor" href="index.html#implementation-draft" aria-label="Anchor link for: implementation-draft">🔗</a>Implementation Draft</h3>
+<p>We add a method to <code>ActivePageTable</code> that temporary changes the recursive mapping and executes a given closure in the new context:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub fn </span><span>with&lt;F&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>               table: </span><span style="color:#569cd6;">&amp;mut</span><span> InactivePageTable,
+</span><span>               f: F)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> F: FnOnce(</span><span style="color:#569cd6;">&amp;mut</span><span> ActivePageTable)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::tlb;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// overwrite recursive mapping
+</span><span>    self.p4_mut()[</span><span style="color:#b5cea8;">511</span><span>].set(table.p4_frame.clone(), </span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">WRITABLE</span><span>);
+</span><span>    tlb::flush_all();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// execute f in the new context
+</span><span>    f(self);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// TODO restore recursive mapping to original p4 table
+</span><span>}
+</span></code></pre>
+<p>It overwrites the 511th P4 entry and points it to the inactive table frame. Then it flushes the <a href="https://wiki.osdev.org/TLB">translation lookaside buffer (TLB)</a>, which still contains some old translations. We need to flush all pages that are part of the recursive mapping, so the easiest way is to flush the TLB completely.</p>
+<p>Now that the recursive mapping points to the given inactive table, we execute the closure in the new context. The closure can call all active table methods such as <code>translate</code> or <code>map_to</code>. It could even call <code>with</code> again and chain another inactive table! Wait… that would not work:</p>
+<p><img src="recursive_mapping_access_p1_invalid_chaining.svg" alt="access inactive P3 table through recursive mapping" /></p>
+<p>Here the closure called <code>with</code> again and thus changed the recursive mapping of the inactive table to point to a second inactive table. Now we want to modify the P1 of the <em>second</em> inactive table, but instead we land on the P1 of the <em>first</em> inactive table since we never follow the pointer to the second table. Only when modifying the P2, P3, or P4 table we really access the second inactive table. This inconsistency would break our mapping functions completely.</p>
+<p>So we should really prohibit the closure from calling <code>with</code> again. We could add some runtime assertion that panics when the active table is not recursive mapped anymore. But a cleaner solution is to split off the mapping code from <code>ActivePageTable</code> into a new <code>Mapper</code> type.</p>
+<h3 id="refactoring"><a class="zola-anchor" href="index.html#refactoring" aria-label="Anchor link for: refactoring">🔗</a>Refactoring</h3>
+<p>We start by creating a new <code>memory/paging/mapper.rs</code> submodule and moving the <code>ActivePageTable</code> struct and its <code>impl</code> block to it. Then we rename it to <code>Mapper</code> and make all methods public (so we can still use them from the paging module). The <code>with</code> method is removed.</p>
+<p>After adjusting the imports, the module should look like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in memory/paging/mod.rs
+</span><span style="color:#569cd6;">mod </span><span>mapper;
+</span><span>
+</span><span style="color:#608b4e;">// memory/paging/mapper.rs
+</span><span>
+</span><span style="color:#569cd6;">use super</span><span>::{VirtualAddress, PhysicalAddress, Page, </span><span style="color:#b4cea8;">ENTRY_COUNT</span><span>};
+</span><span style="color:#569cd6;">use super</span><span>::entry::*;
+</span><span style="color:#569cd6;">use super</span><span>::table::{self, Table, Level4, Level1};
+</span><span style="color:#569cd6;">use </span><span>memory::{</span><span style="color:#b4cea8;">PAGE_SIZE</span><span>, Frame, FrameAllocator};
+</span><span style="color:#569cd6;">use </span><span>core::ptr::Unique;
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Mapper {
+</span><span>    p4: Unique&lt;Table&lt;Level4&gt;&gt;,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Mapper {
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>new() -&gt; Mapper {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>p4(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; </span><span style="color:#569cd6;">&amp;</span><span>Table&lt;Level4&gt; {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// the remaining mapping methods, all public
+</span><span>}
+</span></code></pre>
+<p>Now we create a new <code>ActivePageTable</code> struct in <code>memory/paging/mod.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub use </span><span>self::mapper::Mapper;
+</span><span style="color:#569cd6;">use </span><span>core::ops::{Deref, DerefMut};
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>ActivePageTable {
+</span><span>    mapper: Mapper,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Deref </span><span style="color:#569cd6;">for </span><span>ActivePageTable {
+</span><span>    </span><span style="color:#569cd6;">type </span><span style="color:#4ec9b0;">Target </span><span>= Mapper;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deref(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; </span><span style="color:#569cd6;">&amp;</span><span>Mapper {
+</span><span>        </span><span style="color:#569cd6;">&amp;</span><span>self.mapper
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>DerefMut </span><span style="color:#569cd6;">for </span><span>ActivePageTable {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>deref_mut(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; </span><span style="color:#569cd6;">&amp;mut</span><span> Mapper {
+</span><span>        </span><span style="color:#569cd6;">&amp;mut </span><span>self.mapper
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ActivePageTable {
+</span><span>    </span><span style="color:#569cd6;">unsafe fn </span><span>new() -&gt; ActivePageTable {
+</span><span>        ActivePageTable {
+</span><span>            mapper: Mapper::new(),
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>with&lt;F&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>                   table: </span><span style="color:#569cd6;">&amp;mut</span><span> InactivePageTable,
+</span><span>                   f: F)
+</span><span>        </span><span style="color:#569cd6;">where</span><span> F: FnOnce(</span><span style="color:#569cd6;">&amp;mut</span><span> Mapper) </span><span style="color:#608b4e;">// `Mapper` instead of `ActivePageTable`
+</span><span>    {</span><span style="color:#569cd6;">...</span><span>}
+</span><span>}
+</span></code></pre>
+<p>The <a href="https://doc.rust-lang.org/nightly/core/ops/trait.Deref.html">Deref</a> and <a href="https://doc.rust-lang.org/nightly/core/ops/trait.DerefMut.html">DerefMut</a> implementations allow us to use the <code>ActivePageTable</code> exactly as before, for example we still can call <code>map_to</code> on it (because of <a href="https://doc.rust-lang.org/nightly/book/deref-coercions.html">deref coercions</a>). But the closure called in the <code>with</code> function can no longer invoke <code>with</code> again. The reason is that we changed the type of the generic <code>F</code> parameter a bit: Instead of an <code>ActivePageTable</code>, the closure just gets a <code>Mapper</code> as argument.</p>
+<h3 id="restoring-the-recursive-mapping"><a class="zola-anchor" href="index.html#restoring-the-recursive-mapping" aria-label="Anchor link for: restoring-the-recursive-mapping">🔗</a>Restoring the Recursive Mapping</h3>
+<p>Right now, the <code>with</code> function overwrites the recursive mapping and calls the closure. But it does not restore the previous recursive mapping yet. So let’s fix that!</p>
+<p>To backup the physical P4 frame of the active table, we can either read it from the 511th P4 entry (before we change it) or from the CR3 control register directly. We will do the latter as it should be faster and we already have a external crate that makes it easy:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>x86_64::registers::control_regs;
+</span><span style="color:#569cd6;">let</span><span> backup = Frame::containing_address(
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ control_regs::cr3() } </span><span style="color:#569cd6;">as usize
+</span><span>);
+</span></code></pre>
+<p>Why is it unsafe? Because reading the CR3 register leads to a CPU exception if the processor is not running in kernel mode (<a href="https://wiki.osdev.org/Security#Low-level_Protection_Mechanisms">Ring 0</a>). But this code will always run in kernel mode, so the <code>unsafe</code> block is completely safe here.</p>
+<p>Now that we have a backup of the original P4 frame, we need a way to restore it after the closure has run. So we need to somehow modify the 511th entry of the original P4 frame, which is still the active table in the CPU. But we can’t access it because the recursive mapping now points to the inactive table:</p>
+<p><img src="recursive_mapping_inactive_table_scheme.svg" alt="it’s not possible to access the original P4 through recursive mapping anymore" /></p>
+<p>It’s just not possible to access the active P4 entry in 4 steps, so we can’t reach it through the 4-level page table.</p>
+<p>We could try to overwrite the recursive mapping of the <em>inactive</em> P4 table and point it back to the original P4 frame:</p>
+<p><img src="cyclic_mapping_inactive_tables.svg" alt="cyclic map active and inactive P4 tables" /></p>
+<p>Now we can reach the active P4 entry in 4 steps and could restore the original mapping in the active table. But this hack has a drawback: The inactive table is now invalid since it is no longer recursive mapped. We would need to fix it by using a temporary page again (as above).</p>
+<p>But if we need a temporary page anyway, we can just use it to map the original P4 frame directly. Thus we avoid the above hack and make the code simpler. So let’s do it that way.</p>
+<h3 id="completing-the-implementation"><a class="zola-anchor" href="index.html#completing-the-implementation" aria-label="Anchor link for: completing-the-implementation">🔗</a>Completing the Implementation</h3>
+<p>The <code>with</code> method gets an additional <code>TemporaryPage</code> argument, which we use to backup and restore the original recursive mapping:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub fn </span><span>with&lt;F&gt;(</span><span style="color:#569cd6;">&amp;mut </span><span>self,
+</span><span>                   table: </span><span style="color:#569cd6;">&amp;mut</span><span> InactivePageTable,
+</span><span>                   temporary_page: </span><span style="color:#569cd6;">&amp;mut </span><span>temporary_page::TemporaryPage, </span><span style="color:#608b4e;">// new
+</span><span>                   f: F)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> F: FnOnce(</span><span style="color:#569cd6;">&amp;mut</span><span> Mapper)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::tlb;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control_regs;
+</span><span>
+</span><span>    {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> backup = Frame::containing_address(
+</span><span>            control_regs::cr3().</span><span style="color:#b5cea8;">0 </span><span style="color:#569cd6;">as usize</span><span>);
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// map temporary_page to current p4 table
+</span><span>        </span><span style="color:#569cd6;">let</span><span> p4_table = temporary_page.map_table_frame(backup.clone(), self);
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// overwrite recursive mapping
+</span><span>        self.p4_mut()[</span><span style="color:#b5cea8;">511</span><span>].set(table.p4_frame.clone(), </span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">WRITABLE</span><span>);
+</span><span>        tlb::flush_all();
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// execute f in the new context
+</span><span>        f(self);
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// restore recursive mapping to original p4 table
+</span><span>        p4_table[</span><span style="color:#b5cea8;">511</span><span>].set(backup, </span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">WRITABLE</span><span>);
+</span><span>        tlb::flush_all();
+</span><span>    }
+</span><span>
+</span><span>    temporary_page.unmap(self);
+</span><span>}
+</span></code></pre>
+<p>Again, the inner scope is needed to end the borrow of <code>temporary_page</code> so that we can unmap it again. Note that we need to flush the TLB another time after we restored the original recursive mapping.</p>
+<p>Now the <code>with</code> function is ready to be used!</p>
+<h2 id="remapping-the-kernel"><a class="zola-anchor" href="index.html#remapping-the-kernel" aria-label="Anchor link for: remapping-the-kernel">🔗</a>Remapping the Kernel</h2>
+<p>Let’s tackle the main task of this post: remapping the kernel sections. Therefor we create a <code>remap_the_kernel</code> function in <code>memory/paging/mod.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>multiboot2::BootInformation;
+</span><span style="color:#569cd6;">use </span><span>memory::{</span><span style="color:#b4cea8;">PAGE_SIZE</span><span>, Frame, FrameAllocator};
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>remap_the_kernel&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A, boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> temporary_page = TemporaryPage::new(Page { number: </span><span style="color:#b5cea8;">0xcafebabe </span><span>},
+</span><span>        allocator);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> active_table = </span><span style="color:#569cd6;">unsafe </span><span>{ ActivePageTable::new() };
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> new_table = {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame = allocator.allocate_frame().expect(</span><span style="color:#d69d85;">&quot;no more frames&quot;</span><span>);
+</span><span>        InactivePageTable::new(frame, </span><span style="color:#569cd6;">&amp;mut</span><span> active_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page)
+</span><span>    };
+</span><span>
+</span><span>    active_table.with(</span><span style="color:#569cd6;">&amp;mut</span><span> new_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page, |mapper| {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> elf_sections_tag = boot_info.elf_sections_tag()
+</span><span>            .expect(</span><span style="color:#d69d85;">&quot;Memory map tag required&quot;</span><span>);
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> elf_sections_tag.sections() {
+</span><span>            </span><span style="color:#608b4e;">// TODO mapper.identity_map() all pages of `section`
+</span><span>        }
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>First, we create a temporary page at page number <code>0xcafebabe</code>. We could use <code>0xdeadbeaf</code> or <code>0x123456789</code> as well, as long as the page is unused. The <code>active_table</code> and the <code>new_table</code> are created using their constructor functions.</p>
+<p>Then we use the <code>with</code> function to temporary change the recursive mapping and execute the closure as if the <code>new_table</code> were active. This allows us to map the sections in the new table without changing the active mapping. To get the kernel sections, we use the <a href="../allocating-frames/index.html#the-multiboot-information-structure">Multiboot information structure</a>.</p>
+<p>Let’s resolve the above <code>TODO</code> by identity mapping the sections:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> elf_sections_tag.sections() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>self::entry::</span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">if !</span><span>section.is_allocated() {
+</span><span>        </span><span style="color:#608b4e;">// section is not loaded to memory
+</span><span>        </span><span style="color:#569cd6;">continue</span><span>;
+</span><span>    }
+</span><span>    assert!(section.start_address() % </span><span style="color:#b4cea8;">PAGE_SIZE </span><span>== </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>            </span><span style="color:#d69d85;">&quot;sections need to be page aligned&quot;</span><span>);
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;mapping section at addr: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">, size: </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        section.addr, section.size);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> flags = </span><span style="color:#b4cea8;">WRITABLE</span><span>; </span><span style="color:#608b4e;">// TODO use real section flags
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> start_frame = Frame::containing_address(section.start_address());
+</span><span>    </span><span style="color:#569cd6;">let</span><span> end_frame = Frame::containing_address(section.end_address() - </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    </span><span style="color:#569cd6;">for</span><span> frame </span><span style="color:#569cd6;">in </span><span>Frame::range_inclusive(start_frame, end_frame) {
+</span><span>        mapper.identity_map(frame, flags, allocator);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We skip all sections that were not loaded into memory (e.g. debug sections). We require that all sections are page aligned because a page must not contain sections with different flags. For example, we would need to set the <code>EXECUTABLE</code> and <code>WRITABLE</code> flags for a page that contains parts of the <code>.code</code> and <code>.data</code> section. Thus we could modify the running code or execute bytes from the <code>.data</code> section as code.</p>
+<p>To map a section, we iterate over all of its frames of a section by using a new <code>Frame::range_inclusive</code> function (shown below). Note that the end address is exclusive, so that it’s not part of the section anymore (it’s the first byte of the next section). Thus we need to subtract 1 to get the <code>end_frame</code>.</p>
+<p>The <code>Frame::range_inclusive</code> function looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Frame {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>range_inclusive(start: Frame, end: Frame) -&gt; FrameIter {
+</span><span>        FrameIter {
+</span><span>            start: start,
+</span><span>            end: end,
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>FrameIter {
+</span><span>    start: Frame,
+</span><span>    end: Frame,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Iterator </span><span style="color:#569cd6;">for </span><span>FrameIter {
+</span><span>    </span><span style="color:#569cd6;">type </span><span style="color:#4ec9b0;">Item </span><span>= Frame;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>next(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;Frame&gt; {
+</span><span>        </span><span style="color:#569cd6;">if </span><span>self.start &lt;= self.end {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> frame = self.start.clone();
+</span><span>            self.start.number += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            Some(frame)
+</span><span>        } </span><span style="color:#569cd6;">else </span><span>{
+</span><span>            None
+</span><span>        }
+</span><span>    }
+</span><span> }
+</span></code></pre>
+<p>Instead of creating a custom iterator, we could have used the <a href="https://doc.rust-lang.org/nightly/core/ops/struct.Range.html">Range</a> struct of the standard library. But it requires that we implement the <a href="https://doc.rust-lang.org/1.10.0/core/num/trait.One.html">One</a> and <a href="https://doc.rust-lang.org/nightly/core/ops/trait.Add.html">Add</a> traits for <code>Frame</code>. Then every module could perform arithmetic operations on frames, for example <code>let frame3 = frame1 + frame2</code>. This would violate our safety invariants because <code>frame3</code> could be already in use. The <code>range_inclusive</code> function does not have these problems because it is only available inside the <code>memory</code> module.</p>
+<h3 id="page-align-sections"><a class="zola-anchor" href="index.html#page-align-sections" aria-label="Anchor link for: page-align-sections">🔗</a>Page Align Sections</h3>
+<p>Right now our sections aren’t page aligned, so the assertion in <code>remap_the_kernel</code> would fail. We can fix this by making the section size a multiple of the page size. To do this, we add an <code>ALIGN</code> statement to all sections in the linker file. For example:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>SECTIONS {
+</span><span>  . = 1M;
+</span><span>
+</span><span>  .text :
+</span><span>  {
+</span><span>    *(.text .text.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>}
+</span></code></pre>
+<p>The <code>.</code> is the “current location counter” and represents the current virtual address. At the beginning of the <code>SECTIONS</code> tag we set it to <code>1M</code>, so our kernel starts at 1MiB. We use the <a href="https://www.math.utah.edu/docs/info/ld_3.html#SEC12">ALIGN</a> function to align the current location counter to the next <code>4K</code> boundary (<code>4K</code> is the page size). Thus the end of the <code>.text</code> section – and the beginning of the next section – are page aligned.</p>
+<p>To put all sections on their own page, we add the <code>ALIGN</code> statement to all of them:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>/* src/arch/x86_64/linker.ld */
+</span><span>
+</span><span>ENTRY(start)
+</span><span>
+</span><span>SECTIONS {
+</span><span>  . = 1M;
+</span><span>
+</span><span>  .rodata :
+</span><span>  {
+</span><span>    /* ensure that the multiboot header is at the beginning */
+</span><span>    KEEP(*(.multiboot_header))
+</span><span>    *(.rodata .rodata.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .text :
+</span><span>  {
+</span><span>    *(.text .text.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .data :
+</span><span>  {
+</span><span>    *(.data .data.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .bss :
+</span><span>  {
+</span><span>    *(.bss .bss.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .got :
+</span><span>  {
+</span><span>    *(.got)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .got.plt :
+</span><span>  {
+</span><span>    *(.got.plt)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .data.rel.ro : ALIGN(4K) {
+</span><span>    *(.data.rel.ro.local*) *(.data.rel.ro .data.rel.ro.*)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>
+</span><span>  .gcc_except_table : ALIGN(4K) {
+</span><span>    *(.gcc_except_table)
+</span><span>    . = ALIGN(4K);
+</span><span>  }
+</span><span>}
+</span></code></pre>
+<p>Instead of page aligning the <code>.multiboot_header</code> section, we merge it into the <code>.rodata</code> section. That way, we don’t waste a whole page for the few bytes of the Multiboot header. We could merge it into any section, but <code>.rodata</code> fits best because it has the same flags (neither writable nor executable). The Multiboot header still needs to be at the beginning of the file, so <code>.rodata</code> must be our first section now.</p>
+<h3 id="testing-it"><a class="zola-anchor" href="index.html#testing-it" aria-label="Anchor link for: testing-it">🔗</a>Testing it</h3>
+<p>Time to test it! We re-export the <code>remap_the_kernel</code> function from the memory module and call it from <code>rust_main</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/mod.rs
+</span><span style="color:#569cd6;">pub use </span><span>self::paging::remap_the_kernel;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>rust_main(multiboot_information_address: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>    </span><span style="color:#608b4e;">// ATTENTION: we have a very small stack and no guard page
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// the same as before
+</span><span>    vga_buffer::clear_screen();
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> boot_info = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        multiboot2::load(multiboot_information_address)
+</span><span>    };
+</span><span>    </span><span style="color:#569cd6;">let</span><span> memory_map_tag = boot_info.memory_map_tag()
+</span><span>        .expect(</span><span style="color:#d69d85;">&quot;Memory map tag required&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> elf_sections_tag = boot_info.elf_sections_tag()
+</span><span>        .expect(</span><span style="color:#d69d85;">&quot;Elf sections tag required&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> kernel_start = elf_sections_tag.sections().map(|s| s.addr)
+</span><span>        .min().unwrap();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> kernel_end = elf_sections_tag.sections().map(|s| s.addr + s.size)
+</span><span>        .max().unwrap();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> multiboot_start = multiboot_information_address;
+</span><span>    </span><span style="color:#569cd6;">let</span><span> multiboot_end = multiboot_start + (boot_info.total_size </span><span style="color:#569cd6;">as usize</span><span>);
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;kernel start: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">, kernel end: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        kernel_start, kernel_end);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;multiboot start: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">, multiboot end: 0x</span><span style="color:#b4cea8;">{:x}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        multiboot_start, multiboot_end);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = memory::AreaFrameAllocator::new(
+</span><span>        kernel_start </span><span style="color:#569cd6;">as usize</span><span>, kernel_end </span><span style="color:#569cd6;">as usize</span><span>, multiboot_start,
+</span><span>        multiboot_end, memory_map_tag.memory_areas());
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// this is the new part
+</span><span>    memory::remap_the_kernel(</span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator, boot_info);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>If you see the <code>It did not crash</code> message, the kernel survived our page table modifications without causing a CPU exception. But did we map the kernel sections correctly?</p>
+<p>Let’s try it out by switching to the new table! We identity map all kernel sections, so it should work without problems.</p>
+<h2 id="switching-tables"><a class="zola-anchor" href="index.html#switching-tables" aria-label="Anchor link for: switching-tables">🔗</a>Switching Tables</h2>
+<p>Switching tables is easy. We just need to reload the <code>CR3</code> register with the physical address of the new P4 frame.</p>
+<p>We do this in a new <code>ActivePageTable::switch</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `impl ActivePageTable` in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>switch(</span><span style="color:#569cd6;">&amp;mut </span><span>self, new_table: InactivePageTable) -&gt; InactivePageTable {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::PhysicalAddress;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control_regs;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> old_table = InactivePageTable {
+</span><span>        p4_frame: Frame::containing_address(
+</span><span>            control_regs::cr3().</span><span style="color:#b5cea8;">0 </span><span style="color:#569cd6;">as usize
+</span><span>        ),
+</span><span>    };
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        control_regs::cr3_write(PhysicalAddress(
+</span><span>            new_table.p4_frame.start_address() </span><span style="color:#569cd6;">as u64</span><span>));
+</span><span>    }
+</span><span>    old_table
+</span><span>}
+</span></code></pre>
+<p>This function activates the given inactive table and returns the previous active table as a <code>InactivePageTable</code>. We don’t need to flush the TLB here, as the CPU does it automatically when the P4 table is switched. In fact, the <code>tlb::flush_all</code> function, which we used above, does nothing more than <a href="https://docs.rs/x86_64/0.1.2/src/x86_64/instructions/tlb.rs.html#11-14">reloading the CR3 register</a>.</p>
+<p>Now we are finally able to switch to the new table. We do it by adding the following lines to our <code>remap_the_kernel</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in remap_the_kernel in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">...
+</span><span>active_table.with(</span><span style="color:#569cd6;">&amp;mut</span><span> new_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page, |mapper| {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>});
+</span><span>
+</span><span style="color:#569cd6;">let</span><span> old_table = active_table.switch(new_table);
+</span><span>println!(</span><span style="color:#d69d85;">&quot;NEW TABLE!!!&quot;</span><span>);
+</span></code></pre>
+<p>Let’s cross our fingers and run it…</p>
+<p>… and it fails with a boot loop.</p>
+<h3 id="debugging"><a class="zola-anchor" href="index.html#debugging" aria-label="Anchor link for: debugging">🔗</a>Debugging</h3>
+<p>A QEMU boot loop indicates that some CPU exception occurred. We can see all thrown CPU exception by starting QEMU with <code>-d int</code>:</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; qemu-system-x86_64 -d int -no-reboot -cdrom build/os-x86_64.iso
+</span><span>...
+</span><span>check_exception old: 0xffffffff new 0xe
+</span><span>     0: v=0e e=0002 i=0 cpl=0 IP=0008:000000000010ab97 pc=000000000010ab97
+</span><span>        SP=</span><span style="background-color:#282828;color:#d69d85;">0010:00000000001182d0</span><span> CR2=</span><span style="background-color:#282828;color:#d69d85;">00000000000b8f00</span><span>
+</span><span>...
+</span></code></pre>
+<p>These lines are the important ones. We can read many useful information from them:</p>
+<ul>
+<li>
+<p><code>v=0e</code>: An exception with number <code>0xe</code> occurred, which is a page fault according to the <a href="https://wiki.osdev.org/Exceptions">OSDev Wiki</a>.</p>
+</li>
+<li>
+<p><code>e=0002</code>: The CPU set an <a href="https://wiki.osdev.org/Exceptions#Error_code">error code</a>, which tells us why the exception occurred. The <code>0x2</code> bit tells us that it was caused by a write operation. And since the <code>0x1</code> bit is not set, the target page was not present.</p>
+</li>
+<li>
+<p><code>IP=0008:000000000010ab97</code> or <code>pc=000000000010ab97</code>: The program counter register tells us that the exception occurred when the CPU tried to execute the instruction at <code>0x10ab97</code>. We can disassemble this address to see the corresponding function. The <code>0008:</code> prefix in <code>IP</code> indicates the code <a href="../entering-longmode/index.html#loading-the-gdt">GDT segment</a>.</p>
+</li>
+<li>
+<p><code>SP=0010:00000000001182d0</code>: The stack pointer was <code>0x1182d0</code> (the <code>0010:</code> prefix indicates the data <a href="../entering-longmode/index.html#loading-the-gdt">GDT segment</a>). This tells us if it the stack overflowed.</p>
+</li>
+<li>
+<p><code>CR2=00000000000b8f00</code>: Finally the most useful register. It tells us which virtual address caused the page fault. In our case it’s <code>0xb8f00</code>, which is part of the <a href="../printing-to-screen/index.html#the-vga-text-buffer">VGA text buffer</a>.</p>
+</li>
+</ul>
+<p>So let’s find out which function caused the exception:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>objdump -d build/kernel-x86_64.bin | grep -B100 &quot;10ab97&quot;
+</span></code></pre>
+<p>We disassemble our kernel and search for <code>10ab97</code>. The <code>-B100</code> option prints the 100 preceding lines too. The output tells us the responsible function:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>...
+</span><span>000000000010aa80 &lt;_ZN10vga_buffer6Writer10write_byte20h4601f5e405b6e89facaE&gt;:
+</span><span>  10aa80:	55                   	push   %rbp
+</span><span>  ...
+</span><span>  10ab93:	66 8b 55 aa          	mov    -0x56(%rbp),%dx
+</span><span>  10ab97:	66 89 14 48          	mov    %dx,(%rax,%rcx,2)
+</span></code></pre>
+<p>The reason for the cryptical function name is Rust’s <a href="https://en.wikipedia.org/wiki/Name_mangling">name mangling</a>. But we can identity the <code>vga_buffer::Writer::write_byte</code> function nonetheless.</p>
+<p>So the reason for the page fault is that the <code>write_byte</code> function tried to write to the VGA text buffer at <code>0xb8f00</code>. Of course this provokes a page fault: We forgot to identity map the VGA buffer in the new page table.</p>
+<p>The fix is pretty simple:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>remap_the_kernel&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A, boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    active_table.with(</span><span style="color:#569cd6;">&amp;mut</span><span> new_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page, |mapper| {
+</span><span>        </span><span style="color:#569cd6;">...
+</span><span>        </span><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> elf_sections_tag.sections() {
+</span><span>            </span><span style="color:#569cd6;">...
+</span><span>        }
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// identity map the VGA text buffer
+</span><span>        </span><span style="color:#569cd6;">let</span><span> vga_buffer_frame = Frame::containing_address(</span><span style="color:#b5cea8;">0xb8000</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>        mapper.identity_map(vga_buffer_frame, </span><span style="color:#b4cea8;">WRITABLE</span><span>, allocator); </span><span style="color:#608b4e;">// new
+</span><span>    });
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> old_table = active_table.switch(new_table);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;NEW TABLE!!!&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>Now we should see the <code>NEW TABLE!!!</code> message (and also the <code>It did not crash!</code> line again). Congratulations! We successfully switched our kernel to a new page table!</p>
+<h3 id="fixing-the-frame-allocator"><a class="zola-anchor" href="index.html#fixing-the-frame-allocator" aria-label="Anchor link for: fixing-the-frame-allocator">🔗</a>Fixing the Frame Allocator</h3>
+<p>The same problem as above occurs when we try to use our <a href="../allocating-frames/index.html#the-allocator">AreaFrameAllocator</a> again. Try to add the following to <code>rust_main</code> after switching to the new table:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>rust_main(multiboot_information_address: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    memory::remap_the_kernel(</span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator, boot_info);
+</span><span>    frame_allocator.allocate_frame(); </span><span style="color:#608b4e;">// new: try to allocate a frame
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span></code></pre>
+<p>This causes the same bootloop as above. The reason is that the <code>AreaFrameAllocator</code> uses the memory map of the Multiboot information structure. But we did not map the Multiboot structure, so it causes a page fault. To fix it, we identity map it as well:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in `remap_the_kernel` in src/memory/paging/mod.rs
+</span><span>active_table.with(</span><span style="color:#569cd6;">&amp;mut</span><span> new_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page, |mapper| {
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// … identity map the allocated kernel sections
+</span><span>    </span><span style="color:#608b4e;">// … identity map the VGA text buffer
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// new:
+</span><span>    </span><span style="color:#608b4e;">// identity map the multiboot info structure
+</span><span>    </span><span style="color:#569cd6;">let</span><span> multiboot_start = Frame::containing_address(boot_info.start_address());
+</span><span>    </span><span style="color:#569cd6;">let</span><span> multiboot_end = Frame::containing_address(boot_info.end_address() - </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    </span><span style="color:#569cd6;">for</span><span> frame </span><span style="color:#569cd6;">in </span><span>Frame::range_inclusive(multiboot_start, multiboot_end) {
+</span><span>        mapper.identity_map(frame, </span><span style="color:#b4cea8;">PRESENT</span><span>, allocator);
+</span><span>    }
+</span><span>});
+</span></code></pre>
+<p>Normally the multiboot struct fits on one page. But GRUB can place it anywhere, so it could randomly cross a page boundary. Therefore we use <code>range_inclusive</code> to be on the safe side. Note that we need to subtract 1 to get the address of the last byte because the end address is exclusive.</p>
+<p>Now we should be able to allocate frames again.</p>
+<h2 id="using-the-correct-flags"><a class="zola-anchor" href="index.html#using-the-correct-flags" aria-label="Anchor link for: using-the-correct-flags">🔗</a>Using the Correct Flags</h2>
+<p>Right now, our new table maps all kernel sections as writable and executable. To fix this, we add a <code>EntryFlags::from_elf_section_flags</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/entry.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>multiboot2::ElfSection;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>EntryFlags {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>from_elf_section_flags(section: </span><span style="color:#569cd6;">&amp;</span><span>ElfSection) -&gt; EntryFlags {
+</span><span>        </span><span style="color:#569cd6;">use </span><span>multiboot2::{</span><span style="color:#b4cea8;">ELF_SECTION_ALLOCATED</span><span>, </span><span style="color:#b4cea8;">ELF_SECTION_WRITABLE</span><span>,
+</span><span>            </span><span style="color:#b4cea8;">ELF_SECTION_EXECUTABLE</span><span>};
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> flags = EntryFlags::empty();
+</span><span>
+</span><span>        </span><span style="color:#569cd6;">if</span><span> section.flags().contains(</span><span style="color:#b4cea8;">ELF_SECTION_ALLOCATED</span><span>) {
+</span><span>            </span><span style="color:#608b4e;">// section is loaded to memory
+</span><span>            flags = flags </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">PRESENT</span><span>;
+</span><span>        }
+</span><span>        </span><span style="color:#569cd6;">if</span><span> section.flags().contains(</span><span style="color:#b4cea8;">ELF_SECTION_WRITABLE</span><span>) {
+</span><span>            flags = flags </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>        }
+</span><span>        </span><span style="color:#569cd6;">if !</span><span>section.flags().contains(</span><span style="color:#b4cea8;">ELF_SECTION_EXECUTABLE</span><span>) {
+</span><span>            flags = flags </span><span style="color:#569cd6;">| </span><span style="color:#b4cea8;">NO_EXECUTE</span><span>;
+</span><span>        }
+</span><span>
+</span><span>        flags
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>It just converts the ELF section flags to page table flags.</p>
+<p>Now we can use it to fix the <code>TODO</code> in our <code>remap_the_kernel</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>remap_the_kernel&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A, boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    active_table.with(</span><span style="color:#569cd6;">&amp;mut</span><span> new_table, </span><span style="color:#569cd6;">&amp;mut</span><span> temporary_page, |mapper| {
+</span><span>        </span><span style="color:#569cd6;">...
+</span><span>        </span><span style="color:#569cd6;">for</span><span> section </span><span style="color:#569cd6;">in</span><span> elf_sections_tag.sections() {
+</span><span>            </span><span style="color:#569cd6;">...
+</span><span>            </span><span style="color:#569cd6;">if !</span><span>section.is_allocated() {
+</span><span>                </span><span style="color:#608b4e;">// section is not loaded to memory
+</span><span>                </span><span style="color:#569cd6;">continue</span><span>;
+</span><span>            }
+</span><span>            </span><span style="color:#569cd6;">...
+</span><span>            </span><span style="color:#608b4e;">// this is the new part
+</span><span>            </span><span style="color:#569cd6;">let</span><span> flags = EntryFlags::from_elf_section_flags(section);
+</span><span>            </span><span style="color:#569cd6;">...
+</span><span>            </span><span style="color:#569cd6;">for</span><span> frame </span><span style="color:#569cd6;">in </span><span>Frame::range_inclusive(start_frame, end_frame) {
+</span><span>                mapper.identity_map(frame, flags, allocator);
+</span><span>            }
+</span><span>        }
+</span><span>        </span><span style="color:#569cd6;">...
+</span><span>    });
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p>But when we test it now, we get a page fault again. We can use the same technique as above to get the responsible function. I won’t bother you with the QEMU output and just tell you the results:</p>
+<p>This time the responsible function is <code>control_regs::cr3_write()</code> itself. From the <a href="https://wiki.osdev.org/Exceptions#Error_code">error code</a> we learn that it was a page protection violation and caused by “reading a 1 in a reserved field”. So the page table had some reserved bit set that should be always 0. It must be the <code>NO_EXECUTE</code> flag, since it’s the only new bit that we set in the page table.</p>
+<h3 id="the-nxe-bit"><a class="zola-anchor" href="index.html#the-nxe-bit" aria-label="Anchor link for: the-nxe-bit">🔗</a>The NXE Bit</h3>
+<p>The reason is that the <code>NO_EXECUTE</code> bit must only be used when the <code>NXE</code> bit in the <a href="https://en.wikipedia.org/wiki/Control_register#EFER">Extended Feature Enable Register</a> (EFER) is set. That register is similar to Rust’s feature gating and can be used to enable all sorts of advanced CPU features. Since the <code>NXE</code> bit is off by default, we caused a page fault when we added the <code>NO_EXECUTE</code> bit to the page table.</p>
+<p>So we need to enable the <code>NXE</code> bit. For that we use the <a href="https://docs.rs/x86_64">x86_64 crate</a> again:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in lib.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>enable_nxe_bit() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::msr::{</span><span style="color:#b4cea8;">IA32_EFER</span><span>, rdmsr, wrmsr};
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> nxe_bit = </span><span style="color:#b5cea8;">1 </span><span>&lt;&lt; </span><span style="color:#b5cea8;">11</span><span>;
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let</span><span> efer = rdmsr(</span><span style="color:#b4cea8;">IA32_EFER</span><span>);
+</span><span>        wrmsr(</span><span style="color:#b4cea8;">IA32_EFER</span><span>, efer </span><span style="color:#569cd6;">|</span><span> nxe_bit);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The unsafe block is needed since accessing the <code>EFER</code> register is only allowed in kernel mode. But we are in kernel mode, so everything is fine.</p>
+<p>When we call this function before calling <code>remap_the_kernel</code>, everything should work again.</p>
+<h3 id="the-write-protect-bit"><a class="zola-anchor" href="index.html#the-write-protect-bit" aria-label="Anchor link for: the-write-protect-bit">🔗</a>The Write Protect Bit</h3>
+<p>Right now, we are still able to modify the <code>.code</code> and <code>.rodata</code> sections, even though we did not set the <code>WRITABLE</code> flag for them. The reason is that the CPU ignores this bit in kernel mode by default. To enable write protection for the kernel as well, we need to set the <em>Write Protect</em> bit in the <code>CR0</code> register:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in lib.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>enable_write_protect_bit() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control_regs::{cr0, cr0_write, Cr0};
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ cr0_write(cr0() </span><span style="color:#569cd6;">| </span><span>Cr0::</span><span style="color:#b4cea8;">WRITE_PROTECT</span><span>) };
+</span><span>}
+</span></code></pre>
+<p>The <code>cr0</code> functions are unsafe because accessing the <code>CR0</code> register is only allowed in kernel mode.</p>
+<p>If we haven’t forgotten to set the <code>WRITABLE</code> flag somewhere, it should still work without crashing.</p>
+<h2 id="creating-a-guard-page"><a class="zola-anchor" href="index.html#creating-a-guard-page" aria-label="Anchor link for: creating-a-guard-page">🔗</a>Creating a Guard Page</h2>
+<p>The final step is to create a guard page for our kernel stack.</p>
+<p>The decision to place the kernel stack right above the page tables was already useful to detect a silent stack overflow in the <a href="../page-tables/index.html">previous post</a>. Now we profit from it again. Let’s look at our assembly <code>.bss</code> section again to understand why:</p>
+<pre data-lang="nasm" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-nasm "><code class="language-nasm" data-lang="nasm"><span style="color:#608b4e;">; in src/arch/x86_64/boot.asm
+</span><span>
+</span><span>section .bss
+</span><span>align </span><span style="color:#b4cea8;">4096
+</span><span>p4_table:
+</span><span>    resb </span><span style="color:#b4cea8;">4096
+</span><span>p3_table:
+</span><span>    resb </span><span style="color:#b4cea8;">4096
+</span><span>p2_table:
+</span><span>    resb </span><span style="color:#b4cea8;">4096
+</span><span>stack_bottom:
+</span><span>    resb </span><span style="color:#b4cea8;">4096 </span><span>* </span><span style="color:#b4cea8;">4
+</span><span>stack_top:
+</span></code></pre>
+<p>The old page tables are right below the stack. They are still identity mapped since they are part of the kernel’s <code>.bss</code> section. We just need to turn the old <code>p4_table</code> into a guard page to secure the kernel stack. That way we even reuse the memory of the old P3 and P2 tables to increase the stack size.</p>
+<p>So let’s implement it:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory/paging/mod.rs
+</span><span style="color:#569cd6;">pub fn </span><span>remap_the_kernel&lt;A&gt;(allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> A, boot_info: </span><span style="color:#569cd6;">&amp;</span><span>BootInformation)
+</span><span>    </span><span style="color:#569cd6;">where</span><span> A: FrameAllocator
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    </span><span style="color:#569cd6;">let</span><span> old_table = active_table.switch(new_table);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;NEW TABLE!!!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// below is the new part
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// turn the old p4 page into a guard page
+</span><span>    </span><span style="color:#569cd6;">let</span><span> old_p4_page = Page::containing_address(
+</span><span>      old_table.p4_frame.start_address()
+</span><span>    );
+</span><span>    active_table.unmap(old_p4_page, allocator);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;guard page at </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#d69d85;">&quot;</span><span>, old_p4_page.start_address());
+</span><span>}
+</span></code></pre>
+<p>Now we have a very basic guard page: The page below the stack is unmapped, so a stack overflow causes an immediate page fault. Thus, silent stack overflows are no longer possible.</p>
+<p>Or to be precise, they are improbable. If we have a function with many big stack variables, it’s possible that the guard page is missed. For example, the following function could still corrupt memory below the stack:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> x = [</span><span style="color:#b5cea8;">0</span><span>; </span><span style="color:#b5cea8;">99999</span><span>];
+</span><span>}
+</span></code></pre>
+<p>This creates a very big array on the stack, which is currently filled from bottom to top. Therefore it misses the guard page and overwrites some memory below the stack. Eventually it hits the bottom of the guard page and causes a page fault. But before, it messes up memory, which is bad.</p>
+<p>Fortunately, there exists a solution called <em>stack probes</em>. The basic idea is to check all required stack pages at the beginning of each function. For example, a function that needs 9000 bytes on the stack would try to access <code>SP + 0</code>, <code>SP + 4096</code>, and <code>SP + 2 * 4096</code> (<code>SP</code> is the stack pointer). If the stack is not big enough, the guard page is hit and a page fault occurs. The function can’t mess up memory anymore since the stack check occurs right at its start.</p>
+<p>Unfortunately stack probes require compiler support. They already work on Windows but they don’t exist on Linux yet. The problem seems to be in LLVM, which Rust uses as backend. Hopefully it gets resolved soon so that our kernel stack becomes safe. For the current status and more information about stack probes check out the <a href="https://github.com/rust-lang/rust/issues/16012#issuecomment-160380183">tracking issue</a>.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>Now that we have a (mostly) safe kernel stack and a working page table module, we can add a virtual memory allocator. The <a href="../kernel-heap/index.html">next post</a> will explore Rust’s allocator API and create a very basic allocator. At the end of that post, we will be able to use Rust’s allocation and collections types such as <a href="https://doc.rust-lang.org/nightly/alloc/boxed/struct.Box.html">Box</a>, <a href="https://doc.rust-lang.org/1.10.0/collections/vec/struct.Vec.html">Vec</a>, or even <a href="https://doc.rust-lang.org/1.10.0/collections/btree_map/struct.BTreeMap.html">BTreeMap</a>.</p>
+<h2 id="footnotes"><a class="zola-anchor" href="index.html#footnotes" aria-label="Anchor link for: footnotes">🔗</a>Footnotes</h2>
+<div class="footnote-definition" id="fn-debug-notes"><sup class="footnote-definition-label">1</sup>
+<p>For this post the most useful GDB command is probably <code>p/x *((long int*)0xfffffffffffff000)@512</code>. It prints all entries of the recursively mapped P4 table by interpreting it as an array of 512 long ints (the <code>@512</code> is GDB’s array syntax). Of course you can also print other tables by adjusting the address.</p>
+</div>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../page-tables/index.html">&laquo; Page Tables</a>
+        
+        
+            <a class="next" href="../kernel-heap/index.html">Kernel Heap &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-180" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-180" class="permalink"><time title="Sat Jan 02 2016 15:56:41 GMT+0100 (Central European Standard Time)" datetime="2016-00-06T14:56:41Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>There is some discussion on <a rel="nofollow" href="https://news.ycombinator.com/item?id=10822479">hacker news</a>, <a rel="nofollow" href="https://www.reddit.com/r/rust/comments/3z1b9b/writing_an_os_in_rust_remap_the_kernel/">/r/rust</a>, and <a rel="nofollow" href="https://www.reddit.com/r/programming/comments/3z1mcz/writing_an_os_in_rust_remap_the_kernel/">/r/programming</a>.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-181" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="250647bcaa0e"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Rajivteja Nagipogu</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-181" class="permalink"><time title="Tue Mar 28 2017 13:59:23 GMT+0200 (Central European Summer Time)" datetime="2017-02-02T11:59:23Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>Error while using x86_64::shared::control_regs. <br>There was no `shared` in x86_64. <br>Thanks for the help. :) </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-182" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-182" class="permalink"><time title="Tue Mar 28 2017 14:14:52 GMT+0200 (Central European Summer Time)" datetime="2017-02-02T12:14:52Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks for reporting! Fixed in <a rel="nofollow" href="https://github.com/phil-opp/blog_os/pull/301">#301</a>.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-183" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="250647bcaa0e"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Rajivteja Nagipogu</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-183" class="permalink"><time title="Tue Mar 28 2017 23:36:08 GMT+0200 (Central European Summer Time)" datetime="2017-02-02T21:36:08Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thank you. You have done awesome work here.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-303" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8f27caa07ee3"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Rhys Kenwell</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-303" class="permalink"><time title="Fri Jul 07 2017 07:08:00 GMT+0200 (Central European Summer Time)" datetime="2017-06-05T05:08:00Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Trying to get this to work, my code looks identical to yours, save for the occasional twist for aesthetics, or different variable name, but after enabling the nxe bit, when according to you it should boot successfully, it crashes for me.</p>
+
+  <p>A bit of sleuthing on my part deduced the issue, I'm getting a double fault when I try to write to the cr3 register. A bit more debugging helped me find the culprit, when I write to cr3 in the switch method, something happens and the CPU double faults.</p>
+
+  <p>The exact instruction that the pc points to in the register dump is "add $0x18, %rsp"</p>
+
+  <p>Thanks in advance for helping me resolve this.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-304" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="815d89e67774"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Rhys Kenwell</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-304" class="permalink"><time title="Fri Jul 07 2017 19:51:27 GMT+0200 (Central European Summer Time)" datetime="2017-06-05T17:51:27Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Looked a bit further, the original fault is a page fault with the present, write, and reserved write bits set</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-305" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header">Philipp Oppermann<span class="spacer">•</span><a rel="nofollow" href="index.html#isso-305" class="permalink"><time title="Sat Jul 08 2017 16:33:18 GMT+0200 (Central European Summer Time)" datetime="2017-06-06T14:33:18Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Hmm, sounds like your CPU somehow thinks that you set a reserved bit. If it works fine before setting the NXE bit, it could be caused by:</p>
+
+  <ul>
+  <li>a wrong register (should be <code>IA32_EFER</code>)</li>
+  <li>a wrong bit number (should be <code>1 &lt;&lt; 11</code>)</li>
+  <li>your CPU somehow doesn't support it (if you run it on real hardware)
+
+  <ul>
+  <li>does in work in QEMU?</li>
+  <li>The AMD manual says: “Before setting this bit, system software must verify the processor supports the NX feature by checking the CPUID NX feature flag (CPUID Fn8000_0001_EDX[NX]).”</li>
+  </ul></li>
+  </ul>
+
+  <p>Hope this helps!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-379" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="271acecf6a9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-379" class="permalink"><time title="Thu Feb 01 2018 00:24:48 GMT+0100 (Central European Standard Time)" datetime="2018-00-03T23:24:48Z">vor 11 Monaten</time></a><span class="note"></span></div><div class="text"><p>Hi, just leaving this here for future reference.
+  I had the same problem and discovered that it was actually a typo, I didn't notice the ! on the <code>if</code> checking for ELF_SECTION_EXECUTABLE in <code>EntryFlags::from_elf_section_flags</code>. Maybe this will shed some light on your problem, if you still have it.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-371" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="e2ebdd22b0e3"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Nick von Bulow</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-371" class="permalink"><time title="Thu Jan 25 2018 00:29:11 GMT+0100 (Central European Standard Time)" datetime="2018-00-03T23:29:11Z">vor 11 Monaten</time></a><span class="note"></span></div><div class="text"><p>Note on the footnote: I paste in your "most useful GDB command", and it tells me "syntax error in expression, near `int*)0xfffffffffffff000)@512' "</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-372" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-372" class="permalink"><time title="Thu Jan 25 2018 09:12:57 GMT+0100 (Central European Standard Time)" datetime="2018-00-04T08:12:57Z">vor 11 Monaten</time></a><span class="note"></span></div><div class="text"><p>I think it's a problem across gdb versions. I had a similar problem recently. It seems like newer versions no longer understand some casts, but I couldn't find out whether that's a bug or an intentional syntax change.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-402" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6259e43a7258"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-402" class="permalink"><time title="Tue May 08 2018 21:36:51 GMT+0200 (Central European Summer Time)" datetime="2018-04-02T19:36:51Z">vor 8 Monaten</time></a><span class="note"></span></div><div class="text"><p>This issue is merged: <a rel="nofollow" href="https://github.com/rust-lang/rust/issues/16012#issuecomment-160380183">https://github.com/rust-lang/rust/issues/16012#issuecomment-160380183</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

@@ -1,0 +1,911 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Returning from Exceptions | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Returning from Exceptions</h1>
+    <time datetime="2016-09-21" class="post-date">
+        Sep 21, 2016
+         (updated on Nov 01, 2016) 
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#introduction">Introduction</a>
+                
+            </li><li>
+                <a href="index.html#the-breakpoint-exception">The Breakpoint Exception</a>
+                <ol>
+                    <li>
+                        <a href="index.html#catching-breakpoints">Catching Breakpoints</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#returning-from-exceptions">Returning from Exceptions</a>
+                <ol>
+                    <li>
+                        <a href="index.html#the-iretq-instruction">The iretq Instruction</a>
+                    </li><li>
+                        <a href="index.html#implementation">Implementation</a>
+                    </li><li>
+                        <a href="index.html#testing">Testing</a>
+                    </li><li>
+                        <a href="index.html#debugging">Debugging</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#calling-conventions">Calling Conventions</a>
+                <ol>
+                    <li>
+                        <a href="index.html#preserved-and-scratch-registers">Preserved and Scratch Registers</a>
+                    </li><li>
+                        <a href="index.html#the-exception-calling-convention">The Exception Calling Convention</a>
+                    </li><li>
+                        <a href="index.html#a-naked-wrapper-function">A naked wrapper function</a>
+                    </li><li>
+                        <a href="index.html#fixing-our-handler-macro">Fixing our Handler Macro</a>
+                    </li><li>
+                        <a href="index.html#testing-it-again">Testing it again</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#multimedia-registers">Multimedia Registers</a>
+                <ol>
+                    <li>
+                        <a href="index.html#saving-and-restoring-multimedia-registers">Saving and Restoring Multimedia Registers</a>
+                    </li><li>
+                        <a href="index.html#disabling-multimedia-extensions">Disabling Multimedia Extensions</a>
+                    </li><li>
+                        <a href="index.html#target-specifications">Target Specifications</a>
+                    </li><li>
+                        <a href="index.html#cross-compilation">Cross compilation</a>
+                    </li><li>
+                        <a href="index.html#sse-register-return">SSE Register Return</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#the-red-zone">The Red Zone</a>
+                <ol>
+                    <li>
+                        <a href="index.html#adjusting-our-exception-handler">Adjusting our Exception Handler?</a>
+                    </li><li>
+                        <a href="index.html#disabling-the-red-zone">Disabling the Red Zone</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#exceptions-with-error-codes">Exceptions with Error Codes</a>
+                <ol>
+                    <li>
+                        <a href="index.html#testing-1">Testing</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In this post, we learn how to return from exceptions correctly. In the course of this, we will explore the <code>iretq</code> instruction, the C calling convention, multimedia registers, and the red zone.</p>
+<span id="continue-reading"></span>
+<p>As always, the complete source code is on <a href="https://github.com/phil-opp/blog_os/tree/returning_from_exceptions">GitHub</a>. Please file <a href="https://github.com/phil-opp/blog_os/issues">issues</a> for any problems, questions, or improvement suggestions. There is also a <a href="https://gitter.im/phil-opp/blog_os">gitter chat</a> and a comment section at the end of this page.</p>
+<blockquote>
+<p><strong>Note</strong>: This post describes how to handle exceptions using naked functions (see <a href="https://os.phil-opp.com/edition-1/extra/naked-exceptions/">“Handling Exceptions with Naked Functions”</a> for an overview). Our new way of handling exceptions can be found in the <a href="../handling-exceptions/index.html">“Handling Exceptions”</a> post.</p>
+</blockquote>
+<h2 id="introduction"><a class="zola-anchor" href="index.html#introduction" aria-label="Anchor link for: introduction">🔗</a>Introduction</h2>
+<p>Most exceptions are fatal and can’t be resolved. For example, we can’t return from a divide-by-zero exception in a reasonable way. However, there are some exceptions that we can resolve:</p>
+<p>Imagine a system that uses <a href="https://en.wikipedia.org/wiki/Memory-mapped_file">memory mapped files</a>: We map a file into the virtual address space without loading it into memory. Whenever we access a part of the file for the first time, a page fault occurs. However, this page fault is not fatal. We can resolve it by loading the corresponding page from disk into memory and setting the <code>present</code> flag in the page table. Then we can return from the page fault handler and restart the failed instruction, which now successfully accesses the file data.</p>
+<p>Memory mapped files are completely out of scope for us right now (we have neither a file concept nor a hard disk driver). So we need an exception that we can resolve easily so that we can return from it in a reasonable way. Fortunately, there is an exception that needs no resolution at all: the breakpoint exception.</p>
+<h2 id="the-breakpoint-exception"><a class="zola-anchor" href="index.html#the-breakpoint-exception" aria-label="Anchor link for: the-breakpoint-exception">🔗</a>The Breakpoint Exception</h2>
+<p>The breakpoint exception is the perfect exception to test our upcoming return-from-exception logic. Its only purpose is to temporary pause a program when the breakpoint instruction <code>int3</code> is executed.</p>
+<p>The breakpoint exception is commonly used in debuggers: When the user sets a breakpoint, the debugger overwrites the corresponding instruction with the <code>int3</code> instruction so that the CPU throws the breakpoint exception when it reaches that line. When the user wants to continue the program, the debugger replaces the <code>int3</code> instruction with the original instruction again and continues the program. For more details, see the <a href="https://eli.thegreenplace.net/2011/01/27/how-debuggers-work-part-2-breakpoints">How debuggers work</a> series.</p>
+<p>For our use case, we don’t need to overwrite any instructions (it wouldn’t even be possible since we <a href="../remap-the-kernel/index.html#using-the-correct-flags">set the page table flags</a> to read-only). Instead, we just want to print a message when the breakpoint instruction is executed and then continue the program.</p>
+<h3 id="catching-breakpoints"><a class="zola-anchor" href="index.html#catching-breakpoints" aria-label="Anchor link for: catching-breakpoints">🔗</a>Catching Breakpoints</h3>
+<p>Let’s start by defining a handler function for the breakpoint exception:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>breakpoint_handler(stack_frame: </span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame) -&gt; </span><span style="color:#569cd6;">!
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> stack_frame = </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span>*stack_frame };
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">EXCEPTION: BREAKPOINT at </span><span style="color:#b4cea8;">{:#x}</span><span style="color:#e3bbab;">\n</span><span style="color:#b4cea8;">{:#?}</span><span style="color:#d69d85;">&quot;</span><span>,
+</span><span>        stack_frame.instruction_pointer, stack_frame);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>We print an error message and also output the instruction pointer and the rest of the stack frame. Note that this function does <em>not</em> return yet, since our <code>handler!</code> macro still requires a diverging function.</p>
+<p>We need to register our new handler function in the interrupt descriptor table (IDT):</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: idt::Idt = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = idt::Idt::new();
+</span><span>
+</span><span>        idt.set_handler(</span><span style="color:#b5cea8;">0</span><span>, handler!(divide_by_zero_handler));
+</span><span>        idt.set_handler(</span><span style="color:#b5cea8;">3</span><span>, handler!(breakpoint_handler)); </span><span style="color:#608b4e;">// new
+</span><span>        idt.set_handler(</span><span style="color:#b5cea8;">6</span><span>, handler!(invalid_opcode_handler));
+</span><span>        idt.set_handler(</span><span style="color:#b5cea8;">14</span><span>, handler_with_error_code!(page_fault_handler));
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>We set the IDT entry with number 3 since it’s the vector number of the breakpoint exception.</p>
+<h4 id="testing-it"><a class="zola-anchor" href="index.html#testing-it" aria-label="Anchor link for: testing-it">🔗</a>Testing it</h4>
+<p>In order to test it, we insert an <code>int3</code> instruction in our <code>rust_main</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span style="color:#569cd6;">...
+</span><span>#[macro_use] </span><span style="color:#608b4e;">// needed for the `int!` macro
+</span><span style="color:#569cd6;">extern crate</span><span> x86_64;
+</span><span style="color:#569cd6;">...
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>rust_main(...) {
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>    interrupts::init();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a breakpoint exception
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ int!(</span><span style="color:#b5cea8;">3</span><span>) };
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>When we execute <code>make run</code>, we see the following:</p>
+<p><img src="qemu-breakpoint-handler.png" alt="QEMU showing EXCEPTION: BREAKPOINT at 0x110970 and a dump of the exception stack frame" /></p>
+<p>It works! Now we “just” need to return from the breakpoint handler somehow so that we see the <code>It did not crash</code> message again.</p>
+<h2 id="returning-from-exceptions"><a class="zola-anchor" href="index.html#returning-from-exceptions" aria-label="Anchor link for: returning-from-exceptions">🔗</a>Returning from Exceptions</h2>
+<p>So how do we return from exceptions? To make it easier, we look at a normal function return first:</p>
+<p><img src="function-stack-frame.svg" alt="function stack frame" /></p>
+<p>When calling a function, the <code>call</code> instruction pushes the return address on the stack. When the called function is finished, it can return to the parent function through the <code>ret</code> instruction, which pops the return address from the stack and then jumps to it.</p>
+<p>The exception stack frame, in contrast, looks a bit different:</p>
+<p><img src="exception-stack-frame.svg" alt="exception stack frame" /></p>
+<p>Instead of pushing a return address, the CPU pushes the stack and instruction pointers (with their segment descriptors), the RFLAGS register, and an optional error code. It also aligns the stack pointer to a 16 byte boundary before pushing values.</p>
+<p>So we can’t use a normal <code>ret</code> instruction, since it expects a different stack frame layout. Instead, there is a special instruction for returning from exceptions: <code>iretq</code>.</p>
+<h3 id="the-iretq-instruction"><a class="zola-anchor" href="index.html#the-iretq-instruction" aria-label="Anchor link for: the-iretq-instruction">🔗</a>The <code>iretq</code> Instruction</h3>
+<p>The <code>iretq</code> instruction is the one and only way to return from exceptions and is specifically designed for this purpose. The AMD64 instruction manual (<a href="https://www.amd.com/system/files/TechDocs/24594.pdf">PDF</a>) even demands that <code>iretq</code> “<em>must</em> be used to terminate the exception or interrupt handler associated with the exception”.</p>
+<p>IRETQ restores <code>rip</code>, <code>cs</code>, <code>rflags</code>, <code>rsp</code>, and <code>ss</code> from the values saved on the stack and thus continues the interrupted program. The instruction does not handle the optional error code, so it must be popped from the stack before.</p>
+<p>We see that <code>iretq</code> treats the stored instruction pointer as return address. For most exceptions, the stored <code>rip</code> points to the instruction that caused the fault. So by executing <code>iretq</code>, we restart the failing instruction. This makes sense because we should have resolved the exception when returning from it, so the instruction should no longer fail (e.g. the accessed part of the memory mapped file is now present in memory).</p>
+<p>The situation is a bit different for the breakpoint exception, since it needs no resolution. Restarting the <code>int3</code> instruction wouldn’t make sense, since it would cause a new breakpoint exception and we would enter an endless loop. For this reason the hardware designers decided that the stored <code>rip</code> should point to the next instruction after the <code>int3</code> instruction.</p>
+<p>Let’s check this for our breakpoint handler. Remember, the handler printed the following message (see the image above):</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>EXCEPTION: BREAKPOINT at 0x110970
+</span></code></pre>
+<p>So let’s disassemble the instruction at <code>0x110970</code> and its predecessor:</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; objdump -d build/kernel-x86_64.bin </span><span style="color:#569cd6;">| </span><span>grep -B1 </span><span style="color:#d69d85;">&quot;110970:&quot;
+</span><span>11096f:	cc                   	int3
+</span><span>110970:	48 c7 01 2a 00 00 00 	movq   $0x2a,(%rcx)
+</span></code></pre>
+<p>We see that <code>0x110970</code> indeed points to the next instruction after <code>int3</code>. So we can simply jump to the stored instruction pointer when we want to return from the breakpoint exception.</p>
+<h3 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h3>
+<p>Let’s update our <code>handler!</code> macro to support non-diverging exception handlers:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! handler {
+</span><span>    ($name: ident) </span><span style="color:#569cd6;">=&gt; </span><span>{{
+</span><span>        #[naked]
+</span><span>        </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>wrapper() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>            </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;mov rdi, rsp
+</span><span style="color:#d69d85;">                      sub rsp, 8 // align the stack pointer
+</span><span style="color:#d69d85;">                      call $0&quot;
+</span><span>                      :: </span><span style="color:#d69d85;">&quot;i&quot;</span><span>($name </span><span style="color:#569cd6;">as extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn</span><span>(
+</span><span>                          </span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame)) </span><span style="color:#608b4e;">// no longer diverging
+</span><span>                      : </span><span style="color:#d69d85;">&quot;rdi&quot; </span><span>: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>
+</span><span>                </span><span style="color:#608b4e;">// new
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;add rsp, 8 // undo stack pointer alignment
+</span><span style="color:#d69d85;">                      iretq&quot;
+</span><span>                      :::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>                ::core::intrinsics::unreachable();
+</span><span>            }
+</span><span>        }
+</span><span>        wrapper
+</span><span>    }}
+</span><span>}
+</span></code></pre>
+<p>When an exception handler returns from the <code>call</code> instruction, we use the <code>iretq</code> instruction to continue the interrupted program. Note that we need to undo the stack pointer alignment before, so that <code>rsp</code> points to the end of the exception stack frame again.</p>
+<p>We’ve changed the handler function type, so we need to adjust our existing exception handlers:</p>
+<pre data-lang="diff" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-diff "><code class="language-diff" data-lang="diff"><span>// in src/interrupts/mod.rs
+</span><span>
+</span><span>extern &quot;C&quot; fn divide_by_zero_handler(
+</span><span>-   stack_frame: &amp;ExceptionStackFrame) -&gt; ! {...}
+</span><span>+   stack_frame: &amp;ExceptionStackFrame) {...}
+</span><span>
+</span><span>extern &quot;C&quot; fn invalid_opcode_handler(
+</span><span>-   stack_frame: &amp;ExceptionStackFrame) -&gt; ! {...}
+</span><span>+   stack_frame: &amp;ExceptionStackFrame) {...}
+</span><span>
+</span><span>extern &quot;C&quot; fn breakpoint_handler(
+</span><span>-   stack_frame: &amp;ExceptionStackFrame) -&gt; ! {
+</span><span>+   stack_frame: &amp;ExceptionStackFrame) {
+</span><span>    println!(...);
+</span><span>-   loop {}
+</span><span>}
+</span></code></pre>
+<p>Note that we also removed the <code>loop {}</code> at the end of our <code>breakpoint_handler</code> so that it no longer diverges. The <code>divide_by_zero_handler</code> and the <code>invalid_opcode_handler</code> still diverge (albeit the new function type would allow a return).</p>
+<h3 id="testing"><a class="zola-anchor" href="index.html#testing" aria-label="Anchor link for: testing">🔗</a>Testing</h3>
+<p>Let’s try our new <code>iretq</code> logic:</p>
+<p><img src="qemu-breakpoint-return-page-fault.png" alt="QEMU output with EXCEPTION BREAKPOINT and EXCEPTION PAGE FAULT but no It did not crash" /></p>
+<p>Instead of the expected <em>“It did not crash”</em> message after the breakpoint exception, we get a page fault. The strange thing is that our kernel tried to access address <code>0x1</code>, which should never happen. So it seems like we messed up something important.</p>
+<h3 id="debugging"><a class="zola-anchor" href="index.html#debugging" aria-label="Anchor link for: debugging">🔗</a>Debugging</h3>
+<p>Let’s debug it using GDB. For that we execute <code>make debug</code> in one terminal (which starts QEMU with the <code>-s -S</code> flags) and then <code>make gdb</code> (which starts and connects GDB) in a second terminal. For more information about GDB debugging, check out our <a href="../set-up-gdb/index.html">Set Up GDB</a> guide.</p>
+<p>First we want to check if our <code>iretq</code> was successful. Therefore we set a breakpoint on the <code>println!(&quot;It did not crash line!&quot;)</code> statement in <code>src/lib.rs</code>. Let’s assume that it’s on line 61:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>(gdb) break blog_os/src/lib.rs:61
+</span><span>Breakpoint 1 at 0x110a95: file /home/.../blog_os/src/lib.rs, line 61.
+</span></code></pre>
+<p>This line is after the <code>int3</code> instruction, so we know that the <code>iretq</code> succeeded when the breakpoint is hit. To test this, we continue the execution:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>(gdb) continue
+</span><span>Continuing.
+</span><span>
+</span><span>Breakpoint 1, blog_os::rust_main (multiboot_information_address=1539136)
+</span><span>    at /home/.../blog_os/src/lib.rs:61
+</span><span>61	    println!(&quot;It did not crash!&quot;);
+</span><span>
+</span></code></pre>
+<p>It worked! So our kernel successfully returned from the <code>int3</code> instruction, which means that the <code>iretq</code> itself works.</p>
+<p>However, when we <code>continue</code> the execution again, we get the page fault. So the exception occurs somewhere in the <code>println</code> logic. This means that it occurs in code generated by the compiler (and not e.g. in inline assembly). But the compiler should never access <code>0x1</code>, so how is this happening?</p>
+<p>The answer is that we’ve used the wrong <em>calling convention</em> for our exception handlers. Thus, we violate some compiler invariants so that the code that works fine without intermediate exceptions starts to violate memory safety when it’s executed after a breakpoint exception.</p>
+<h2 id="calling-conventions"><a class="zola-anchor" href="index.html#calling-conventions" aria-label="Anchor link for: calling-conventions">🔗</a>Calling Conventions</h2>
+<p>Exceptions are quite similar to function calls: The CPU jumps to the first instruction of the (handler) function and executes the function. Afterwards, if the function is not diverging, the CPU jumps to the return address and continues the execution of the parent function.</p>
+<p>However, there is a major difference between exceptions and function calls: A function call is invoked voluntary by a compiler inserted <code>call</code> instruction, while an exception might occur at <em>any</em> instruction. In order to understand the consequences of this difference, we need to examine function calls in more detail.</p>
+<p><a href="https://en.wikipedia.org/wiki/Calling_convention">Calling conventions</a> specify the details of a function call. For example, they specify where function parameters are placed (e.g. in registers or on the stack) and how results are returned. On x86_64 Linux, the following rules apply for C functions (specified in the <a href="https://refspecs.linuxbase.org/elf/gabi41.pdf">System V ABI</a>):</p>
+<ul>
+<li>the first six integer arguments are passed in registers <code>rdi</code>, <code>rsi</code>, <code>rdx</code>, <code>rcx</code>, <code>r8</code>, <code>r9</code></li>
+<li>additional arguments are passed on the stack</li>
+<li>results are returned in <code>rax</code> and <code>rdx</code></li>
+</ul>
+<p>Note that Rust does not follow the C ABI (in fact, <a href="https://github.com/rust-lang/rfcs/issues/600">there isn’t even a Rust ABI yet</a>). So these rules apply only to functions declared as <code>extern &quot;C&quot; fn</code>.</p>
+<h3 id="preserved-and-scratch-registers"><a class="zola-anchor" href="index.html#preserved-and-scratch-registers" aria-label="Anchor link for: preserved-and-scratch-registers">🔗</a>Preserved and Scratch Registers</h3>
+<p>The calling convention divides the registers in two parts: <em>preserved</em> and <em>scratch</em> registers.</p>
+<p>The values of the preserved register must remain unchanged across function calls. So a called function (the <em>“callee”</em>) is only allowed to overwrite these registers if it restores their original values before returning. Therefore these registers are called <em>“callee-saved”</em>. A common pattern is to save these registers to the stack at the function’s beginning and restore them just before returning.</p>
+<p>In contrast, a called function is allowed to overwrite scratch registers without restrictions. If the caller wants to preserve the value of a scratch register across a function call, it needs to backup and restore it (e.g. by pushing it to the stack before the function call). So the scratch registers are <em>caller-saved</em>.</p>
+<p>On x86_64, the C calling convention specifies the following preserved and scratch registers:</p>
+<table><thead><tr><th>preserved registers</th><th>scratch registers</th></tr></thead><tbody>
+<tr><td><code>rbp</code>, <code>rbx</code>, <code>rsp</code>, <code>r12</code>, <code>r13</code>, <code>r14</code>, <code>r15</code></td><td><code>rax</code>, <code>rcx</code>, <code>rdx</code>, <code>rsi</code>, <code>rdi</code>, <code>r8</code>, <code>r9</code>, <code>r10</code>, <code>r11</code></td></tr>
+<tr><td><em>callee-saved</em></td><td><em>caller-saved</em></td></tr>
+</tbody></table>
+<p>The compiler knows these rules, so it generates the code accordingly. For example, most functions begin with a <code>push rbp</code>, which backups <code>rbp</code> on the stack (because it’s a callee-saved register).</p>
+<h3 id="the-exception-calling-convention"><a class="zola-anchor" href="index.html#the-exception-calling-convention" aria-label="Anchor link for: the-exception-calling-convention">🔗</a>The Exception Calling Convention</h3>
+<p>In contrast to function calls, exceptions can occur on <em>any</em> instruction. In most cases we don’t even know at compile time if the generated code will cause an exception. For example, the compiler can’t know if an instruction causes a stack overflow or an other page fault.</p>
+<p>Since we don’t know when an exception occurs, we can’t backup any registers before. This means that we can’t use a calling convention that relies on caller-saved registers for our exception handlers. But we do so at the moment: Our exception handlers are declared as <code>extern &quot;C&quot; fn</code> and thus use the C calling convention.</p>
+<p>So here is what happens:</p>
+<ul>
+<li><code>rust_main</code> is executing; it writes some memory address into <code>rax</code>.</li>
+<li>The <code>int3</code> instruction causes a breakpoint exception.</li>
+<li>Our <code>breakpoint_handler</code> prints to the screen and assumes that it can overwrite <code>rax</code> freely (since it’s a scratch register). Somehow the value <code>0</code> ends up in <code>rax</code>.</li>
+<li>We return from the breakpoint exception using <code>iretq</code>.</li>
+<li><code>rust_main</code> continues and accesses the memory address in <code>rax</code>.</li>
+<li>The CPU tries to access address <code>0x1</code>, which causes a page fault.</li>
+</ul>
+<p>So our exception handler erroneously assumes that the scratch registers were saved by the caller. But the caller (<code>rust_main</code>) couldn’t save any registers since it didn’t know that an exception occurs. So nobody saves <code>rax</code> and the other scratch registers, which leads to the page fault.</p>
+<p>The problem is that we use a calling convention with caller-saved registers for our exception handlers. Instead, we need a calling convention means that preserves <em>all registers</em>. In other words, all registers must be callee-saved:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;all-registers-callee-saved&quot; </span><span style="color:#569cd6;">fn </span><span>exception_handler() {</span><span style="color:#569cd6;">...</span><span>}
+</span></code></pre>
+<p>Unfortunately, Rust does not support such a calling convention. It was <a href="https://github.com/rust-lang/rfcs/pull/1275">proposed once</a>, but did not get accepted for various reasons. The primary reason was that such calling conventions can be simulated by writing a naked wrapper function.</p>
+<p>(Remember: <a href="https://github.com/rust-lang/rfcs/blob/master/text/1201-naked-fns.md">Naked functions</a> are functions without prologue and can contain only inline assembly. They were discussed in the <a href="../better-exception-messages/index.html#naked-functions">previous post</a>.)</p>
+<h3 id="a-naked-wrapper-function"><a class="zola-anchor" href="index.html#a-naked-wrapper-function" aria-label="Anchor link for: a-naked-wrapper-function">🔗</a>A naked wrapper function</h3>
+<p>Such a naked wrapper function might look like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[naked]
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>calling_convention_wrapper() {
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        asm!(</span><span style="color:#d69d85;">&quot;
+</span><span style="color:#d69d85;">            push rax
+</span><span style="color:#d69d85;">            push rcx
+</span><span style="color:#d69d85;">            push rdx
+</span><span style="color:#d69d85;">            push rsi
+</span><span style="color:#d69d85;">            push rdi
+</span><span style="color:#d69d85;">            push r8
+</span><span style="color:#d69d85;">            push r9
+</span><span style="color:#d69d85;">            push r10
+</span><span style="color:#d69d85;">            push r11
+</span><span style="color:#d69d85;">            // TODO: call exception handler with C calling convention
+</span><span style="color:#d69d85;">            pop r11
+</span><span style="color:#d69d85;">            pop r10
+</span><span style="color:#d69d85;">            pop r9
+</span><span style="color:#d69d85;">            pop r8
+</span><span style="color:#d69d85;">            pop rdi
+</span><span style="color:#d69d85;">            pop rsi
+</span><span style="color:#d69d85;">            pop rdx
+</span><span style="color:#d69d85;">            pop rcx
+</span><span style="color:#d69d85;">            pop rax
+</span><span style="color:#d69d85;">        &quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This wrapper function saves all <em>scratch</em> registers to the stack before calling the exception handler and restores them afterwards. Note that we <code>pop</code> the registers in reverse order.</p>
+<p>We don’t need to backup <em>preserved</em> registers since they are callee-saved in the C calling convention. Thus, the compiler already takes care of preserving their values.</p>
+<h3 id="fixing-our-handler-macro"><a class="zola-anchor" href="index.html#fixing-our-handler-macro" aria-label="Anchor link for: fixing-our-handler-macro">🔗</a>Fixing our Handler Macro</h3>
+<p>Let’s update our handler macro to fix the calling convention problem. Therefore we need to backup and restore all scratch registers. For that we create two new macros:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! save_scratch_registers {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        asm!(</span><span style="color:#d69d85;">&quot;push rax
+</span><span style="color:#d69d85;">              push rcx
+</span><span style="color:#d69d85;">              push rdx
+</span><span style="color:#d69d85;">              push rsi
+</span><span style="color:#d69d85;">              push rdi
+</span><span style="color:#d69d85;">              push r8
+</span><span style="color:#d69d85;">              push r9
+</span><span style="color:#d69d85;">              push r10
+</span><span style="color:#d69d85;">              push r11
+</span><span style="color:#d69d85;">        &quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span>macro_rules! restore_scratch_registers {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        asm!(</span><span style="color:#d69d85;">&quot;pop r11
+</span><span style="color:#d69d85;">              pop r10
+</span><span style="color:#d69d85;">              pop r9
+</span><span style="color:#d69d85;">              pop r8
+</span><span style="color:#d69d85;">              pop rdi
+</span><span style="color:#d69d85;">              pop rsi
+</span><span style="color:#d69d85;">              pop rdx
+</span><span style="color:#d69d85;">              pop rcx
+</span><span style="color:#d69d85;">              pop rax
+</span><span style="color:#d69d85;">            &quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We need to declare these macros <em>above</em> our <code>handler</code> macro, since macros are only available after their declaration.</p>
+<p>Now we can use these macros to fix our <code>handler!</code> macro:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! handler {
+</span><span>    ($name: ident) </span><span style="color:#569cd6;">=&gt; </span><span>{{
+</span><span>        #[naked]
+</span><span>        </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>wrapper() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>            </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>                save_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;mov rdi, rsp
+</span><span style="color:#d69d85;">                      add rdi, 9*8 // calculate exception stack frame pointer
+</span><span style="color:#d69d85;">                      // sub rsp, 8 (stack is aligned already)
+</span><span style="color:#d69d85;">                      call $0&quot;
+</span><span>                      :: </span><span style="color:#d69d85;">&quot;i&quot;</span><span>($name </span><span style="color:#569cd6;">as
+</span><span>                             </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn</span><span>(</span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame))
+</span><span>                      : </span><span style="color:#d69d85;">&quot;rdi&quot; </span><span>: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>
+</span><span>                restore_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;
+</span><span style="color:#d69d85;">                      // add rsp, 8 (undo stack alignment; not needed anymore)
+</span><span style="color:#d69d85;">                      iretq&quot;
+</span><span>                      :::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>                ::core::intrinsics::unreachable();
+</span><span>            }
+</span><span>        }
+</span><span>        wrapper
+</span><span>    }}
+</span><span>}
+</span></code></pre>
+<p>It’s important that we save the registers first, before we modify any of them. After the <code>call</code> instruction (but before <code>iretq</code>) we restore the registers again. Because we’re now changing <code>rsp</code> (by pushing the register values) before we load it into <code>rdi</code>, we would get a wrong exception stack frame pointer. Therefore we need to adjust it by adding the number of bytes we push. We push 9 registers that are 8 bytes each, so <code>9 * 8</code> bytes in total.</p>
+<p>Note that we no longer need to manually align the stack pointer, because we’re pushing an uneven number of registers in <code>save_scratch_registers</code>. Thus the stack pointer already has the required 16-byte alignment.</p>
+<h3 id="testing-it-again"><a class="zola-anchor" href="index.html#testing-it-again" aria-label="Anchor link for: testing-it-again">🔗</a>Testing it again</h3>
+<p>Let’s test it again with our corrected <code>handler!</code> macro:</p>
+<p><img src="qemu-breakpoint-return.png" alt="QEMU output with EXCEPTION BREAKPOINT and It did not crash" /></p>
+<p>The page fault is gone and we see the <em>“It did not crash”</em> message again!</p>
+<p>So the page fault occurred because our exception handler didn’t preserve the scratch register <code>rax</code>. Our new <code>handler!</code> macro fixes this problem by saving all scratch registers (including <code>rax</code>) before calling exception handlers. Thus, <code>rax</code> still contains the valid memory address when <code>rust-main</code> continues execution.</p>
+<h2 id="multimedia-registers"><a class="zola-anchor" href="index.html#multimedia-registers" aria-label="Anchor link for: multimedia-registers">🔗</a>Multimedia Registers</h2>
+<p>When we discussed calling conventions above, we assumed that a x86_64 CPU only has the following 16 registers: <code>rax</code>, <code>rbx</code>, <code>rcx</code>, <code>rdx</code>, <code>rsi</code>, <code>rdi</code>, <code>rsp</code>, <code>rbp</code>, <code>r8</code>, <code>r9</code>, <code>r10</code>, <code>r11</code>.<code>r12</code>, <code>r13</code>, <code>r14</code>, and <code>r15</code>. These registers are called <em>general purpose registers</em> since each of them can be used for arithmetic and load/store instructions.</p>
+<p>However, modern CPUs also have a set of <em>special purpose registers</em>, which can be used to improve performance in several use cases. On x86_64, the most important set of special purpose registers are the <em>multimedia registers</em>. These registers are larger than the general purpose registers and can be used to speed up audio/video processing or matrix calculations. For example, we could use them to add two 4-dimensional vectors <em>in a single CPU instruction</em>:</p>
+<p><img src="vector-addition.png" alt="(1,2,3,4) + (5,6,7,8) = (6,8,10,12)" /></p>
+<p>Such multimedia instructions are called <a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a> instructions, because they simultaneously perform an operation (e.g. addition) on multiple data words. Good compilers are able to transform normal loops into such SIMD code automatically. This process is called <a href="https://en.wikipedia.org/wiki/Automatic_vectorization">auto-vectorization</a> and can lead to huge performance improvements.</p>
+<p>However, auto-vectorization causes a problem for us: Most of the multimedia registers are caller-saved. According to our discussion of calling conventions above, this means that our exception handlers erroneously assume that they are allowed to overwrite them without preserving their values.</p>
+<p>We don’t use any multimedia registers explicitly, but the Rust compiler might auto-vectorize our code (including the exception handlers). Thus we could silently clobber the multimedia registers, which leads to the same problems as above:</p>
+<p><img src="xmm-overwrite.svg" alt="example: program uses mm0, mm1, and mm2. Then the exception handler clobbers mm1." /></p>
+<p>This example shows a program that is using the first three multimedia registers (<code>mm0</code> to <code>mm2</code>). At some point, an exception occurs and control is transferred to the exception handler. The exception handler uses <code>mm1</code> for its own data and thus overwrites the previous value. When the exception is resolved, the CPU continues the interrupted program again. However, the program is now corrupt since it relies on the original <code>mm1</code> value.</p>
+<h3 id="saving-and-restoring-multimedia-registers"><a class="zola-anchor" href="index.html#saving-and-restoring-multimedia-registers" aria-label="Anchor link for: saving-and-restoring-multimedia-registers">🔗</a>Saving and Restoring Multimedia Registers</h3>
+<p>In order to fix this problem, we need to backup all caller-saved multimedia registers before we call the exception handler. The problem is that the set of multimedia registers varies between CPUs. There are different standards:</p>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/MMX_(instruction_set)">MMX</a>: The MMX instruction set was introduced in 1997 and defines eight 64 bit registers called <code>mm0</code> through <code>mm7</code>. These registers are just aliases for the registers of the <a href="https://en.wikipedia.org/wiki/X87">x87 floating point unit</a>.</li>
+<li><a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a>: The <em>Streaming SIMD Extensions</em> instruction set was introduced in 1999. Instead of re-using the floating point registers, it adds a completely new register set. The sixteen new registers are called <code>xmm0</code> through <code>xmm15</code> and are 128 bits each.</li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a>: The <em>Advanced Vector Extensions</em> are extensions that further increase the size of the multimedia registers. The new registers are called <code>ymm0</code> through <code>ymm15</code> and are 256 bits each. They extend the <code>xmm</code> registers, so e.g. <code>xmm0</code> is the lower (or upper?) half of <code>ymm0</code>.</li>
+</ul>
+<p>The Rust compiler (and LLVM) assume that the <code>x86_64-unknown-linux-gnu</code> target supports only MMX and SSE, so we don’t need to save the <code>ymm0</code> through <code>ymm15</code>. But we need to save <code>xmm0</code> through <code>xmm15</code> and also <code>mm0</code> through <code>mm7</code>. There is a special instruction to do this: <a href="https://www.felixcloutier.com/x86/fxsave">fxsave</a>. This instruction saves the floating point and multimedia state to a given address. It needs <em>512 bytes</em> to store that state.</p>
+<p>In order to save/restore the multimedia registers, we <em>could</em> add new macros:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>macro_rules! save_multimedia_registers {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        asm!(</span><span style="color:#d69d85;">&quot;sub rsp, 512
+</span><span style="color:#d69d85;">              fxsave [rsp]
+</span><span style="color:#d69d85;">        &quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span>macro_rules! restore_multimedia_registers {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        asm!(</span><span style="color:#d69d85;">&quot;fxrstor [rsp]
+</span><span style="color:#d69d85;">              add rsp, 512
+</span><span style="color:#d69d85;">            &quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>First, we reserve the 512 bytes on the stack and then we use <code>fxsave</code> to backup the multimedia registers. In order to restore them later, we use the <a href="https://www.felixcloutier.com/x86/fxrstor">fxrstor</a> instruction. Note that <code>fxsave</code> and <code>fxrstor</code> require a 16 byte aligned memory address.</p>
+<p>However, <em>we won’t do it that way</em>. The problem is the large amount of memory required. We will reuse the same code when we handle hardware interrupts in a future post. So for each mouse click, pressed key, or arrived network package we need to write 512 bytes to memory. This would be a huge performance problem.</p>
+<p>Fortunately, there exists an alternative solution.</p>
+<h3 id="disabling-multimedia-extensions"><a class="zola-anchor" href="index.html#disabling-multimedia-extensions" aria-label="Anchor link for: disabling-multimedia-extensions">🔗</a>Disabling Multimedia Extensions</h3>
+<p>We just disable MMX, SSE, and all the other fancy multimedia extensions in our kernel<sup class="footnote-reference"><a href="index.html#fn-userspace-sse">1</a></sup>. This way, our exception handlers won’t clobber the multimedia registers because they won’t use them at all.</p>
+<div class="footnote-definition" id="fn-userspace-sse"><sup class="footnote-definition-label">1</sup>
+<p>Userspace programs will still be able to use the multimedia registers.</p>
+</div>
+<p>This solution has its own disadvantages, of course. For example, it leads to slower kernel code because the compiler can’t perform any auto-vectorization optimizations. But it’s still the faster solution (since we save many memory accesses) and most kernels do it this way (including Linux).</p>
+<p>So how do we disable MMX and SSE? Well, we just tell the compiler that our target system doesn’t support it. Since the very beginning, we’re compiling our kernel for the <code>x86_64-unknown-linux-gnu</code> target. This worked fine so far, but now we want a different target without support for multimedia extensions. We can do so by creating a <em>target configuration file</em>.</p>
+<h3 id="target-specifications"><a class="zola-anchor" href="index.html#target-specifications" aria-label="Anchor link for: target-specifications">🔗</a>Target Specifications</h3>
+<p>In order to disable the multimedia extensions for our kernel, we need to compile for a custom target. We want a target that is equal to <code>x86_64-unknown-linux-gnu</code>, but without MMX and SSE support. Rust allows us to specify such a target using a JSON configuration file.</p>
+<p>A minimal target specification that describes the <code>x86_64-unknown-linux-gnu</code> target looks like this:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;
+</span><span>}
+</span></code></pre>
+<p>The <code>llvm-target</code> field specifies the target triple that is passed to LLVM. We want to derive a 64-bit Linux target, so we choose <code>x86_64-unknown-linux-gnu</code>. The <code>data-layout</code> field is also passed to LLVM and specifies how data should be laid out in memory. It consists of various specifications separated by a <code>-</code> character. For example, the <code>e</code> means little endian and <code>S128</code> specifies that the stack should be 128 bits (= 16 byte) aligned. The format is described in detail in the <a href="https://llvm.org/docs/LangRef.html#data-layout">LLVM documentation</a> but there shouldn’t be a reason to change this string.</p>
+<p>The other fields are used for conditional compilation. This allows crate authors to use <code>cfg</code> variables to write special code for depending on the OS or the architecture. There isn’t any up-to-date documentation about these fields but the <a href="https://github.com/rust-lang/rust/blob/c772948b687488a087356cb91432425662e034b9/src/librustc_back/target/mod.rs#L194-L214">corresponding source code</a> is quite readable.</p>
+<h4 id="disabling-mmx-and-sse"><a class="zola-anchor" href="index.html#disabling-mmx-and-sse" aria-label="Anchor link for: disabling-mmx-and-sse">🔗</a>Disabling MMX and SSE</h4>
+<p>In order to disable the multimedia extensions, we create a new target named <code>x86_64-blog_os</code>. To describe this target, we create a file named <code>x86_64-blog_os.json</code> in the project root with the following content:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse&quot;
+</span><span>}
+</span></code></pre>
+<p>It’s equal to <code>x86_64-unknown-linux-gnu</code> target but has one additional option: <code>&quot;features&quot;: &quot;-mmx,-sse&quot;</code>. So we added two target <em>features</em>: <code>-mmx</code> and <code>-sse</code>. The minus prefix defines that our target does <em>not</em> support this feature. So by specifying <code>-mmx</code> and <code>-sse</code>, we disable the default <code>mmx</code> and <code>sse</code> features.</p>
+<p>In order to compile for the new target, we need to adjust our Makefile:</p>
+<pre data-lang="diff" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-diff "><code class="language-diff" data-lang="diff"><span># in `Makefile`
+</span><span>
+</span><span> arch ?= x86_64
+</span><span>-target ?= $(arch)-unknown-linux-gnu
+</span><span>+target ?= $(arch)-blog_os
+</span><span>...
+</span></code></pre>
+<p>The new target name (<code>x86_64-blog_os</code>) is the file name of the JSON configuration file without the <code>.json</code> extension.</p>
+<h3 id="cross-compilation"><a class="zola-anchor" href="index.html#cross-compilation" aria-label="Anchor link for: cross-compilation">🔗</a>Cross compilation</h3>
+<p>Let’s try if our kernel still works with the new target:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; make run
+</span><span>Compiling raw-cpuid v2.0.1
+</span><span>Compiling rlibc v0.1.5
+</span><span>Compiling x86 v0.7.1
+</span><span>Compiling spin v0.3.5
+</span><span>error[E0463]: can&#39;t find crate for `core`
+</span><span>
+</span><span>error: aborting due to previous error
+</span><span>
+</span><span>Build failed, waiting for other jobs to finish...
+</span><span>...
+</span><span>Makefile:52: recipe for target &#39;cargo&#39; failed
+</span><span>make: *** [cargo] Error 101
+</span></code></pre>
+<p>It doesn’t compile anymore. The error tells us that the Rust compiler no longer finds the core library.</p>
+<p>The <a href="https://doc.rust-lang.org/nightly/core/index.html">core library</a> is implicitly linked to all <code>no_std</code> crates and contains things such as <code>Result</code>, <code>Option</code>, and iterators. We’ve used that library without problems since <a href="../set-up-rust/index.html">the very beginning</a>, so why is it no longer available?</p>
+<p>The problem is that the core library is distributed together with the Rust compiler as a <em>precompiled</em> library. So it is only valid for the host triple, which is <code>x86_64-unknown-linux-gnu</code> in our case. If we want to compile code for other targets, we need to recompile <code>core</code> for these targets first.</p>
+<h4 id="xargo"><a class="zola-anchor" href="index.html#xargo" aria-label="Anchor link for: xargo">🔗</a>Xargo</h4>
+<p>That’s where <a href="https://github.com/japaric/xargo">xargo</a> comes in. It is a wrapper for cargo that eases cross compilation. We can install it by executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install xargo
+</span></code></pre>
+<p>Xargo depends on the rust source code, which we can install with <code>rustup component add rust-src</code>.</p>
+<p>Xargo is “a drop-in replacement for cargo”, so every cargo command also works with <code>xargo</code>. You can do e.g. <code>xargo --help</code>, <code>xargo clean</code>, or <code>xargo doc</code>. However, the <code>build</code> command gains additional functionality: <code>xargo build</code> will automatically cross compile the <code>core</code> library when compiling for custom targets.</p>
+<p>That’s exactly what we want, so we change one letter in our Makefile:</p>
+<pre data-lang="diff" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-diff "><code class="language-diff" data-lang="diff"><span># in `Makefile`
+</span><span>...
+</span><span>
+</span><span>cargo:
+</span><span>-	@cargo build --target $(target)
+</span><span>+	@xargo build --target $(target)
+</span><span>...
+</span></code></pre>
+<p>Now the build goes through <code>xargo</code>, which should fix the compilation error. Let’s try it out:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; make run
+</span><span>Compiling core v0.0.0 (file:///home/…/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src/libcore)
+</span><span>LLVM ERROR: SSE register return with SSE disabled
+</span><span>error: Could not compile `core`.
+</span></code></pre>
+<p>Well, we get a different error now, so it seems like we’re making progress :). It seems like there is a “SSE register return” although SSE is disabled. But what’s an “SSE register return”?</p>
+<h3 id="sse-register-return"><a class="zola-anchor" href="index.html#sse-register-return" aria-label="Anchor link for: sse-register-return">🔗</a>SSE Register Return</h3>
+<p>Remember when we discussed calling conventions above? The calling convention defines which registers are used for return values. Well, the <a href="https://refspecs.linuxbase.org/elf/gabi41.pdf">System V ABI</a> defines that <code>xmm0</code> should be used for returning floating point values. So somewhere in the <code>core</code> library a function returns a float and LLVM doesn’t know what to do. The ABI says “use <code>xmm0</code>” but the target specification says “don’t use <code>xmm</code> registers”.</p>
+<p>In order to fix this problem, we need to change our float ABI. The idea is to avoid normal hardware-supported floats and use a pure software implementation instead. We can do so by enabling the <code>soft-float</code> feature for our target. For that, we edit <code>x86_64-blog_os.json</code>:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>  </span><span style="color:#ff3333;">...
+</span><span>  </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<p>The plus prefix tells LLVM to enable the <code>soft-float</code> feature.</p>
+<p>Let’s try <code>make run</code> again:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; make run
+</span><span>   Compiling core v0.0.0 (file:///…/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src/libcore)
+</span><span>    Finished release [optimized] target(s) in 21.95 secs
+</span><span>   Compiling spin v0.4.5
+</span><span>   Compiling once v0.3.2
+</span><span>   Compiling x86 v0.8.0
+</span><span>   Compiling bitflags v0.9.1
+</span><span>   Compiling raw-cpuid v2.0.1
+</span><span>   Compiling rlibc v0.1.5
+</span><span>   Compiling linked_list_allocator v0.2.3
+</span><span>   Compiling volatile v0.1.0
+</span><span>   Compiling bitflags v0.4.0
+</span><span>   Compiling bit_field v0.5.0
+</span><span>   Compiling spin v0.3.5
+</span><span>   Compiling multiboot2 v0.1.0
+</span><span>   Compiling lazy_static v0.2.2
+</span><span>   Compiling hole_list_allocator v0.1.0 (file:///…/libs/hole_list_allocator)
+</span><span>   Compiling blog_os v0.1.0 (file:///…)
+</span><span>error[E0463]: can&#39;t find crate for `alloc`
+</span><span>  --&gt; src/lib.rs:33:1
+</span><span>   |
+</span><span>33 | extern crate alloc;
+</span><span>   | ^^^^^^^^^^^^^^^^^^^ can&#39;t find crate
+</span><span>
+</span><span>error: aborting due to previous error
+</span></code></pre>
+<p>We see that <code>xargo</code> now compiles the <code>core</code> crate in release mode. Then it starts the normal cargo build. Cargo then recompiles all dependencies, since it needs to generate different code for the new target.</p>
+<p>However, the build still fails. The reason is that xargo only installs <code>core</code> by default, but we also need the <code>alloc</code> crate. We can enable it by creating a file named <code>Xargo.toml</code> with the following contents:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># Xargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.x86_64-blog_os.dependencies</span><span>]
+</span><span style="color:#569cd6;">alloc </span><span>= {}
+</span></code></pre>
+<p>Now xargo compiles <code>alloc</code>, too:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; make run
+</span><span>   Compiling core v0.0.0 (file:///…/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src/libcore)
+</span><span>   Compiling std_unicode v0.0.0 (file:///…/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src/libstd_unicode)
+</span><span>   Compiling alloc v0.0.0 (file:///…/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/src/liballoc)
+</span><span>    Finished release [optimized] target(s) in 28.84 secs
+</span><span>   Compiling blog_os v0.1.0 (file:///…/Documents/blog_os/master)
+</span><span>warning: unused variable: `allocator` […]
+</span><span>warning: unused variable: `frame` […]
+</span><span>
+</span><span>    Finished debug [unoptimized + debuginfo] target(s) in 1.75 secs
+</span></code></pre>
+<p>It worked! Now we have a kernel that never touches the multimedia registers! We can verify this by executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; objdump -d build/kernel-x86_64.bin | grep &quot;mm[0-9]&quot;
+</span></code></pre>
+<p>If the command produces no output, our kernel uses neither MMX (<code>mm0</code> – <code>mm7</code>) nor SSE (<code>xmm0</code> – <code>xmm15</code>) registers.</p>
+<p>So now our return-from-exception logic works without problems in <em>most</em> cases. However, there is still a pitfall hidden in the C calling convention, which might cause hideous bugs in some rare cases.</p>
+<h2 id="the-red-zone"><a class="zola-anchor" href="index.html#the-red-zone" aria-label="Anchor link for: the-red-zone">🔗</a>The Red Zone</h2>
+<p>The <a href="https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64#the-red-zone">red zone</a> is an optimization of the <a href="https://refspecs.linuxbase.org/elf/gabi41.pdf">System V ABI</a> that allows functions to temporary use the 128 bytes below its stack frame without adjusting the stack pointer:</p>
+<p><img src="red-zone.svg" alt="stack frame with red zone" /></p>
+<p>The image shows the stack frame of a function with <code>n</code> local variables. On function entry, the stack pointer is adjusted to make room on the stack for the local variables.</p>
+<p>The red zone is defined as the 128 bytes below the adjusted stack pointer. The function can use this area for temporary data that’s not needed across function calls. Thus, the two instructions for adjusting the stack pointer can be avoided in some cases (e.g. in small leaf functions).</p>
+<p>However, this optimization leads to huge problems with exceptions. Let’s assume that an exception occurs while a function uses the red zone:</p>
+<p><img src="red-zone-overwrite.svg" alt="red zone overwritten by exception handler" /></p>
+<p>The CPU and the exception handler overwrite the data in red zone. But this data is still needed by the interrupted function. So the function won’t work correctly anymore when we return from the exception handler. It might fail or cause another exception, but it could also lead to strange bugs that <a href="https://forum.osdev.org/viewtopic.php?t=21720">take weeks to debug</a>.</p>
+<h3 id="adjusting-our-exception-handler"><a class="zola-anchor" href="index.html#adjusting-our-exception-handler" aria-label="Anchor link for: adjusting-our-exception-handler">🔗</a>Adjusting our Exception Handler?</h3>
+<p>The problem is that the <a href="https://refspecs.linuxbase.org/elf/gabi41.pdf">System V ABI</a> demands that the red zone <em>“shall not be modified by signal or interrupt handlers.”</em> Our current exception handlers do not respect this. We could try to fix it by subtracting 128 from the stack pointer before pushing anything:</p>
+<pre data-lang="nasm" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-nasm "><code class="language-nasm" data-lang="nasm"><span style="color:#569cd6;">sub </span><span>rsp, </span><span style="color:#b4cea8;">128
+</span><span>save_scratch_registers()
+</span><span>...
+</span><span style="color:#569cd6;">call </span><span>...
+</span><span>...
+</span><span>restore_scratch_registers()
+</span><span style="color:#569cd6;">add </span><span>rsp, </span><span style="color:#b4cea8;">128
+</span><span>
+</span><span style="color:#569cd6;">iretq
+</span></code></pre>
+<p><em>This will not work.</em> The problem is that the CPU pushes the exception stack frame before even calling our handler function. So the CPU itself will clobber the red zone and there is nothing we can do about that. So our only chance is to disable the red zone.</p>
+<h3 id="disabling-the-red-zone"><a class="zola-anchor" href="index.html#disabling-the-red-zone" aria-label="Anchor link for: disabling-the-red-zone">🔗</a>Disabling the Red Zone</h3>
+<p>The red zone is a property of our target, so in order to disable it we edit our <code>x86_64-blog_os.json</code> a last time:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>  </span><span style="color:#ff3333;">...
+</span><span>  </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true
+</span><span>}
+</span></code></pre>
+<p>We add one additional option at the end: <code>&quot;disable-redzone&quot;: true</code>. As you might guess, this option disables the red zone optimization.</p>
+<p>Now we have a red zone free kernel!</p>
+<h2 id="exceptions-with-error-codes"><a class="zola-anchor" href="index.html#exceptions-with-error-codes" aria-label="Anchor link for: exceptions-with-error-codes">🔗</a>Exceptions with Error Codes</h2>
+<p>We’re now able to correctly return from exceptions without error codes. However, we still can’t return from exceptions that push an error code (e.g. page faults). Let’s fix that by updating our <code>handler_with_error_code</code> macro:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! handler_with_error_code {
+</span><span>    ($name: ident) </span><span style="color:#569cd6;">=&gt; </span><span>{{
+</span><span>        #[naked]
+</span><span>        </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>wrapper() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>            </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;pop rsi // pop error code into rsi
+</span><span style="color:#d69d85;">                      mov rdi, rsp
+</span><span style="color:#d69d85;">                      sub rsp, 8 // align the stack pointer
+</span><span style="color:#d69d85;">                      call $0&quot;
+</span><span>                      :: </span><span style="color:#d69d85;">&quot;i&quot;</span><span>($name </span><span style="color:#569cd6;">as extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn</span><span>(
+</span><span>                          </span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame, </span><span style="color:#569cd6;">u64</span><span>))
+</span><span>                      : </span><span style="color:#d69d85;">&quot;rdi&quot;</span><span>,</span><span style="color:#d69d85;">&quot;rsi&quot; </span><span>: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>);
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;iretq&quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>                ::core::intrinsics::unreachable();
+</span><span>            }
+</span><span>        }
+</span><span>        wrapper
+</span><span>    }}
+</span><span>}
+</span></code></pre>
+<p>First, we change the type of the handler function: no more <code>-&gt; !</code>, so it no longer needs to diverge. We also add an <code>iretq</code> instruction at the end.</p>
+<p>Now we can make our <code>page_fault_handler</code> non-diverging:</p>
+<pre data-lang="diff" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-diff "><code class="language-diff" data-lang="diff"><span>// in src/interrupts/mod.rs
+</span><span>
+</span><span> extern &quot;C&quot; fn page_fault_handler(stack_frame: &amp;ExceptionStackFrame,
+</span><span>-   error_code: u64) -&gt; ! { ... }
+</span><span>+   error_code: u64) { ... }
+</span></code></pre>
+<p>However, now we have the same problem as above: The handler function will overwrite the scratch registers and cause bugs when returning. Let’s fix this by invoking <code>save_scratch_registers</code> at the beginning:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! handler_with_error_code {
+</span><span>    ($name: ident) </span><span style="color:#569cd6;">=&gt; </span><span>{{
+</span><span>        #[naked]
+</span><span>        </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>wrapper() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>            </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>                save_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;pop rsi // pop error code into rsi
+</span><span style="color:#d69d85;">                      mov rdi, rsp
+</span><span style="color:#d69d85;">                      add rdi, 10*8 // calculate exception stack frame pointer
+</span><span style="color:#d69d85;">                      sub rsp, 8 // align the stack pointer
+</span><span style="color:#d69d85;">                      call $0
+</span><span style="color:#d69d85;">                      add rsp, 8 // undo stack pointer alignment
+</span><span style="color:#d69d85;">                      &quot; </span><span>:: </span><span style="color:#d69d85;">&quot;i&quot;</span><span>($name </span><span style="color:#569cd6;">as extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn</span><span>(
+</span><span>                          </span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame, </span><span style="color:#569cd6;">u64</span><span>))
+</span><span>                      : </span><span style="color:#d69d85;">&quot;rdi&quot;</span><span>,</span><span style="color:#d69d85;">&quot;rsi&quot; </span><span>: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>);
+</span><span>                restore_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;iretq&quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>                ::core::intrinsics::unreachable();
+</span><span>            }
+</span><span>        }
+</span><span>        wrapper
+</span><span>    }}
+</span><span>}
+</span></code></pre>
+<p>Now we backup the scratch registers to the stack right at the beginning and restore them just before the <code>iretq</code>. Like in the <code>handler</code> macro, we now need to add <code>10*8</code> to <code>rdi</code> in order to get the correct exception stack frame pointer (<code>save_scratch_registers</code> pushes nine 8 byte registers, plus the error code). We also need to undo the stack pointer alignment after the <code>call</code> <sup class="footnote-reference"><a href="index.html#fn-stack-alignment">2</a></sup>.</p>
+<div class="footnote-definition" id="fn-stack-alignment"><sup class="footnote-definition-label">2</sup>
+<p>The stack alignment is actually wrong here, since we additionally pushed an uneven number of registers. However, the <code>pop rsi</code> is wrong too, since the error code is no longer at the top of the stack. When we fix that problem, the stack alignment becomes correct again. So I left it in to keep things simple.</p>
+</div>
+<p>Now we have one last bug: We <code>pop</code> the error code into <code>rsi</code>, but the error code is no longer at the top of the stack (since <code>save_scratch_registers</code> pushed 9 registers on top of it). So we need to do it differently:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts/mod.rs
+</span><span>
+</span><span>macro_rules! handler_with_error_code {
+</span><span>    ($name: ident) </span><span style="color:#569cd6;">=&gt; </span><span>{{
+</span><span>        #[naked]
+</span><span>        </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>wrapper() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>            </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>                save_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;mov rsi, [rsp + 9*8] // load error code into rsi
+</span><span style="color:#d69d85;">                      mov rdi, rsp
+</span><span style="color:#d69d85;">                      add rdi, 10*8 // calculate exception stack frame pointer
+</span><span style="color:#d69d85;">                      sub rsp, 8 // align the stack pointer
+</span><span style="color:#d69d85;">                      call $0
+</span><span style="color:#d69d85;">                      add rsp, 8 // undo stack pointer alignment
+</span><span style="color:#d69d85;">                      &quot; </span><span>:: </span><span style="color:#d69d85;">&quot;i&quot;</span><span>($name </span><span style="color:#569cd6;">as extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn</span><span>(
+</span><span>                          </span><span style="color:#569cd6;">&amp;</span><span>ExceptionStackFrame, </span><span style="color:#569cd6;">u64</span><span>))
+</span><span>                      : </span><span style="color:#d69d85;">&quot;rdi&quot;</span><span>,</span><span style="color:#d69d85;">&quot;rsi&quot; </span><span>: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>);
+</span><span>                restore_scratch_registers!();
+</span><span>                asm!(</span><span style="color:#d69d85;">&quot;add rsp, 8 // pop error code
+</span><span style="color:#d69d85;">                      iretq&quot; </span><span>:::: </span><span style="color:#d69d85;">&quot;intel&quot;</span><span>, </span><span style="color:#d69d85;">&quot;volatile&quot;</span><span>);
+</span><span>                ::core::intrinsics::unreachable();
+</span><span>            }
+</span><span>        }
+</span><span>        wrapper
+</span><span>    }}
+</span><span>}
+</span></code></pre>
+<p>Instead of using <code>pop</code>, we’re calculating the error code address manually (<code>save_scratch_registers</code> pushes nine 8 byte registers) and load it into <code>rsi</code> using a <code>mov</code>. So now the error code stays on the stack. But <code>iretq</code> doesn’t handle the error code, so we need to pop it before invoking <code>iretq</code>.</p>
+<p>Phew! That was a lot of fiddling with assembly. Let’s test if it still works.</p>
+<h3 id="testing-1"><a class="zola-anchor" href="index.html#testing-1" aria-label="Anchor link for: testing-1">🔗</a>Testing</h3>
+<p>First, we test if the exception stack frame pointer and the error code are still correct:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in rust_main in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">...
+</span><span style="color:#569cd6;">unsafe </span><span>{ int!(</span><span style="color:#b5cea8;">3</span><span>) };
+</span><span>
+</span><span style="color:#608b4e;">// provoke a page fault
+</span><span style="color:#569cd6;">unsafe </span><span>{ *(</span><span style="color:#b5cea8;">0xdeadbeaf </span><span style="color:#569cd6;">as *mut u64</span><span>) = </span><span style="color:#b5cea8;">42</span><span>; }
+</span><span>
+</span><span>println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span style="color:#569cd6;">loop </span><span>{}
+</span></code></pre>
+<p>This should cause the following error message:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>EXCEPTION: PAGE FAULT while accessing 0xdeadbeaf
+</span><span>error code: CAUSED_BY_WRITE
+</span><span>ExceptionStackFrame {
+</span><span>    instruction_pointer: 1114753,
+</span><span>    code_segment: 8,
+</span><span>    cpu_flags: 2097158,
+</span><span>    stack_pointer: 1171104,
+</span><span>    stack_segment: 16
+</span><span>}
+</span></code></pre>
+<p>The error code should still be <code>CAUSED_BY_WRITE</code> and the exception stack frame values should also be correct (e.g. <code>code_segment</code> should be 8 and <code>stack_segment</code> should be 16).</p>
+<h4 id="returning-from-page-faults"><a class="zola-anchor" href="index.html#returning-from-page-faults" aria-label="Anchor link for: returning-from-page-faults">🔗</a>Returning from Page Faults</h4>
+<p>Let’s see what happens if we comment out the trailing <code>loop</code> in our page fault handler:</p>
+<p><img src="qemu-page-fault-return.png" alt="QEMU printing the same page fault message again and again" /></p>
+<p>We see that the same error message is printed over and over again. Here is what happens:</p>
+<ul>
+<li>The CPU executes <code>rust_main</code> and tries to access <code>0xdeadbeaf</code>. This causes a page fault.</li>
+<li>The page fault handler prints an error message and returns without fixing the cause of the exception (<code>0xdeadbeaf</code> is still unaccessible).</li>
+<li>The CPU restarts the instruction that caused the page fault and thus tries to access <code>0xdeadbeaf</code> again. Of course, this causes a page fault again.</li>
+<li>The page fault handler prints the error message and returns.</li>
+</ul>
+<p>… and so on. Thus, our code indefinitely jumps between the page fault handler and the instruction that accesses <code>0xdeadbeaf</code>.</p>
+<p>This is a good thing! It means that our <code>iretq</code> logic is working correctly, since it returns to the correct instruction every time. So our <code>handler_with_error_code</code> macro seems to be correct.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>We are now able to catch exceptions and to return from them. However, there are still exceptions that completely crash our kernel by causing a <a href="https://en.wikipedia.org/wiki/Triple_fault">triple fault</a>. In the next post, we will fix this issue by handling a special type of exception: the <a href="https://en.wikipedia.org/wiki/Double_fault">double fault</a>. Thus, we will be able to avoid random reboots in our kernel.</p>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../better-exception-messages/index.html">&laquo; Better Exception Messages</a>
+        
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-218" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-218" class="permalink"><time title="Thu Sep 22 2016 11:53:29 GMT+0200 (Central European Summer Time)" datetime="2016-08-04T09:53:29Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>There are also great comments on <a rel="nofollow" href="https://news.ycombinator.com/item?id=12548066">hackernews</a> and <a rel="nofollow" href="https://www.reddit.com/r/rust/comments/53t6zv/writing_an_os_in_rust_returning_from_exceptions/">/r/rust</a>!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-219" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="60f87e74c51c"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">SmallEgg</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-219" class="permalink"><time title="Sat Sep 24 2016 19:02:32 GMT+0200 (Central European Summer Time)" datetime="2016-08-06T17:02:32Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Wohoooo ! New post ! o/</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-220" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="046dc8da1607"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">cshnc</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-220" class="permalink"><time title="Sun Sep 25 2016 00:37:17 GMT+0200 (Central European Summer Time)" datetime="2016-08-06T22:37:17Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Great!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-221" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8dec010e6542"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Hoschi</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-221" class="permalink"><time title="Mon Oct 31 2016 21:30:46 GMT+0100 (Central European Standard Time)" datetime="2016-09-01T20:30:46Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Hi everybody!</p><p>When I try to modify the page fault handler to define accesses to 0xdeadbeaf as legal, I get an  error for this line:</p><p>let stack_frame = &amp;mut *(stack_frame as *mut ExceptionStackFrame);</p><p>error: casting `&amp;interrupts::ExceptionStackFrame` as `*mut interrupts::ExceptionStackFrame` is invalid</p><p>Thanks in advance!</p><p>Christian</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-223" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-223" class="permalink"><time title="Thu Nov 03 2016 16:48:34 GMT+0100 (Central European Standard Time)" datetime="2016-10-04T15:48:34Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Hmm, I've updated this post two days ago and removed this section. Before that, we used to take stack_frame as *const pointer. Since the update, we take stack_frame as &amp; reference, which makes the cast illegal.</p><p>But this doesn't make any sense since I've pushed this update after your comment?.. </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-224" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="8dec010e6542"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Hoschi</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-224" class="permalink"><time title="Fri Nov 04 2016 15:15:18 GMT+0100 (Central European Standard Time)" datetime="2016-10-05T14:15:18Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Hi! I tested it before your changes. I cannot find the illegal cast anymore. Thanks for your reply!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-222" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="398b1c02daf5"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="28" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Niklas R</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-222" class="permalink"><time title="Thu Nov 03 2016 12:34:36 GMT+0100 (Central European Standard Time)" datetime="2016-10-04T11:34:36Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>This is impressive work and pedagogical. Phil, how long time did it take to acquire the necessary technical knowledge and what did you do to achieve this technical competence?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-226" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-226" class="permalink"><time title="Mon Nov 07 2016 09:30:04 GMT+0100 (Central European Standard Time)" datetime="2016-10-01T08:30:04Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks a lot!</p><p>I took (and still take) some operating system classes at university. However, most of the details of these posts I learned from various blogs, tutorials, and wikis (e.g. the awesome OSDev wiki). The x86 details come from the official manuals from  AMD and Intel.</p><p>I started my own little toy kernels a few years ago, at first in C. At some point I discovered Rust. It was still highly unstable at that time, but I loved to play with it and I learned a lot.</p><p>So I think that I learned most things from writing my own toy kernels and experimenting with them.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-225" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="9fd3149742d5"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="4" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="36" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="28" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="28" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Adam Brown</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-225" class="permalink"><time title="Fri Nov 04 2016 22:53:08 GMT+0100 (Central European Standard Time)" datetime="2016-10-05T21:53:08Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Wow this is awesome, looking forward to following this.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+      </path>
+    </g>
+  </svg>
+  </a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+    <g>
+      <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+      </path>
+    </g>
+  </svg>
+  </a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

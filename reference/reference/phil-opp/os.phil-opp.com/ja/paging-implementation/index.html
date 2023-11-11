@@ -1,0 +1,974 @@
+<!doctype html>
+
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="この記事では私達のカーネルをページングに対応させる方法についてお伝えします。まずページテーブルの物理フレームにカーネルがアクセスできるようにする様々な方法を示し、それらの利点と欠点について議論します。次にアドレス変換関数を、ついで新しい対応付け (マッピング) を作るための関数を実装します。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>ページングの実装 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/ja" title="All Posts">« すべての記事へ</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目次</h2>
+    <ol>
+        <li>
+            <a href="index.html#dao-ru">導入</a>
+            
+        </li><li>
+            <a href="index.html#peziteburuniakusesusuru">ページテーブルにアクセスする</a>
+            <ol>
+                <li>
+                    <a href="index.html#heng-deng-matupingu">恒等マッピング</a>
+                </li><li>
+                    <a href="index.html#gu-ding-ohusetutonomatupingu">固定オフセットのマッピング</a>
+                </li><li>
+                    <a href="index.html#map-the-complete-physical-memory">物理メモリ全体をマップする</a>
+                </li><li>
+                    <a href="index.html#yi-shi-de-nadui-ying-matupingu">一時的な対応 (マッピング) </a>
+                </li><li>
+                    <a href="index.html#zai-gui-de-peziteburu">再帰的ページテーブル</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#butorodaniyorubu-zhu">ブートローダによる補助</a>
+            <ol>
+                <li>
+                    <a href="index.html#boot-information">Boot Information</a>
+                </li><li>
+                    <a href="index.html#entry-pointmakuro">entry_pointマクロ</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#shi-zhuang">実装</a>
+            <ol>
+                <li>
+                    <a href="index.html#peziteburuniakusesusuru-1">ページテーブルにアクセスする</a>
+                </li><li>
+                    <a href="index.html#adoresunobian-huan">アドレスの変換</a>
+                </li><li>
+                    <a href="index.html#offsetpagetablewoshi-u">OffsetPageTableを使う</a>
+                </li><li>
+                    <a href="index.html#xin-siimatupinguwozuo-ru">新しいマッピングを作る</a>
+                </li><li>
+                    <a href="index.html#huremuwoge-ridang-teru">フレームを割り当てる</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#matome">まとめ</a>
+            
+        </li><li>
+            <a href="index.html#ci-ha">次は？</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>ページングの実装</h1>
+    <time datetime="2019-03-14" class="post-date">
+        Mar 14, 2019
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>この記事は翻訳されたものです：</b>
+            この記事は<strong><a href="../../paging-implementation/index.html">Paging Implementation</a></strong>をコミュニティの手により翻訳したものです。そのため、翻訳が完全・最新でなかったり、原文にない誤りを含んでいる可能性があります。問題があれば<a href="https://github.com/phil-opp/blog_os/issues/906">このissue</a>上で報告してください！
+            </p>
+            <p>
+                翻訳者： <a href="https://github.com/woodyZootopia">@woodyZootopia</a> 及び <a href="https://github.com/garasubo">@garasubo</a>.</p>
+            </div>
+    
+
+    <div class="">
+    <p>この記事では私達のカーネルをページングに対応させる方法についてお伝えします。まずページテーブルの物理フレームにカーネルがアクセスできるようにする様々な方法を示し、それらの利点と欠点について議論します。次にアドレス変換関数を、ついで新しい<ruby>対応付け<rp> (</rp><rt>マッピング</rt><rp>) </rp></ruby>を作るための関数を実装します。</p>
+<span id="continue-reading"></span>
+<p>このブログの内容は <a href="https://github.com/phil-opp/blog_os">GitHub</a> 上で公開・開発されています。何か問題や質問などがあれば issue をたててください (訳注: リンクは原文(英語)のものになります)。また<a href="index.html#comments">こちら</a>にコメントを残すこともできます。この記事の完全なソースコードは<a href="https://github.com/phil-opp/blog_os/tree/post-09"><code>post-09</code> ブランチ</a>にあります。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目次</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#dao-ru">導入</a>
+                
+            </li><li>
+                <a href="index.html#peziteburuniakusesusuru">ページテーブルにアクセスする</a>
+                <ul>
+                    <li>
+                        <a href="index.html#heng-deng-matupingu">恒等マッピング</a>
+                    </li><li>
+                        <a href="index.html#gu-ding-ohusetutonomatupingu">固定オフセットのマッピング</a>
+                    </li><li>
+                        <a href="index.html#map-the-complete-physical-memory">物理メモリ全体をマップする</a>
+                    </li><li>
+                        <a href="index.html#yi-shi-de-nadui-ying-matupingu">一時的な対応 (マッピング) </a>
+                    </li><li>
+                        <a href="index.html#zai-gui-de-peziteburu">再帰的ページテーブル</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#butorodaniyorubu-zhu">ブートローダによる補助</a>
+                <ul>
+                    <li>
+                        <a href="index.html#boot-information">Boot Information</a>
+                    </li><li>
+                        <a href="index.html#entry-pointmakuro">entry_pointマクロ</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#shi-zhuang">実装</a>
+                <ul>
+                    <li>
+                        <a href="index.html#peziteburuniakusesusuru-1">ページテーブルにアクセスする</a>
+                    </li><li>
+                        <a href="index.html#adoresunobian-huan">アドレスの変換</a>
+                    </li><li>
+                        <a href="index.html#offsetpagetablewoshi-u">OffsetPageTableを使う</a>
+                    </li><li>
+                        <a href="index.html#xin-siimatupinguwozuo-ru">新しいマッピングを作る</a>
+                    </li><li>
+                        <a href="index.html#huremuwoge-ridang-teru">フレームを割り当てる</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#matome">まとめ</a>
+                
+            </li><li>
+                <a href="index.html#ci-ha">次は？</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">コメント</a></li>
+        </ul>
+    </details>
+
+<h2 id="dao-ru"><a class="zola-anchor" href="index.html#dao-ru" aria-label="Anchor link for: dao-ru">🔗</a>導入</h2>
+<p><a href="../paging-introduction/index.html">1つ前の記事</a>ではページングの概念を説明しました。セグメンテーションと比較することによってページングのメリットを示し、ページングとページテーブルの仕組みを説明し、そして<code>x86_64</code>における4層ページテーブルの設計を導入しました。ブートローダはすでにページテーブルの階層構造を設定してしまっているので、私達のカーネルは既に仮想アドレス上で動いているということを学びました。これにより、不正なメモリアクセスは、任意の物理メモリを書き換えてしまうのではなくページフォルト例外を発生させるので、安全性が向上しています。</p>
+<p>記事の最後で、<a href="../paging-introduction/index.html#peziteburuhenoakusesu">ページテーブルにカーネルからアクセスできない</a>という問題が起きていました。この問題は、ページテーブルは物理メモリ内に格納されている一方、私達のカーネルは既に仮想アドレス上で実行されているために発生します。この記事ではその続きとして、私達のカーネルからページテーブルのフレームにアクセスするための様々な方法を探ります。それぞれの方法の利点と欠点を議論し、カーネルに採用する手法を決めます。</p>
+<p>この方法を実装するには、ブートローダーからの補助が必要になるので、まずこれに設定を加えます。その後で、ページテーブルの階層構造を移動して、仮想アドレスを物理アドレスに変換する関数を実装します。最後に、ページテーブルに新しいマッピングを作る方法と、それを作るための未使用メモリを見つける方法を学びます。</p>
+<h2 id="peziteburuniakusesusuru"><a class="zola-anchor" href="index.html#peziteburuniakusesusuru" aria-label="Anchor link for: peziteburuniakusesusuru">🔗</a>ページテーブルにアクセスする</h2>
+<p>私達のカーネルからページテーブルにアクセスするのは案外難しいです。この問題を理解するために、前回の記事の4層ページテーブルをもう一度見てみましょう：</p>
+<p><img src="../paging-introduction/x86_64-page-table-translation.svg" alt="An example 4-level page hierarchy with each page table shown in physical memory" /></p>
+<p>ここで重要なのは、それぞれのページテーブルのエントリは次のテーブルの<strong>物理</strong>アドレスであるということです。これにより、それらのアドレスに対しては変換せずにすみます。もしこの変換が行われたとしたら、性能的にも良くないですし、容易に変換の無限ループに陥りかねません。</p>
+<p>問題は、私達のカーネル自体も仮想アドレスの上で動いているため、カーネルから直接物理アドレスにアクセスすることができないということです。例えば、アドレス<code>4KiB</code>にアクセスしたとき、私達は<strong>仮想</strong>アドレス<code>4KiB</code>にアクセスしているのであって、レベル4ページテーブルが格納されている<strong>物理</strong>アドレス<code>4KiB</code>にアクセスしているのではありません。物理アドレス<code>4KiB</code>にアクセスしたいなら、それにマップさせられている何らかの仮想アドレスを通じてのみ可能です。</p>
+<p>そのため、ページテーブルのフレームにアクセスするためには、どこかの仮想ページをそれにマッピングしなければいけません。このような、任意のページテーブルのフレームにアクセスできるようにしてくれるマッピングを作る方法にはいくつかあります。</p>
+<h3 id="heng-deng-matupingu"><a class="zola-anchor" href="index.html#heng-deng-matupingu" aria-label="Anchor link for: heng-deng-matupingu">🔗</a>恒等マッピング</h3>
+<p>シンプルな方法として、<strong>すべてのページテーブルを恒等<ruby>対応<rp> (</rp><rt>マップ</rt><rp>) </rp></ruby>させる</strong>ということが考えられるでしょう：</p>
+<p><img src="identity-mapped-page-tables.svg" alt="A virtual and a physical address space with various virtual pages mapped to the physical frame with the same address" /></p>
+<p>この例では、恒等マップしたいくつかのページテーブルのフレームが見てとれます。こうすることで、ページテーブルの物理アドレスは仮想アドレスと同じ値になり、よってCR3レジスタから始めることで全ての階層のページテーブルに簡単にアクセスできます。</p>
+<p>しかし、この方法では仮想アドレス空間が散らかってしまい、大きいサイズの連続したメモリを見つけることが難しくなります。例えば、上の図において、<a href="https://en.wikipedia.org/wiki/Memory-mapped_file">ファイルをメモリにマップする</a>ために1000KiBの大きさの仮想メモリ領域を作りたいとします。<code>28KiB</code>を始点として領域を作ろうとすると、<code>1004KiB</code>のところで既存のページと衝突してしまうのでうまくいきません。そのため、<code>1008KiB</code>のような、十分な広さでマッピングのない領域が見つかるまで更に探さないといけません。これは<a href="../paging-introduction/index.html#duan-pian-hua-fragmentation">セグメンテーション</a>の時に見た断片化の問題に似ています。</p>
+<p>同様に、新しいページテーブルを作ることもずっと難しくなります。なぜなら、対応するページがまだ使われていない物理フレームを見つけないといけないからです。例えば、メモリ<ruby>マップト<rp> (</rp><rt>に対応づけられた</rt><rp>) </rp></ruby>ファイルのために<code>1008KiB</code>から1000KiBにわたって仮想メモリを占有したとしましょう。すると、物理アドレス<code>1000KiB</code>から<code>2008KiB</code>までのフレームは、もう恒等マッピングを作ることができないので使用することができません。</p>
+<h3 id="gu-ding-ohusetutonomatupingu"><a class="zola-anchor" href="index.html#gu-ding-ohusetutonomatupingu" aria-label="Anchor link for: gu-ding-ohusetutonomatupingu">🔗</a>固定オフセットのマッピング</h3>
+<p>仮想アドレス空間を散らかしてしまうという問題を回避するために、<strong>ページテーブルのマッピングのために別のメモリ領域を使う</strong>ことができます。ページテーブルを恒等マップさせる代わりに、仮想アドレス空間で一定の<ruby>補正値<rp> (</rp><rt>オフセット</rt><rp>) </rp></ruby>をおいてマッピングしてみましょう。例えば、オフセットを10TiBにしてみましょう：</p>
+<p><img src="page-tables-mapped-at-offset.svg" alt="The same figure as for the identity mapping, but each mapped virtual page is offset by 10 TiB." /></p>
+<p><code>10TiB</code>から<code>10TiB+物理メモリ全体の大きさ</code>の範囲の仮想メモリをページテーブルのマッピング専用に使うことで、恒等マップのときに存在していた衝突問題を回避しています。このように巨大な領域を仮想アドレス空間内に用意するのは、仮想アドレス空間が物理メモリの大きさより遥かに大きい場合にのみ可能です。x86_64で用いられている48bit（仮想）アドレス空間は256TiBもの大きさがあるので、これは問題ではありません。</p>
+<p>この方法では、新しいページテーブルを作るたびに新しいマッピングを作る必要があるという欠点があります。また、他のアドレス空間のページテーブルにアクセスすることができると新しいプロセスを作るときに便利なのですが、これも不可能です。</p>
+<h3 id="map-the-complete-physical-memory"><a class="zola-anchor" href="index.html#map-the-complete-physical-memory" aria-label="Anchor link for: map-the-complete-physical-memory">🔗</a>物理メモリ全体をマップする</h3>
+<p>これらの問題はページテーブルのフレームだけと言わず<strong>物理メモリ全体をマップして</strong>しまえば解決します：</p>
+<p><img src="map-complete-physical-memory.svg" alt="The same figure as for the offset mapping, but every physical frame has a mapping (at 10TiB + X) instead of only page table frames." /></p>
+<p>この方法を使えば、私達のカーネルは他のアドレス空間を含め任意の物理メモリにアクセスできます。用意する仮想メモリの範囲は以前と同じであり、違うのは全てのページがマッピングされているということです。</p>
+<p>この方法の欠点は、物理メモリへのマッピングを格納するために、追加でページテーブルが必要になるところです。これらのページテーブルもどこかに格納されなければならず、したがって物理メモリの一部を占有することになります。これはメモリの量が少ないデバイスにおいては問題となりえます。</p>
+<p>しかし、x86_64においては、通常の4KiBサイズのページに代わって、大きさ2MiBの<a href="https://en.wikipedia.org/wiki/Page_%28computer_memory%29#Multiple_page_sizes">huge page</a>をマッピングに使うことができます。こうすれば、例えば32GiBの物理メモリをマップするのにはレベル3テーブル1個とレベル2テーブル32個があればいいので、たったの132KiBしか必要ではありません。huge pagesは、トランスレーション・ルックアサイド・バッファ (TLB) のエントリをあまり使わないので、キャッシュ的にも効率が良いです。</p>
+<h3 id="yi-shi-de-nadui-ying-matupingu"><a class="zola-anchor" href="index.html#yi-shi-de-nadui-ying-matupingu" aria-label="Anchor link for: yi-shi-de-nadui-ying-matupingu">🔗</a>一時的な<ruby>対応<rp> (</rp><rt>マッピング</rt><rp>) </rp></ruby></h3>
+<p>物理メモリの量が非常に限られたデバイスについては、アクセスする必要があるときだけ<strong>ページテーブルのフレームを一時的にマップする</strong>という方法が考えられます。そのような一時的なマッピングを作りたいときには、たった一つだけ恒等マップさせられたレベル1テーブルがあれば良いです：</p>
+<p><img src="temporarily-mapped-page-tables.svg" alt="A virtual and a physical address space with an identity mapped level 1 table, which maps its 0th entry to the level 2 table frame, thereby mapping that frame to page with address 0" /></p>
+<p>この図におけるレベル1テーブルは仮想アドレス空間の最初の2MiBを制御しています。なぜなら、このテーブルにはCR3レジスタから始めて、レベル4、3、2のページテーブルの0番目のエントリを辿ることで到達できるからです。その8番目のエントリは、アドレス<code>32 KiB</code>の仮想アドレスページをアドレス<code>32 KiB</code>の物理アドレスページにマップするので、レベル1テーブル自体を恒等マップしています。この図ではその恒等マッピングを<code>32 KiB</code>のところの横向きの（茶色の）矢印で表しています。</p>
+<p>恒等マップさせたレベル1テーブルに書き込むことによって、カーネルは最大511個の一時的なマッピングを作ることができます（512から、恒等マッピングに必要な1つを除く）。上の例では、カーネルは2つの一時的なマッピングを作りました：</p>
+<ul>
+<li>レベル1テーブルの0番目のエントリをアドレス<code>24 KiB</code>のフレームにマップすることで、破線の矢印で示されているように<code>0 KiB</code>の仮想ページからレベル2ページテーブルの物理フレームへの一時的なマッピングを行いました。</li>
+<li>レベル1テーブルの9番目のエントリをアドレス<code>4 KiB</code>のフレームにマップすることで、破線の矢印で示されているように<code>36 KiB</code>の仮想ページからレベル4ページテーブルの物理フレームへの一時的なマッピングを行いました。</li>
+</ul>
+<p>これで、カーネルは<code>0 KiB</code>に書き込むことによってレベル2ページテーブルに、<code>36 KiB</code>に書き込むことによってレベル4ページテーブルにアクセスできるようになりました。</p>
+<p>任意のページテーブルに一時的なマッピングを用いてアクセスする手続きは以下のようになるでしょう：</p>
+<ul>
+<li>恒等マッピングしているレベル1テーブルのうち、使われていないエントリを探す。</li>
+<li>そのエントリを私達のアクセスしたいページテーブルの物理フレームにマップする。</li>
+<li>そのエントリにマップされている仮想ページを通じて、対象のフレームにアクセスする。</li>
+<li>エントリを未使用に戻すことで、一時的なマッピングを削除する。</li>
+</ul>
+<p>この方法では、同じ512個の仮想ページをマッピングを作成するために再利用するため、物理メモリは4KiBしか必要としません。欠点としては、やや面倒であるということが言えるでしょう。特に、新しいマッピングを作る際に複数のページテーブルの変更が必要になるかもしれず、上の手続きを複数回繰り返さなくてはならないかもしれません。</p>
+<h3 id="zai-gui-de-peziteburu"><a class="zola-anchor" href="index.html#zai-gui-de-peziteburu" aria-label="Anchor link for: zai-gui-de-peziteburu">🔗</a>再帰的ページテーブル</h3>
+<p>他に興味深いアプローチとして<strong>再帰的にページテーブルをマップする</strong>方法があり、この方法では追加のページテーブルは一切不要です。発想としては、レベル4ページテーブルのエントリのどれかをレベル4ページテーブル自体にマップするのです。こうすることにより、仮想アドレス空間の一部を予約しておき、現在及び将来のあらゆるページテーブルフレームをその空間にマップしているのと同じことになります。</p>
+<p>これがうまく行く理由を説明するために、例を見てみましょう：</p>
+<p><img src="recursive-page-table.png" alt="An example 4-level page hierarchy with each page table shown in physical memory. Entry 511 of the level 4 page is mapped to frame 4KiB, the frame of the level 4 table itself." /></p>
+<p><a href="index.html#peziteburuniakusesusuru">この記事の最初での例</a>との唯一の違いは、レベル4テーブルの511番目に、物理フレーム<code>4 KiB</code>すなわちレベル4テーブル自体のフレームにマップされたエントリが追加されていることです。</p>
+<p>CPUにこのエントリを辿らせるようにすると、レベル3テーブルではなく、そのレベル4テーブルに再び到達します。これは再帰関数（自らを呼び出す関数）に似ているので、<strong><ruby>再帰的<rp> (</rp><rt>recursive</rt><rp>) </rp></ruby>ページテーブル</strong>と呼ばれます。CPUはレベル4テーブルのすべてのエントリはレベル3テーブルを指していると思っているので、CPUはいまレベル4テーブルをレベル3テーブルとして扱っているということに注目してください。これがうまく行くのは、x86_64においてはすべてのレベルのテーブルが全く同じレイアウトを持っているためです。</p>
+<p>実際に変換を始める前に、この再帰エントリを1回以上たどることで、CPUのたどる階層の数を短くできます。例えば、一度再帰エントリを辿ったあとでレベル3テーブルに進むと、CPUはレベル3テーブルをレベル2テーブルだと思い込みます。同様に、レベル2テーブルをレベル1テーブルだと、レベル1テーブルをマップされた（物理）フレームだと思います。CPUがこれを物理フレームだと思っているということは、レベル1ページテーブルを読み書きできるということを意味します。下の図はこの5回の変換ステップを示しています：</p>
+<p><img src="recursive-page-table-access-level-1.png" alt="The above example 4-level page hierarchy with 5 arrows: “Step 0” from CR4 to level 4 table, “Step 1” from level 4 table to level 4 table, “Step 2” from level 4 table to level 3 table, “Step 3” from level 3 table to level 2 table, and “Step 4” from level 2 table to level 1 table." /></p>
+<p>同様に、変換の前に再帰エントリを2回たどることで、階層移動の回数を2回に減らせます：</p>
+<p><img src="recursive-page-table-access-level-2.png" alt="The same 4-level page hierarchy with the following 4 arrows: “Step 0” from CR4 to level 4 table, “Steps 1&amp;2” from level 4 table to level 4 table, “Step 3” from level 4 table to level 3 table, and “Step 4” from level 3 table to level 2 table." /></p>
+<p>ステップごとにこれを見てみましょう：まず、CPUはレベル4テーブルの再帰エントリをたどり、レベル3テーブルに着いたと思い込みます。同じ再帰エントリを再びたどり、レベル2テーブルに着いたと考えます。しかし実際にはまだレベル4テーブルから動いていません。CPUが異なるエントリをたどると、レベル3テーブルに到着するのですが、CPUはレベル1にすでにいるのだと思っています。そのため、次のエントリはレベル2テーブルを指しているのですが、CPUはマップされた物理フレームを指していると思うので、私達はレベル2テーブルを読み書きできるというわけです。</p>
+<p>レベル3や4のテーブルにアクセスするのも同じやり方でできます。レベル3テーブルにアクセスするためには、再帰エントリを3回たどることでCPUを騙し、すでにレベル1テーブルにいると思い込ませます。そこで別のエントリをたどりレベル3テーブルに着くと、CPUはそれをマップされたフレームとして扱います。レベル4テーブル自体にアクセスするには、再帰エントリを4回辿ればCPUはそのレベル4テーブル自体をマップされたフレームとして扱ってくれるというわけです（下の青紫の矢印）。</p>
+<p><img src="recursive-page-table-access-level-3.png" alt="The same 4-level page hierarchy with the following 3 arrows: “Step 0” from CR4 to level 4 table, “Steps 1,2,3” from level 4 table to level 4 table, and “Step 4” from level 4 table to level 3 table. In blue the alternative “Steps 1,2,3,4” arrow from level 4 table to level 4 table." /></p>
+<p>この概念を理解するのは難しいかもしれませんが、実際これは非常にうまく行くのです。</p>
+<p>下のセクションでは、再帰エントリをたどるための仮想アドレスを構成する方法について説明します。私達の（OSの）実装には再帰的ページングは使わないので、これを読まずに記事の続きを読み進めても構いません。もし興味がおありでしたら、下の「アドレス計算」をクリックして展開してください。</p>
+<hr />
+<details>
+<summary><h4>アドレス計算</h4></summary>
+<p>実際の変換の前に再帰的移動を1回または複数回行うことですべての階層のテーブルにアクセスできるということを見てきました。4つのテーブルそれぞれのどのインデックスが使われるかは仮想アドレスから直接計算されていましたから、再帰エントリを使うためには特別な仮想アドレスを作り出す必要があります。ページテーブルのインデックスは仮想アドレスから以下のように計算されていたことを思い出してください：</p>
+<p><img src="../paging-introduction/x86_64-table-indices-from-address.svg" alt="Bits 0–12 are the page offset, bits 12–21 the level 1 index, bits 21–30 the level 2 index, bits 30–39 the level 3 index, and bits 39–48 the level 4 index" /></p>
+<p>あるページをマップしているレベル1テーブルにアクセスしたいとします。上で学んだように、このためには再帰エントリを1度辿ってからレベル4，3，2のインデックスへと続けていく必要があります。これをするために、それぞれのアドレスブロックを一つ右にずらし、レベル4のインデックスがあったところに再帰エントリのインデックスをセットします：</p>
+<p><img src="table-indices-from-address-recursive-level-1.svg" alt="Bits 0–12 are the offset into the level 1 table frame, bits 12–21 the level 2 index, bits 21–30 the level 3 index, bits 30–39 the level 4 index, and bits 39–48 the index of the recursive entry" /></p>
+<p>そのページのレベル2テーブルにアクセスしたい場合、それぞれのブロックを2つ右にずらし、レベル4と3のインデックスがあったところに再帰エントリのインデックスをセットします：</p>
+<p><img src="table-indices-from-address-recursive-level-2.svg" alt="Bits 0–12 are the offset into the level 2 table frame, bits 12–21 the level 3 index, bits 21–30 the level 4 index, and bits 30–39 and bits 39–48 are the index of the recursive entry" /></p>
+<p>レベル3テーブルにアクセスする場合、それぞれのブロックを3つ右にずらし、レベル4，3，2のインデックスがあったところに再帰インデックスを使います：</p>
+<p><img src="table-indices-from-address-recursive-level-3.svg" alt="Bits 0–12 are the offset into the level 3 table frame, bits 12–21 the level 4 index, and bits 21–30, bits 30–39 and bits 39–48 are the index of the recursive entry" /></p>
+<p>最後に、レベル4テーブルにはそれぞれのブロックを4ブロックずらし、オフセットを除いてすべてのアドレスブロックに再帰インデックスを使うことでアクセスできます：</p>
+<p><img src="table-indices-from-address-recursive-level-4.svg" alt="Bits 0–12 are the offset into the level l table frame and bits 12–21, bits 21–30, bits 30–39 and bits 39–48 are the index of the recursive entry" /></p>
+<p>これで、4つの階層すべてのページテーブルの仮想アドレスを計算できます。また、インデックスをページテーブルエントリのサイズ倍、つまり8倍することによって、特定のページテーブルエントリを指すアドレスを計算できます。</p>
+<p>下の表は、それぞれの種類のフレームにアクセスするためのアドレス構造をまとめたものです：</p>
+<table><thead><tr><th>……の仮想アドレス</th><th>アドレス構造（<a href="https://en.wikipedia.org/wiki/Octal">8進</a>）</th></tr></thead><tbody>
+<tr><td>ページ</td><td><code>0o_SSSSSS_AAA_BBB_CCC_DDD_EEEE</code></td></tr>
+<tr><td>レベル1テーブルエントリ</td><td><code>0o_SSSSSS_RRR_AAA_BBB_CCC_DDDD</code></td></tr>
+<tr><td>レベル2テーブルエントリ</td><td><code>0o_SSSSSS_RRR_RRR_AAA_BBB_CCCC</code></td></tr>
+<tr><td>レベル3テーブルエントリ</td><td><code>0o_SSSSSS_RRR_RRR_RRR_AAA_BBBB</code></td></tr>
+<tr><td>レベル4テーブルエントリ</td><td><code>0o_SSSSSS_RRR_RRR_RRR_RRR_AAAA</code></td></tr>
+</tbody></table>
+<p>ただし、<code>AAA</code>がレベル4インデックス、<code>BBB</code>がレベル3インデックス、<code>CCC</code>がレベル2インデックス、<code>DDD</code>がマップされたフレームのレベル1インデックス、<code>EEE</code>がオフセットです。<code>RRR</code>が再帰エントリのインデックスです。インデックス（3ケタ）をオフセット（4ケタ）に変換するときは、8倍（ページテーブルエントリのサイズ倍）しています。</p>
+<p><code>SSSSS</code>は符号拡張ビットで、すなわち47番目のビットのコピーです。これはx86_64におけるアドレスの特殊な要求の一つです。これは<a href="../paging-introduction/index.html#x86-64niokerupezingu">前回の記事</a>で説明しました。</p>
+<p><a href="https://en.wikipedia.org/wiki/Octal">8進</a>数を用いたのは、8進数の1文字が3ビットを表すため、9ビットからなるそれぞれのページテーブルをきれいに分けることができるためです。4ビットからなる16進ではこうはいきません。</p>
+<h5 id="rustnokododeha"><a class="zola-anchor" href="index.html#rustnokododeha" aria-label="Anchor link for: rustnokododeha">🔗</a>Rustのコードでは……</h5>
+<p>これらのアドレスをRustのコードで構成するには、ビット演算を用いるとよいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// この仮想アドレスに対応するページテーブルにアクセスしたい
+</span><span style="color:#569cd6;">let</span><span> addr: </span><span style="color:#569cd6;">usize </span><span>= […];
+</span><span>
+</span><span style="color:#569cd6;">let</span><span> r = </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// 再帰インデックス
+</span><span style="color:#569cd6;">let</span><span> sign = </span><span style="color:#b5cea8;">0o177777 </span><span>&lt;&lt; </span><span style="color:#b5cea8;">48</span><span>; </span><span style="color:#608b4e;">// 符号拡張
+</span><span>
+</span><span style="color:#608b4e;">// 変換したいアドレスのページテーブルインデックスを取得する
+</span><span style="color:#569cd6;">let</span><span> l4_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// レベル4インデックス
+</span><span style="color:#569cd6;">let</span><span> l3_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// レベル3インデックス
+</span><span style="color:#569cd6;">let</span><span> l2_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// レベル2インデックス
+</span><span style="color:#569cd6;">let</span><span> l1_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">12</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// レベル1インデックス
+</span><span style="color:#569cd6;">let</span><span> page_offset = addr </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o7777</span><span>;
+</span><span>
+</span><span style="color:#608b4e;">// テーブルアドレスを計算する
+</span><span style="color:#569cd6;">let</span><span> level_4_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_3_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_2_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l3_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_1_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(l3_idx &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l2_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span></code></pre>
+<p>上のコードは、レベル4エントリの最後（インデックス<code>0o777</code>すなわち511）が再帰マッピングしていると仮定しています。この仮定は正しくないので，このコードは動作しません。ブートローダに再帰マッピングを設定させる方法については後述します。</p>
+<p>ビット演算を自前で行う代わりに、<code>x86_64</code>クレートの<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.RecursivePageTable.html"><code>RecursivePageTable</code></a>型を使うこともできます。これは様々なページ操作の安全な抽象化を提供します。例えば、以下のコードは仮想アドレスをマップされた物理アドレスに変換する方法を示しています。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::{Mapper, Page, PageTable, RecursivePageTable};
+</span><span style="color:#569cd6;">use </span><span>x86_64::{VirtAddr, PhysAddr};
+</span><span>
+</span><span style="color:#608b4e;">/// レベル4アドレスからRecursivePageTableインスタンスをつくる
+</span><span style="color:#569cd6;">let</span><span> level_4_table_addr = […];
+</span><span style="color:#569cd6;">let</span><span> level_4_table_ptr = level_4_table_addr </span><span style="color:#569cd6;">as *mut</span><span> PageTable;
+</span><span style="color:#569cd6;">let</span><span> recursive_page_table = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> level_4_table = </span><span style="color:#569cd6;">&amp;mut </span><span>*level_4_table_ptr;
+</span><span>    RecursivePageTable::new(level_4_table).unwrap();
+</span><span>}
+</span><span>
+</span><span>
+</span><span style="color:#608b4e;">/// 与えられた仮想アドレスの物理アドレスを取得する
+</span><span style="color:#569cd6;">let</span><span> addr: </span><span style="color:#569cd6;">u64 </span><span>= […]
+</span><span style="color:#569cd6;">let</span><span> addr = VirtAddr::new(addr);
+</span><span style="color:#569cd6;">let</span><span> page: Page = Page::containing_address(addr);
+</span><span>
+</span><span style="color:#608b4e;">// 変換を実行する
+</span><span style="color:#569cd6;">let</span><span> frame = recursive_page_table.translate_page(page);
+</span><span>frame.map(|frame| frame.start_address() + </span><span style="color:#569cd6;">u64</span><span>::from(addr.page_offset()))
+</span></code></pre>
+<p>繰り返しになりますが、このコード（が正しく実行される）には正しい再帰マッピングがなされていることが必要となります。そのようなマッピングがあるのなら、空欄になっている<code>level_4_table_addr</code>は最初のコード例を使って計算すればよいです。</p>
+</details>
+<hr />
+<p>再帰的ページングは、ページテーブルのたった一つのマッピングがいかに強力に使えるかを示す興味深いテクニックです。比較的実装するのが簡単であり、ほとんど設定も必要でない（一つ再帰エントリを作るだけ）ので、ページングを使って最初に実装するのに格好の対象でしょう。</p>
+<p>しかし、いくつか欠点もあります：</p>
+<ul>
+<li>大量の仮想メモリ領域（512GiB）を占有してしまう。私達の使っている48bitアドレス空間は巨大なのでこのことはさしたる問題にはなりませんが、キャッシュの挙動が最適でなくなってしまうかもしれません。</li>
+<li>現在有効なアドレス空間にしか簡単にはアクセスできない。他のアドレス空間にアクセスするのは再帰エントリを変更することで可能ではあるものの、もとに戻すためには一時的なマッピングが必要。これを行う方法については<a href="../../remap-the-kernel/index.html#overview">カーネルをリマップする</a>（未訳、また旧版のため情報が古い）という記事を読んでください。</li>
+<li>x86のページテーブルの方式に強く依存しており、他のアーキテクチャでは動作しないかもしれない。</li>
+</ul>
+<h2 id="butorodaniyorubu-zhu"><a class="zola-anchor" href="index.html#butorodaniyorubu-zhu" aria-label="Anchor link for: butorodaniyorubu-zhu">🔗</a>ブートローダによる補助</h2>
+<p>これらのアプローチはすべて、準備のためにページテーブルに対する修正が必要になります。例えば、物理メモリへのマッピングを作ったり、レベル4テーブルのエントリを再帰的にマッピングしたりなどです。問題は、これらの必要なマッピングを作るためには、すでにページテーブルにアクセスできるようになっていなければいけないということです。</p>
+<p>つまり、私達のカーネルが使うページテーブルを作っている、ブートローダの手助けが必要になるということです。ブートローダはページテーブルにアクセスできますから、私達の必要とするどんなマッピングも作れます。<code>bootloader</code>クレートは上の2つのアプローチをどちらもサポートしており、現在の実装においては<a href="https://doc.rust-lang.org/cargo/reference/features.html#the-features-section">cargoのfeatures</a>を使ってこれらをコントロールします。</p>
+<ul>
+<li><code>map_physical_memory</code> featureを使うと、全物理メモリを仮想アドレス空間のどこかにマッピングします。そのため、カーネルはすべての物理メモリにアクセスでき、<a href="index.html#map-the-complete-physical-memory">上で述べた方法に従って物理メモリ全体をマップする</a>ことができます。</li>
+<li><code>recursive_page_table</code> featureでは、ブートローダはレベル4ページテーブルのエントリを再帰的にマッピングします。これによりカーネルは<a href="index.html#zai-gui-de-peziteburu">再帰的ページテーブル</a>で述べた方法に従ってページテーブルにアクセスすることができます。</li>
+</ul>
+<p>私達のカーネルには、シンプルでプラットフォーム非依存かつ（ページテーブルのフレームでないメモリにもアクセスできるので）より強力である1つ目の方法を採ることにします。必要なブートローダの<ruby>機能<rp> (</rp><rt>feature</rt><rp>) </rp></ruby>を有効化するために、<code>map_physical_memory</code> featureを<code>bootloader</code>のdependencyに追加します。</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= { </span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;0.9.23&quot;</span><span>, </span><span style="color:#569cd6;">features </span><span>= [</span><span style="color:#d69d85;">&quot;map_physical_memory&quot;</span><span>]}
+</span></code></pre>
+<p>この機能を有効化すると、ブートローダは物理メモリの全体を、ある未使用の仮想アドレス空間にマッピングします。この仮想アドレスの範囲をカーネルに伝えるために、ブートローダは<strong>boot information</strong>構造体を渡します。</p>
+<h3 id="boot-information"><a class="zola-anchor" href="index.html#boot-information" aria-label="Anchor link for: boot-information">🔗</a>Boot Information</h3>
+<p><code>bootloader</code>クレートは、カーネルに渡されるすべての情報を格納する<a href="https://docs.rs/bootloader/0.9.3/bootloader/bootinfo/struct.BootInfo.html"><code>BootInfo</code></a>構造体を定義しています。この構造体はまだ開発の初期段階にあり、将来の<a href="https://doc.rust-lang.org/stable/cargo/reference/specifying-dependencies.html#caret-requirements">対応していないsemverの</a>ブートローダのバージョンに更新した際には、うまく動かなくなることが予想されます。<code>map_physical_memory</code> featureが有効化されているので、いまこれは<code>memory_map</code>と<code>physical_memory_offset</code>という2つのフィールドを持っています：</p>
+<ul>
+<li><code>memory_map</code>フィールドは、利用可能な物理メモリの情報の概要を保持しています。システムの利用可能な物理メモリがどのくらいかや、どのメモリ領域がVGAハードウェアのようなデバイスのために予約されているかをカーネルに伝えます。これらのメモリマッピングはBIOSやUEFIファームウェアから取得できますが、それが可能なのはブートのごく初期に限られます。そのため、これらをカーネルが後で取得することはできないので、ブートローダによって提供する必要があるわけです。このメモリマッピングは後で必要となります。</li>
+<li><code>physical_memory_offset</code>は、物理メモリのマッピングの始まっている仮想アドレスです。このオフセットを物理アドレスに追加することによって、対応する仮想アドレスを得られます。これによって、カーネルから任意の物理アドレスにアクセスできます。</li>
+</ul>
+<p>ブートローダは<code>BootInfo</code>構造体を<code>_start</code>関数の<code>&amp;'static BootInfo</code>引数という形でカーネルに渡します。この引数は私達の関数ではまだ宣言していなかったので追加します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::BootInfo;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{ </span><span style="color:#608b4e;">// 新しい引数
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>今までこの引数を無視していましたが、x86_64の呼出し規約は最初の引数をCPUレジスタに渡していたため、これは問題ではありませんでした。つまり、引数が宣言されていなかったとき、それが単に無視されていたわけです。しかし、もし引数の型を間違えてしまうと、コンパイラが私達のエントリポイント関数の正しい型シグネチャがわからなくなってしまうので問題です。</p>
+<h3 id="entry-pointmakuro"><a class="zola-anchor" href="index.html#entry-pointmakuro" aria-label="Anchor link for: entry-pointmakuro">🔗</a><code>entry_point</code>マクロ</h3>
+<p>私達の<code>_start</code>関数はブートローダから外部呼び出しされるので、私達の関数のシグネチャに対する検査は行われません。これにより、この関数はコンパイルエラーなしにあらゆる引数を取ることができるので、いざ実行時にエラーになったり未定義動作を起こしたりしてしまいます。</p>
+<p>私達のエントリポイント関数が常にブートローダの期待する正しいシグネチャを持っていることを保証するために、<code>bootloader</code>クレートは<a href="https://docs.rs/bootloader/0.6.4/bootloader/macro.entry_point.html"><code>entry_point</code></a>マクロによって、Rustの関数を型チェックしたうえでエントリポイントとして定義する方法を提供します。私達のエントリポイント関数をこのマクロを使って書き直してみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::{BootInfo, entry_point};
+</span><span>
+</span><span>entry_point!(kernel_main);
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>このマクロがより低レベルな本物の<code>_start</code>エントリポイントを定義してくれるので、<code>extern &quot;C&quot;</code>や<code>no_mangle</code>をエントリポイントに使う必要はもうありません。<code>kernel_main</code>関数は今や完全に普通のRustの関数なので、自由に名前をつけることができます。そして重要なのは、この関数は型チェックされているので、間違った関数シグネチャ（例えば引数を増やしたり引数の型を変えたり）にするとコンパイルエラーが発生するということです。</p>
+<p><code>lib.rs</code>に同じ変更を施しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">use </span><span>bootloader::{entry_point, BootInfo};
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>entry_point!(test_kernel_main);
+</span><span>
+</span><span style="color:#608b4e;">/// `cargo test`のエントリポイント
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_kernel_main(_boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// 前と同じ
+</span><span>    init();
+</span><span>    test_main();
+</span><span>    hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>こちらのエントリポイントはテストモードのときにのみ使用するので、<code>#[cfg(test)]</code>属性をすべての要素に付しています。<code>main.rs</code>の<code>kernel_main</code>関数と混同しないよう、<code>test_kernel_main</code>という別の名前をつけました。いまのところ<code>BootInfo</code>引数は使わないので、引数名の先頭に<code>_</code>をつけることで<ruby>unused variable<rp> (</rp><rt>未使用変数</rt><rp>) </rp></ruby>警告が出てくるのを防いでいます。</p>
+<h2 id="shi-zhuang"><a class="zola-anchor" href="index.html#shi-zhuang" aria-label="Anchor link for: shi-zhuang">🔗</a>実装</h2>
+<p>物理メモリへのアクセスができるようになったので、いよいよページテーブルのコードを実装できます。そのためにまず、現在有効な、私達のカーネルが使用しているページテーブルを見てみます。次に、与えられた仮想アドレスがマップされている物理アドレスを返す変換関数を作ります。最後に、新しいマッピングを作るためにページテーブルを修正してみます。</p>
+<p>始める前に、<code>memory</code>モジュールを作ります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>memory;
+</span></code></pre>
+<p>また、このモジュールに対応するファイル<code>src/memory.rs</code>を作ります。</p>
+<h3 id="peziteburuniakusesusuru-1"><a class="zola-anchor" href="index.html#peziteburuniakusesusuru-1" aria-label="Anchor link for: peziteburuniakusesusuru-1">🔗</a>ページテーブルにアクセスする</h3>
+<p><a href="../paging-introduction/index.html#peziteburuhenoakusesu">前の記事の最後</a>で、私達のカーネルの実行しているページテーブルを見てみようとしましたが、<code>CR3</code>レジスタの指す物理フレームにアクセスすることができなかったためそれはできませんでした。この続きとして、<code>active_level_4_table</code>という、現在<ruby>有効<rp> (</rp><rt>アクティブ</rt><rp>) </rp></ruby>なレベル4ページテーブルへの参照を返す関数を定義するところから始めましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::{
+</span><span>    structures::paging::PageTable,
+</span><span>    VirtAddr,
+</span><span>};
+</span><span>
+</span><span style="color:#608b4e;">/// 有効なレベル4テーブルへの可変参照を返す。
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// この関数はunsafeである：全物理メモリが、渡された
+</span><span style="color:#608b4e;">/// `physical_memory_offset`（だけずらしたうえ）で
+</span><span style="color:#608b4e;">/// 仮想メモリへとマップされていることを呼び出し元が
+</span><span style="color:#608b4e;">/// 保証しなければならない。また、`&amp;mut`参照が複数の
+</span><span style="color:#608b4e;">/// 名称を持つこと (mutable aliasingといい、動作が未定義)
+</span><span style="color:#608b4e;">/// につながるため、この関数は一度しか呼び出してはならない。
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>active_level_4_table(physical_memory_offset: VirtAddr)
+</span><span>    -&gt; </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> PageTable
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control::Cr3;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let </span><span>(level_4_table_frame, </span><span style="color:#569cd6;">_</span><span>) = Cr3::read();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys = level_4_table_frame.start_address();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> virt = physical_memory_offset + phys.as_u64();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page_table_ptr: </span><span style="color:#569cd6;">*mut</span><span> PageTable = virt.as_mut_ptr();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">&amp;mut </span><span>*page_table_ptr </span><span style="color:#608b4e;">// unsafe
+</span><span>}
+</span></code></pre>
+<p>まず、有効なレベル4テーブルの物理フレームを<code>CR3</code>レジスタから読みます。その開始物理アドレスを取り出し、<code>u64</code>に変換し、<code>physical_memory_offset</code>に足すことでそのページテーブルフレームに対応する仮想アドレスを得ます。最後に、<code>as_mut_ptr</code>メソッドを使ってこの仮想アドレスを<code>*mut PageTable</code>生ポインタに変換し、これから<code>&amp;mut PageTable</code>参照を作ります（ここがunsafe）。<code>&amp;</code>参照ではなく<code>&amp;mut</code>参照にしているのは、後でこのページテーブルを変更するためです。</p>
+<p>Rustは<code>unsafe fn</code>の中身全体を大きな<code>unsafe</code>ブロックであるかのように扱うので、ここでunsafeブロックを使う必要はありません。これでは、（unsafeを意図した）最後の行より前の行に間違ってunsafeな操作を書いても気づけないので、コードがより危険になります。また、どこがunsafeな操作であるのかを探すのも非常に難しくなります。そのため、この挙動を変更する<a href="https://github.com/rust-lang/rfcs/pull/2585">RFC</a>が提案されています。</p>
+<p>この関数を使って、レベル4テーブルのエントリを出力してみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::active_level_4_table;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> l4_table = </span><span style="color:#569cd6;">unsafe </span><span>{ active_level_4_table(phys_mem_offset) };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, entry) </span><span style="color:#569cd6;">in</span><span> l4_table.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>            println!(</span><span style="color:#d69d85;">&quot;L4 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// as before
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>まず、<code>BootInfo</code>構造体の<code>physical_memory_offset</code>を<a href="https://docs.rs/x86_64/0.14.2/x86_64/addr/struct.VirtAddr.html"><code>VirtAddr</code></a>に変換し、<code>active_level_4_table</code>関数に渡します。つぎに<code>iter</code>関数を使ってページテーブルのエントリをイテレートし、<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a>コンビネータをつかってそれぞれの要素にインデックス<code>i</code>を追加します。全512エントリを出力すると画面に収まらないので、<ruby>空<rp> (</rp><rt>から</rt><rp>) </rp></ruby>でないエントリのみ出力します。</p>
+<p>実行すると、以下の出力を得ます：</p>
+<p><img src="qemu-print-level-4-table.png" alt="QEMU printing entry 0 (0x2000, PRESENT, WRITABLE, ACCESSED), entry 1 (0x894000, PRESENT, WRITABLE, ACCESSED, DIRTY), entry 31 (0x88e000, PRESENT, WRITABLE, ACCESSED, DIRTY), entry 175 (0x891000, PRESENT, WRITABLE, ACCESSED, DIRTY), and entry 504 (0x897000, PRESENT, WRITABLE, ACCESSED, DIRTY)" /></p>
+<p>いくつかの空でないエントリがあり、いずれも異なるレベル3テーブルにマップさせられていることがわかります。このようにたくさんの領域があるのは、カーネルコード、カーネルスタック、物理メモリマッピング、ブート情報が互いに離れたメモリ領域を使っているためです。</p>
+<p>ページテーブルを更に辿りレベル3テーブルを見るには、エントリに対応するフレームを取り出し再び仮想アドレスに変換すればよいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rsのforループ内にて……
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::PageTable;
+</span><span>
+</span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;L4 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// このエントリから物理アドレスを得て、それを変換する
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys = entry.frame().unwrap().start_address();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> virt = phys.as_u64() + boot_info.physical_memory_offset;
+</span><span>    </span><span style="color:#569cd6;">let</span><span> ptr = VirtAddr::new(virt).as_mut_ptr();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> l3_table: </span><span style="color:#569cd6;">&amp;</span><span>PageTable = </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span>*ptr };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// レベル3テーブルの空でないエントリを出力する
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, entry) </span><span style="color:#569cd6;">in</span><span> l3_table.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>            println!(</span><span style="color:#d69d85;">&quot;  L3 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>レベル2やレベル1のテーブルも、同じ手続きをレベル3とレベル2のエントリに対して繰り返すことで見ることができます。お察しの通りそれを書くとかなり長くなるので、コードの全てはここには示しません。</p>
+<p>ページテーブルを手作業で辿ると、CPUが変換を行う仕組みを理解できて面白いです。しかし、多くの場合は与えられた仮想アドレスに対応する物理アドレスにのみ興味があるので、そのための関数を作りましょう。</p>
+<h3 id="adoresunobian-huan"><a class="zola-anchor" href="index.html#adoresunobian-huan" aria-label="Anchor link for: adoresunobian-huan">🔗</a>アドレスの変換</h3>
+<p>仮想アドレスを物理アドレスに変換するには、4層のページテーブルを辿って対応するフレームにたどり着けばよいです。この変換を行う関数を作りましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::PhysAddr;
+</span><span>
+</span><span style="color:#608b4e;">/// 与えられた仮想アドレスを対応する物理アドレスに変換し、
+</span><span style="color:#608b4e;">/// そのアドレスがマップされていないなら`None`を返す。
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// この関数はunsafeである。なぜなら、呼び出し元は全物理メモリが与えられた
+</span><span style="color:#608b4e;">/// `physical_memory_offset`（だけずらした上）でマップされていることを
+</span><span style="color:#608b4e;">/// 保証しなくてはならないからである。
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr)
+</span><span>    -&gt; Option&lt;PhysAddr&gt;
+</span><span>{
+</span><span>    translate_addr_inner(addr, physical_memory_offset)
+</span><span>}
+</span></code></pre>
+<p><code>unsafe</code>の範囲を制限するために、この関数は、すぐにunsafeでない<code>translate_addr_inner</code>関数に制御を渡しています。先に述べたように、Rustはunsafeな関数の全体をunsafeブロックとして扱ってしまいます。呼び出した<ruby>非公開の<rp> (</rp><rt>プライベートな</rt><rp>) </rp></ruby>unsafeでない関数の中にコードを書くことで、それぞれのunsafeな操作を明確にします。</p>
+<p>非公開な内部の関数に本当の実装を書いていきます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#608b4e;">/// `translate_addr`により呼び出される非公開関数。
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// Rustはunsafeな関数の全体をunsafeブロックとして扱ってしまうので、
+</span><span style="color:#608b4e;">/// unsafeの範囲を絞るためにこの関数はunsafeにしていない。
+</span><span style="color:#608b4e;">/// この関数をモジュール外から呼び出すときは、
+</span><span style="color:#608b4e;">/// unsafeな関数`translate_addr`を使って呼び出すこと。
+</span><span style="color:#569cd6;">fn </span><span>translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr)
+</span><span>    -&gt; Option&lt;PhysAddr&gt;
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::page_table::FrameError;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control::Cr3;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 有効なレベル4フレームをCR3レジスタから読む
+</span><span>    </span><span style="color:#569cd6;">let </span><span>(level_4_table_frame, </span><span style="color:#569cd6;">_</span><span>) = Cr3::read();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> table_indexes = [
+</span><span>        addr.p4_index(), addr.p3_index(), addr.p2_index(), addr.p1_index()
+</span><span>    ];
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame = level_4_table_frame;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 複数層のページテーブルを辿る
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>index </span><span style="color:#569cd6;">in &amp;</span><span>table_indexes {
+</span><span>        </span><span style="color:#608b4e;">// フレームをページテーブルの参照に変換する
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = physical_memory_offset + frame.start_address().as_u64();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> table_ptr: </span><span style="color:#569cd6;">*const</span><span> PageTable = virt.as_ptr();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> table = </span><span style="color:#569cd6;">unsafe </span><span>{</span><span style="color:#569cd6;">&amp;</span><span>*table_ptr};
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// ページテーブルエントリを読んで、`frame`を更新する
+</span><span>        </span><span style="color:#569cd6;">let</span><span> entry = </span><span style="color:#569cd6;">&amp;</span><span>table[index];
+</span><span>        frame = </span><span style="color:#569cd6;">match</span><span> entry.frame() {
+</span><span>            Ok(frame) </span><span style="color:#569cd6;">=&gt;</span><span> frame,
+</span><span>            Err(FrameError::FrameNotPresent) </span><span style="color:#569cd6;">=&gt; return </span><span>None,
+</span><span>            Err(FrameError::HugeFrame) </span><span style="color:#569cd6;">=&gt; </span><span>panic!(</span><span style="color:#d69d85;">&quot;huge pages not supported&quot;</span><span>),
+</span><span>                                                </span><span style="color:#608b4e;">//huge pageはサポートしていません
+</span><span>        };
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// ページオフセットを足すことで、目的の物理アドレスを計算する
+</span><span>    Some(frame.start_address() + </span><span style="color:#569cd6;">u64</span><span>::from(addr.page_offset()))
+</span><span>}
+</span></code></pre>
+<p>先程作った<code>active_level_4_table</code>関数を再利用せず、<code>CR3</code>レジスタからレベル4フレームを読み出すコードを再び書いています。これは簡単に試作するためであり、後でもっと良い方法で作り直すのでご心配なく。</p>
+<p><code>Virtaddr</code>構造体には、（仮想メモリの）インデックスから4つの階層のページテーブルを計算してくれるメソッドが備わっています。この4つのインデックスを配列に格納することで、これらを<code>for</code>ループを使って辿ります。<code>for</code>ループを抜けたら、最後に計算した<code>frame</code>を覚えているので、物理アドレスを計算できます。この<code>frame</code>は、forループの中ではページテーブルのフレームを指していて、最後のループのあと（すなわちレベル1エントリを辿ったあと）では対応する（物理）フレームを指しています。</p>
+<p>ループの中では、前と同じように<code>physical_memory_offset</code>を使ってフレームをページテーブルの参照に変換します。次に、そのページテーブルのエントリを読み、<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page_table/struct.PageTableEntry.html#method.frame"><code>PageTableEntry::frame</code></a>関数を使って対応するフレームを取得します。もしエントリがフレームにマップされていなければ<code>None</code>を返します。もしエントリが2MiBや1GiBのhuge pageにマップされていたら、今のところはpanicすることにします。</p>
+<p>いくつかのアドレスを変換して、この変換関数がうまく行くかテストしてみましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// 新しいインポート
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::translate_addr;
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello world と blog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> addresses = [
+</span><span>        </span><span style="color:#608b4e;">// 恒等対応しているVGAバッファのページ
+</span><span>        </span><span style="color:#b5cea8;">0xb8000</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// コードページのどこか
+</span><span>        </span><span style="color:#b5cea8;">0x201008</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// スタックページのどこか
+</span><span>        </span><span style="color:#b5cea8;">0x0100_0020_1a10</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// 物理アドレス &quot;0&quot; にマップされている仮想アドレス
+</span><span>        boot_info.physical_memory_offset,
+</span><span>    ];
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>address </span><span style="color:#569cd6;">in &amp;</span><span>addresses {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = VirtAddr::new(address);
+</span><span>        </span><span style="color:#569cd6;">let</span><span> phys = </span><span style="color:#569cd6;">unsafe </span><span>{ translate_addr(virt, phys_mem_offset) };
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;"> -&gt; </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, virt, phys);
+</span><span>    }
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; の出力, および hlt_loop()
+</span><span>}
+</span></code></pre>
+<p>実行すると、以下の出力を得ます：</p>
+<p><img src="qemu-translate-addr.png" alt="0xb8000 -&gt; 0xb8000, 0x201008 -&gt; 0x401008, 0x10000201a10 -&gt; 0x279a10, “panicked at ‘huge pages not supported’" /></p>
+<p>期待したとおり、恒等マップしているアドレス<code>0xb8000</code>は同じ物理アドレスに変換されました。コードページとスタックページは物理アドレスのどこかしかに変換されていますが、その場所はブートローダがカーネルの初期マッピングをどのようにつくったかによります。また、下から12ビットは変換のあとも常に同じであるということも注目に値します：この部分は<a href="../paging-introduction/index.html#x86-64niokerupezingu">ページオフセット</a>であり、変換には関わらないためです。</p>
+<p>それぞれの物理アドレスは<code>physical_memory_offset</code>を足すことでアクセスできるわけですから、<code>physical_memory_offset</code>自体を変換すると物理アドレス<code>0</code>を指すはずです。しかし、効率よくマッピングを行うためにここではhuge pageが使われており、これはまだサポートしていないので変換には失敗しています。</p>
+<h3 id="offsetpagetablewoshi-u"><a class="zola-anchor" href="index.html#offsetpagetablewoshi-u" aria-label="Anchor link for: offsetpagetablewoshi-u">🔗</a><code>OffsetPageTable</code>を使う</h3>
+<p>仮想アドレスから物理アドレスへの変換はOSのカーネルがよく行うことですから、<code>x86_64</code>クレートはそのための抽象化を提供しています。この実装はすでにhuge pageや<code>translate_addr</code>以外の様々な関数もサポートしているので、以下ではhuge pageのサポートを自前で実装する代わりにこれを使うことにします。</p>
+<p>この抽象化の基礎となっているのは、様々なページテーブルマッピング関数を定義している2つのトレイトです。</p>
+<ul>
+<li><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html"><code>Mapper</code></a>トレイトはページサイズを型引数とする<ruby>汎用型<rp> (</rp><rt>ジェネリクス</rt><rp>) </rp></ruby>で、ページに対して操作を行う関数を提供します。例えば、<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#tymethod.translate_page"><code>translate_page</code></a>は与えられたページを同じサイズのフレームに変換し、<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a>はページテーブルに新しいマッピングを作成します。</li>
+<li><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html"><code>Translate</code></a> トレイトは<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html#method.translate_addr"><code>translate_addr</code></a>や一般の<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html"><code>translate</code></a>のような、さまざまなページサイズに対して動くような関数を提供します。</li>
+</ul>
+<p>これらのトレイトはインターフェイスを定義しているだけであり、その実装は何一つ提供していません。<code>x86_64</code>クレートは現在、このトレイトを実装する型を異なる要件に合わせて3つ用意しています。<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.OffsetPageTable.html"><code>OffsetPageTable</code></a>型は、全物理メモリがあるオフセットで仮想アドレスにマップしていることを前提とします。<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MappedPageTable.html"><code>MappedPageTable</code></a>はもう少し融通が効き、それぞれのページテーブルフレームが（そのフレームから）計算可能な仮想アドレスにマップしていることだけを前提とします。最後に<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.RecursivePageTable.html"><code>RecursivePageTable</code></a>型は、ページテーブルのフレームに<a href="index.html#zai-gui-de-peziteburu">再帰的ページテーブル</a>を使ってアクセスするときに使えます。</p>
+<p>私達の場合、ブートローダは全物理メモリを<code>physical_memory_offset</code>変数で指定された仮想アドレスで物理メモリにマップしているので、<code>OffsetPageTable</code>型が使えます。これを初期化するために、<code>memory</code>モジュールに新しく<code>init</code>関数を作りましょう： </p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::OffsetPageTable;
+</span><span>
+</span><span style="color:#608b4e;">/// 新しいOffsetPageTableを初期化する。
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// この関数はunsafeである：全物理メモリが、渡された
+</span><span style="color:#608b4e;">/// `physical_memory_offset`（だけずらしたうえ）で
+</span><span style="color:#608b4e;">/// 仮想メモリへとマップされていることを呼び出し元が
+</span><span style="color:#608b4e;">/// 保証しなければならない。また、`&amp;mut`参照が複数の
+</span><span style="color:#608b4e;">/// 名称を持つこと (mutable aliasingといい、動作が未定義)
+</span><span style="color:#608b4e;">/// につながるため、この関数は一度しか呼び出してはならない。
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>init(physical_memory_offset: VirtAddr) -&gt; OffsetPageTable&lt;</span><span style="color:#569cd6;">&#39;static</span><span>&gt; {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> level_4_table = active_level_4_table(physical_memory_offset);
+</span><span>    OffsetPageTable::new(level_4_table, physical_memory_offset)
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// これは非公開にする
+</span><span style="color:#569cd6;">unsafe fn </span><span>active_level_4_table(physical_memory_offset: VirtAddr)
+</span><span>    -&gt; </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> PageTable
+</span><span>{…}
+</span></code></pre>
+<p>この関数は<code>physical_memory_offset</code>を引数としてとり、<code>'static</code>ライフタイムを持つ<code>OffsetPageTable</code>を作って返します。このライフタイムは、私達のカーネルが実行している間この<ruby>実体<rp> (</rp><rt>インスタンス</rt><rp>) </rp></ruby>はずっと有効であるという意味です。関数の中ではまず<code>active_level_4_table</code>関数を呼び出し、レベル4ページテーブルへの可変参照を取得します。次に<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.OffsetPageTable.html#method.new"><code>OffsetPageTable::new</code></a>関数をこの参照を使って呼び出します。この<code>new</code>関数の第二引数には、物理メモリのマッピングの始まる仮想アドレスが入ることになっています。つまり<code>physical_memory_offset</code>です。</p>
+<p>可変参照が複数の名称を持つと未定義動作を起こす可能性があるので、今後<code>active_level_4_table</code>関数は<code>init</code>関数から一度呼び出されることを除いては呼び出されてはなりません。そのため、<code>pub</code>指定子を外してこの関数を非公開にしています。</p>
+<p>これで、自前の<code>memory::translate_addr</code>関数の代わりに<code>Translate::translate_addr</code>メソッドを使うことができます。これには<code>kernel_main</code>を数行だけ書き換えればよいです：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// インポートが追加・変更されている
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::{structures::paging::Translate, VirtAddr};
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello worldとblog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#608b4e;">// 追加：mapperを初期化
+</span><span>    </span><span style="color:#569cd6;">let</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> addresses = […]; </span><span style="color:#608b4e;">// 前と同じ
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>address </span><span style="color:#569cd6;">in &amp;</span><span>addresses {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = VirtAddr::new(address);
+</span><span>        </span><span style="color:#608b4e;">// 追加：`mapper.translate_addr`メソッドを使う
+</span><span>        </span><span style="color:#569cd6;">let</span><span> phys = mapper.translate_addr(virt);
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;"> -&gt; </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, virt, phys);
+</span><span>    }
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; の出力, および hlt_loop()
+</span><span>}
+</span></code></pre>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html#method.translate_addr"><code>translate_addr</code></a>メソッドを使うために、それを提供している<code>Translate</code>トレイトをインポートする必要があります。</p>
+<p>これを実行すると、同じ変換結果が得られますが、今度はhuge pageの変換もうまく行っています：</p>
+<p><img src="qemu-mapper-translate-addr.png" alt="0xb8000 -&gt; 0xb8000, 0x201008 -&gt; 0x401008, 0x10000201a10 -&gt; 0x279a10, 0x18000000000 -&gt; 0x0" /></p>
+<p>想定通り、<code>0xb8000</code>やコード・スタックアドレスの変換結果は自前の変換関数と同じになっています。また、<code>physical_memory_offset</code>は物理アドレス<code>0x0</code>にマップされているのもわかります。</p>
+<p><code>MappedPageTable</code>型の変換関数を使うことで、huge pageをサポートする手間が省けます。また<code>map_to</code>のような他のページング関数も利用でき、これは次のセクションで使います。</p>
+<p>この時点で、自作した<code>memory::translate_addr</code>関数や<code>memory::translate_addr_inner</code>関数はもう必要ではないので削除して構いません。</p>
+<h3 id="xin-siimatupinguwozuo-ru"><a class="zola-anchor" href="index.html#xin-siimatupinguwozuo-ru" aria-label="Anchor link for: xin-siimatupinguwozuo-ru">🔗</a>新しいマッピングを作る</h3>
+<p>これまでページテーブルを見てきましたが、それに対する変更は行っていませんでした。ページテーブルに対する変更として、マッピングのなかったページにマッピングを作ってみましょう。</p>
+<p>これを実装するには<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html"><code>Mapper</code></a>トレイトの<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a>関数を使うので、この関数について少し見てみましょう。ドキュメントによると四つ引数があります：マッピングに使うページ、ページをマップさせるフレーム、ページテーブルエントリにつかうフラグの集合、そして<code>frame_allocator</code>です。<ruby>フレームアロケータ<rp> (</rp><rt>frame allocator</rt><rp>) </rp></ruby>（フレームを<ruby>割り当てる<rp> (</rp><rt>アロケートする</rt><rp>) </rp></ruby>機能を持つ）が必要な理由は、与えられたページをマップするために追加でページテーブルを作成する必要があるかもしれず、これを格納するためには使われていないフレームが必要となるからです。</p>
+<h4 id="create-example-mappingguan-shu"><a class="zola-anchor" href="index.html#create-example-mappingguan-shu" aria-label="Anchor link for: create-example-mappingguan-shu">🔗</a><code>create_example_mapping</code>関数</h4>
+<p>私達が実装していく最初のステップとして、<code>create_example_mapping</code>関数という、与えられた仮想ページを<code>0xb8000</code>すなわちVGAテキストバッファの物理フレームにマップする関数を作ってみましょう。このフレームを選んだ理由は、マッピングが正しくなされたかをテストするのが容易だからです：マッピングしたページに書き込んで、それが画面に現れるか確認するだけでよいのですから。</p>
+<p><code>create_example_mapping</code>は以下のようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::{
+</span><span>    PhysAddr,
+</span><span>    structures::paging::{Page, PhysFrame, Mapper, Size4KiB, FrameAllocator}
+</span><span>};
+</span><span>
+</span><span style="color:#608b4e;">/// 与えられたページをフレーム`0xb8000`に試しにマップする。
+</span><span style="color:#569cd6;">pub fn </span><span>create_example_mapping(
+</span><span>    page: Page,
+</span><span>    mapper: </span><span style="color:#569cd6;">&amp;mut</span><span> OffsetPageTable,
+</span><span>    frame_allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> impl FrameAllocator&lt;Size4KiB&gt;,
+</span><span>) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::PageTableFlags </span><span style="color:#569cd6;">as</span><span> Flags;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> frame = PhysFrame::containing_address(PhysAddr::new(</span><span style="color:#b5cea8;">0xb8000</span><span>));
+</span><span>    </span><span style="color:#569cd6;">let</span><span> flags = Flags::</span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span>Flags::</span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> map_to_result = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// FIXME: unsafeであり、テストのためにのみ行う
+</span><span>        mapper.map_to(page, frame, flags, frame_allocator)
+</span><span>    };
+</span><span>    map_to_result.expect(</span><span style="color:#d69d85;">&quot;map_to failed&quot;</span><span>).flush();
+</span><span>}
+</span></code></pre>
+<p>この関数は、マップする<code>page</code>に加え<code>OffsetPageTable</code>のインスタンスと<code>frame_allocator</code>への可変参照を引数に取ります。<code>frame_allocator</code>引数は<a href="https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters"><code>impl Trait</code></a>構文により<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/trait.FrameAllocator.html"><code>FrameAllocator</code></a>トレイトを実装するあらゆる型の<a href="https://doc.rust-lang.org/book/ch10-00-generics.html">汎用型</a>になっています。<code>FrameAllocator</code>トレイトは<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/trait.PageSize.html"><code>PageSize</code></a>トレイトを実装するなら（トレイト引数のサイズが）4KiBでも2MiBや1GiBのhuge pageでも構わない<ruby>汎用<rp> (</rp><rt>ジェネリック</rt><rp>) </rp></ruby>トレイトです。私達は4KiBのマッピングのみを作りたいので、ジェネリック引数は<code>Size4KiB</code>にしています。</p>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a>メソッドは、呼び出し元がフレームはまだ使われていないことを保証しないといけないので、unsafeです。なぜなら、同じフレームを二度マップすると（例えば2つの異なる<code>&amp;mut</code>参照が物理メモリの同じ場所を指すことで）未定義動作を起こす可能性があるからです。今回、VGAテキストバッファのフレームという、すでにマップされているフレームを再度使っているので、この要件を破ってしまっています。しかしながら、<code>create_example_mapping</code>関数は一時的なテスト関数であり、この記事のあとには取り除かれるので大丈夫です。この危険性のことを忘れないようにするために、その行に<ruby><code>FIXME</code><rp> (</rp><rt><code>要修正</code></rt><rp>) </rp></ruby>コメントをつけておきます。</p>
+<p><code>map_to</code>関数が<code>page</code>と<code>unused_frame</code>に加えてフラグの集合と<code>frame_allocator</code>への参照を取りますが、これについてはすぐに説明します。フラグについては、<code>PRESENT</code>フラグという有効なエントリ全てに必須のフラグと、<code>WRITABLE</code>フラグという対応するページを書き込み可能にするフラグをセットしています。フラグの一覧については、前記事の<a href="../paging-introduction/index.html#peziteburunoxing-shi">ページテーブルの形式</a>を参照してください。</p>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a>関数は失敗しうるので、<a href="https://doc.rust-lang.org/core/result/enum.Result.html"><code>Result</code></a>を返します。これは失敗しても構わない単なるテストコードなので、エラーが起きたときは<a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.expect"><code>expect</code></a>を使ってパニックしてしまうことにします。この関数は成功したとき<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html"><code>MapperFlush</code></a>型を返します。この型の<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html#method.flush"><code>flush</code></a>メソッドを使うと、新しくマッピングしたページをトランスレーション・ルックアサイド・バッファ (TLB) から簡単にflushすることができます。この型は<code>Result</code>と同じく<a href="https://doc.rust-lang.org/std/result/#results-must-be-used"><code>#[must_use]</code></a>属性を使っており、使用し忘れると警告を出します。</p>
+<h4 id="daminoframeallocator"><a class="zola-anchor" href="index.html#daminoframeallocator" aria-label="Anchor link for: daminoframeallocator">🔗</a>ダミーの<code>FrameAllocator</code></h4>
+<p><code>create_example_mapping</code>関数を呼べるようにするためには、まず<code>FrameAllocator</code>トレイトを実装する型を作成する必要があります。上で述べたように、このトレイトは新しいページのためのフレームを<code>map_to</code>が必要としたときに割り当てる役割を持っています。</p>
+<p>単純なケースを考えましょう：新しいページテーブルを作る必要がないと仮定してしまいます。この場合、常に<code>None</code>を返すフレームアロケータで十分です。私達のマッピング関数をテストするために、そのような<code>EmptyFrameAllocator</code>を作ります。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#608b4e;">/// つねに`None`を返すFrameAllocator
+</span><span style="color:#569cd6;">pub struct </span><span>EmptyFrameAllocator;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>FrameAllocator&lt;Size4KiB&gt; </span><span style="color:#569cd6;">for </span><span>EmptyFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;PhysFrame&gt; {
+</span><span>        None
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>FrameAllocator</code>を実装するのはunsafeです。なぜなら、実装する人は、実装したアロケータが未使用のフレームのみ取得することを保証しなければならないからです。さもなくば、例えば二つの仮想ページが同じ物理フレームにマップされたときに未定義動作が起こるかもしれません。この<code>EmptyFrameAllocator</code>は<code>None</code>しか返さないので、これは問題ではありません。</p>
+<h4 id="jia-xiang-peziwoxuan-bu"><a class="zola-anchor" href="index.html#jia-xiang-peziwoxuan-bu" aria-label="Anchor link for: jia-xiang-peziwoxuan-bu">🔗</a>仮想ページを選ぶ</h4>
+<p><code>create_example_mapping</code>関数に渡すための単純なフレームアロケータを手に入れました。しかし、このアロケータは常に<code>None</code>を返すので、マッピングを作る際に追加のページテーブルフレームが必要でなかったときにのみうまく動作します。いつ追加のページテーブルフレームが必要でありいつそうでないのかを知るために、例をとって考えてみましょう：</p>
+<p><img src="required-page-frames-example.svg" alt="A virtual and a physical address space with a single mapped page and the page tables of all four levels" /></p>
+<p>この図の左は仮想アドレス空間を、右は物理アドレス空間を、真ん中はページテーブルを示します。このページテーブルが格納されている物理フレームが破線で示されています。仮想アドレス空間は一つのマップされたページをアドレス<code>0x803fe00000</code>に持っており、これは青色で示されています。このページをフレームに変換するために、CPUは4層のページテーブルを辿り、アドレス36KiBのフレームに到達します。</p>
+<p>また、この図はVGAテキストバッファの物理フレームを赤色で示しています。私達の目的は、<code>create_example_mapping</code>関数を使ってまだマップされていない仮想ページをこのフレームにマップすることです。私達の<code>EmptyFrameAllocator</code>は常に<code>None</code>を返すので、アロケータからフレームを追加する必要がないようにマッピングを作りたいです。これができるかは、私達がマッピングにどの仮想ページを使うかに依存します。</p>
+<p>この図の仮想アドレス空間には、2つの候補となるページを黄色で示しています。ページのうち一つはアドレス<code>0x803fe00000</code>で、これは（青で示された）マップされているページの3つ前です。レベル4と3のテーブルのインデックスは青いページと同じですが、レベル2と1のインデックスは違います（<a href="../paging-introduction/index.html#x86-64niokerupezingu">前の記事</a>を参照）。レベル2テーブルのインデックスが違うということは、異なるレベル1テーブルが使われることを意味します。そんなレベル1テーブルは存在しないので、もしこちらを使っていたら、使われていない物理フレームを追加（でアロケート）する必要が出てきます。対して、2つ目のアドレス<code>0x803fe02000</code>にある候補のページは、青のページと同じレベル1ページテーブルを使うのでこの問題は発生しません。よって、必要となるすべてのページテーブルはすでに存在しています。</p>
+<p>まとめると、新しいマッピングを作るときの難易度は、マッピングしようとしている仮想ページに依存するということです。作ろうとしているページのレベル1ページテーブルがすでに存在すると最も簡単で、エントリをそのページに一つ書き込むだけです。ページがレベル3のテーブルすら存在しない領域にある場合が最も難しく、その場合まずレベル3，2，1のページテーブルを新しく作る必要があります。</p>
+<p><code>EmptyFrameAllocator</code>を使って<code>create_example_mapping</code>を呼び出すためには、すべての（階層の）ページテーブルがすでに存在しているページを選ぶ必要があります。そんなページを探すにあたっては、ブートローダが自分自身を仮想アドレス空間の最初の1メガバイトに読み込んでいるということを利用できます。つまり、この領域のすべてのページについて、レベル1テーブルがきちんと存在しているということです。したがって、試しにマッピングを作るときに、このメモリ領域のいずれかの未使用ページ、例えばアドレス<code>0</code>を使えばよいです。普通このページは、ヌルポインタの参照外しがページフォルトを引き起こすことを保証するために使用しないので、ブートローダもここをマップさせてはいないはずです。</p>
+<h4 id="matupinguwozuo-ru"><a class="zola-anchor" href="index.html#matupinguwozuo-ru" aria-label="Anchor link for: matupinguwozuo-ru">🔗</a>マッピングを作る</h4>
+<p>というわけで、<code>create_example_mapping</code>関数を呼び出すために必要なすべての引数を手に入れたので、仮想アドレス<code>0</code>をマップするよう<code>kernel_main</code>関数を変更していきましょう。このページをVGAテキストバッファのフレームにマップすると、以後、画面に書き込むことができるようになるはずです。実装は以下のようになります：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::{structures::paging::Page, VirtAddr}; </span><span style="color:#608b4e;">// 新しいインポート
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello worldとblog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = memory::EmptyFrameAllocator;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 未使用のページをマップする
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page = Page::containing_address(VirtAddr::new(</span><span style="color:#b5cea8;">0</span><span>));
+</span><span>    memory::create_example_mapping(page, </span><span style="color:#569cd6;">&amp;mut</span><span> mapper, </span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 新しいマッピングを使って、文字列`New!`を画面に書き出す
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page_ptr: </span><span style="color:#569cd6;">*mut u64 </span><span>= page.start_address().as_mut_ptr();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ page_ptr.offset(</span><span style="color:#b5cea8;">400</span><span>).write_volatile(</span><span style="color:#b5cea8;">0x_f021_f077_f065_f04e</span><span>)};
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; printing, および hlt_loop()
+</span><span>}
+</span></code></pre>
+<p>まず、<code>mapper</code>と<code>frame_allocator</code>インスタンスの可変参照を渡して<code>create_example_mapping</code>を呼ぶことで、アドレス<code>0</code>のページにマッピングを作っています。これはVGAテキストバッファのフレームにマップしているので、これに書き込んだものは何であれ画面に出てくるはずです。</p>
+<p>次にページを生ポインタに変更して、オフセット<code>400</code>に値を書き込みます。このページの最初に書き込むとVGAバッファの一番上の行になり、次のprintlnで即座に画面外に流れていってしまうので、それを避けています。値<code>0x_f021_f077_f065_f04e</code>は、白背景の“New!“という文字列を表します。<a href="../vga-text-mode/index.html#volatile">VGAテキストモードの記事</a>で学んだように、VGAバッファへの書き込みはvolatileでなければならないので、<a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.write_volatile"><code>write_volatile</code></a>メソッドを使っています。</p>
+<p>QEMUで実行すると、以下の出力を得ます：</p>
+<p><img src="qemu-new-mapping.png" alt="QEMU printing “It did not crash!” with four completely white cells in the middle of the screen" /></p>
+<p>画面の “New!” はページ<code>0</code>への書き込みによるものなので、ページテーブルへの新しいマッピングの作成が成功したということを意味します。</p>
+<p>このマッピングが成功したのは、アドレス<code>0</code>を管轄するレベル1テーブルがすでに存在していたからに過ぎません。レベル1テーブルがまだ存在しないページをマッピングしようとすると、<code>map_to</code>関数は新しいページテーブルを作るために<code>EmptyFrameAllocator</code>からフレームを割り当てようとしてエラーになります。<code>0</code>の代わりに<code>0xdeadbeaf000</code>をマッピングしようとするとそれが発生するのが見られます。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page = Page::containing_address(VirtAddr::new(</span><span style="color:#b5cea8;">0xdeadbeaf000</span><span>));
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>これを実行すると、以下のエラーメッセージとともにパニックします：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>panicked at &#39;map_to failed: FrameAllocationFailed&#39;, /…/result.rs:999:5
+</span></code></pre>
+<p>レベル1テーブルがまだ存在していないページをマップするためには、ちゃんとした<code>FrameAllocator</code>を作らないといけません。しかし、どのフレームが未使用で、どのフレームが利用可能かはどうすればわかるのでしょう？</p>
+<h3 id="huremuwoge-ridang-teru"><a class="zola-anchor" href="index.html#huremuwoge-ridang-teru" aria-label="Anchor link for: huremuwoge-ridang-teru">🔗</a>フレームを割り当てる</h3>
+<p>新しいページテーブルを作成するためには、ちゃんとしたフレームアロケータを作る必要があります。このためには、ブートローダによって渡される<code>BootInfo</code>構造体の一部である<code>memory_map</code>を使います：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::bootinfo::MemoryMap;
+</span><span>
+</span><span style="color:#608b4e;">/// ブートローダのメモリマップから、使用可能な
+</span><span style="color:#608b4e;">/// フレームを返すFrameAllocator
+</span><span style="color:#569cd6;">pub struct </span><span>BootInfoFrameAllocator {
+</span><span>    memory_map: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> MemoryMap,
+</span><span>    next: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// 渡されたメモリマップからFrameAllocatorを作る。
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// この関数はunsafeである：呼び出し元は渡された
+</span><span>    </span><span style="color:#608b4e;">/// メモリマップが有効であることを保証しなければ
+</span><span>    </span><span style="color:#608b4e;">/// ならない。特に、`USABLE`なフレームは実際に
+</span><span>    </span><span style="color:#608b4e;">/// 未使用でなくてはならない。
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>init(memory_map: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> MemoryMap) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        BootInfoFrameAllocator {
+</span><span>            memory_map,
+</span><span>            next: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>この構造体は2つのフィールドを持ちます。ブートローダによって渡されたメモリマップへの<code>'static</code>な参照と、アロケータが次に返すべきフレームの番号を覚えておくための<code>next</code>フィールドです。</p>
+<p><a href="index.html#boot-information"><em>Boot Information</em></a>節で説明したように、このメモリマップはBIOS/UEFIファームウェアから提供されます。これはブートプロセスのごく初期にのみ取得できますが、ブートローダがそのための関数を既に呼んでくれています。メモリマップは<code>MemoryRegion</code>構造体のリストからなり、この構造体はそれぞれのメモリ領域の開始アドレス、長さ、型（未使用か、予約済みかなど）を格納しています。</p>
+<p><code>init</code>関数は<code>BootInfoFrameAllocator</code>を与えられたメモリマップで初期化します。<code>next</code>フィールドは<code>0</code>で初期化し、フレームを割当てるたびに値を増やすことで同じフレームを二度返すことを防ぎます。メモリマップの<ruby>usable<rp> (</rp><rt>使用可能</rt><rp>) </rp></ruby>とされているフレームが他のどこかで使われたりしていないかは知ることができないので、この<code>init</code>関数はそれを呼び出し元に追加で保証させるために<code>unsafe</code>でないといけません。</p>
+<h4 id="usable-framesmesotudo"><a class="zola-anchor" href="index.html#usable-framesmesotudo" aria-label="Anchor link for: usable-framesmesotudo">🔗</a><code>usable_frames</code>メソッド</h4>
+<p><code>FrameAllocator</code>トレイトを実装していく前に、渡されたメモリマップをusableなフレームのイテレータに変換する補助メソッドを追加します：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::bootinfo::MemoryRegionType;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// メモリマップによって指定されたusableなフレームのイテレータを返す。
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>usable_frames(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; impl Iterator&lt;Item = PhysFrame&gt; {
+</span><span>        </span><span style="color:#608b4e;">// メモリマップからusableな領域を得る
+</span><span>        </span><span style="color:#569cd6;">let</span><span> regions = self.memory_map.iter();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> usable_regions = regions
+</span><span>            .filter(|r| r.region_type == MemoryRegionType::Usable);
+</span><span>        </span><span style="color:#608b4e;">// それぞれの領域をアドレス範囲にmapで変換する
+</span><span>        </span><span style="color:#569cd6;">let</span><span> addr_ranges = usable_regions
+</span><span>            .map(|r| r.range.start_addr()</span><span style="color:#569cd6;">..</span><span>r.range.end_addr());
+</span><span>        </span><span style="color:#608b4e;">// フレームの開始アドレスのイテレータへと変換する
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame_addresses = addr_ranges.flat_map(|r| r.step_by(</span><span style="color:#b5cea8;">4096</span><span>));
+</span><span>        </span><span style="color:#608b4e;">// 開始アドレスから`PhysFrame`型を作る
+</span><span>        frame_addresses.map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>この関数はイテレータのコンビネータメソッドを使って、最初に与えられる<code>MemoryMap</code>を使用可能な物理フレームのイテレータに変換します：</p>
+<ul>
+<li>まず<code>iter</code>メソッドを使ってメモリマップを<a href="https://docs.rs/bootloader/0.6.4/bootloader/bootinfo/struct.MemoryRegion.html"><code>MemoryRegion</code></a>のイテレータに変える。</li>
+<li>次に<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.filter"><code>filter</code></a>メソッドを使って、予約済みなどの理由で使用不可能な領域を飛ばすようにする。ブートローダは作ったマッピングに使ったメモリマップはきちんと更新するので、私達のカーネル（コード、データ、スタック）に使われているフレームやブート情報を格納するのに使われているフレームはすでに<ruby><code>InUse</code><rp> (</rp><rt><code>使用中</code></rt><rp>) </rp></ruby>などでマークされています。そのため<code>Usable</code>なフレームは他の場所では使われていないはずとわかります。</li>
+<li>つぎに、<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.map"><code>map</code></a>コンビネータとRustの<a href="https://doc.rust-lang.org/core/ops/struct.Range.html">range構文</a>を使って、メモリ領域のイテレータからアドレス範囲のイテレータへと変換する。</li>
+<li>つぎに、アドレス範囲から<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.step_by"><code>step_by</code></a>で4096個ごとにアドレスを選び、<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.flat_map"><code>flat_map</code></a>を使うことでフレームの最初のアドレスのイテレータを得る。4096バイト（＝4KiB）はページのサイズに等しいので、それぞれのフレームの開始地点のアドレスが得られます。ブートローダのページは使用可能なメモリ領域をすべてアラインするので、ここで改めてアラインや丸めを行う必要はありません。<code>map</code>ではなく<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.flat_map"><code>flat_map</code></a>を使うことで、<code>Iterator&lt;Item = Iterator&lt;Item = u64&gt;&gt;</code>ではなく<code>Iterator&lt;Item = u64&gt;</code>を得ています。</li>
+<li>最後に、開始アドレスの型を<code>PhysFrame</code>に変更することで<code>Iterator&lt;Item = PhysFrame&gt;</code>を得ている。</li>
+</ul>
+<p>この関数の戻り型は<a href="https://doc.rust-lang.org/book/ch10-02-traits.html#returning-types-that-implement-traits"><code>impl Trait</code></a>機能を用いています。こうすると、<code>PhysFrame</code>をitemの型として持つような<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html"><code>Iterator</code></a>トレイトを実装する何らかの型を返すのだと指定できます。これは重要です――なぜなら、戻り値の型は名前のつけられないクロージャ型に依存し、<strong>具体的な名前をつけるのが不可能</strong>だからです。</p>
+<h4 id="frameallocatortoreitowoshi-zhuang-suru"><a class="zola-anchor" href="index.html#frameallocatortoreitowoshi-zhuang-suru" aria-label="Anchor link for: frameallocatortoreitowoshi-zhuang-suru">🔗</a><code>FrameAllocator</code>トレイトを実装する</h4>
+<p>これで<code>FrameAllocator</code>トレイトを実装できます：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>FrameAllocator&lt;Size4KiB&gt; </span><span style="color:#569cd6;">for </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;PhysFrame&gt; {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame = self.usable_frames().nth(self.next);
+</span><span>        self.next += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        frame
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>まず<code>usable_frames</code>メソッドを使ってメモリマップからusableなフレームのイテレータを得ます。つぎに、<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.nth"><code>Iterator::nth</code></a>関数で<code>self.next</code>番目の（つまり<code>(self.next - 1)</code>だけ飛ばして）フレームを得ます。このフレームを返してリターンする前に、<code>self.next</code>を1だけ増やして次の呼び出しで1つ後のフレームが得られるようにします。</p>
+<p>この実装は割当てを行うごとに<code>usable_frames</code>アロケータを作り直しているので、最適とは言い難いです。イテレータを構造体のフィールドとして直接格納するほうが良いでしょう。すると<code>nth</code>メソッドを使う必要はなくなり、割り当てのたびに<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#tymethod.next"><code>next</code></a>を使えばいいだけです。このアプローチの問題は、今の所構造体のフィールドに<code>impl Trait</code>型（の変数）を格納することができないことです。いつの日か、<a href="https://github.com/rust-lang/rfcs/pull/2071">named existential type</a>が完全に実装されたときにはこれが可能になるかもしれません。</p>
+<h4 id="bootinfoframeallocatorwoshi-u"><a class="zola-anchor" href="index.html#bootinfoframeallocatorwoshi-u" aria-label="Anchor link for: bootinfoframeallocatorwoshi-u">🔗</a><code>BootInfoFrameAllocator</code>を使う</h4>
+<p><code>kernel_main</code>関数を修正して<code>EmptyFrameAllocator</code>のインスタンスの代わりに<code>BootInfoFrameAllocator</code>を渡しましょう：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::BootInfoFrameAllocator;
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        BootInfoFrameAllocator::init(</span><span style="color:#569cd6;">&amp;</span><span>boot_info.memory_map)
+</span><span>    };
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>ブート情報を使うフレームアロケータのおかげでマッピングは成功し、白背景に黒文字の“New!“が再び画面に現れました。舞台裏では、<code>map_to</code>メソッドが不足しているページテーブルを以下のやり方で作っています：</p>
+<ul>
+<li>渡された<code>frame_allocator</code>を使って未使用のフレームを割り当ててもらう。</li>
+<li>フレームをゼロで埋めることで、新しい空のページテーブルを作る。</li>
+<li>上位のテーブルのエントリをそのフレームにマップする。</li>
+<li>次の層で同じことを続ける。</li>
+</ul>
+<p><code>create_example_mapping</code>関数はただのお試しコードにすぎませんが、今や私達は任意のページにマッピングを作れるようになりました。これは、今後の記事で行うメモリ割り当てやマルチスレッディングにおいて不可欠です。</p>
+<p><a href="index.html#create-example-mappingguan-shu">上</a>で説明したような未定義動作を誤って引き起こしてしまうことのないよう、この時点で<code>create_example_mapping</code>関数を再び取り除いておきましょう。</p>
+<h2 id="matome"><a class="zola-anchor" href="index.html#matome" aria-label="Anchor link for: matome">🔗</a>まとめ</h2>
+<p>この記事ではページテーブルのある物理フレームにアクセスするための様々なテクニックを学びました。恒等マップ、物理メモリ全体のマッピング、一時的なマッピング、再帰的ページテーブルなどです。このうち、シンプルで<ruby>ポータブル<rp> (</rp><rt>アーキテクチャ非依存</rt><rp>) </rp></ruby>で強力な、物理メモリ全体のマッピングを選びました。</p>
+<p>ページテーブルにアクセスできなければ物理メモリをマップされないので、ブートローダの補助が必要でした。<code>bootloader</code>クレートはcargoのfeaturesというオプションを通じて、必要となるマッピングの作成をサポートしています。さらに、必要となる情報をエントリポイント関数の<code>&amp;BootInfo</code>引数という形で私達のカーネルに渡してくれます。</p>
+<p>実装についてですが、最初はページテーブルを辿る変換関数を自分の手で実装し、そのあとで<code>x86_64</code>クレートの<code>MappedPageTable</code>型を使いました。また、ページテーブルに新しいマッピングを作る方法や、そのために必要な<code>FrameAllocator</code>をブートローダに渡されたメモリマップをラップすることで作る方法を学びました。</p>
+<h2 id="ci-ha"><a class="zola-anchor" href="index.html#ci-ha" aria-label="Anchor link for: ci-ha">🔗</a>次は？</h2>
+<p>次の記事では、私達のカーネルのためのヒープメモリ領域を作り、それによって<a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html">メモリの割り当て</a>を行ったり各種の<a href="https://doc.rust-lang.org/alloc/collections/index.html">コレクション型</a>を使うことが可能になります。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../paging-introduction/index.html">&laquo; ページング入門</a>
+        
+        
+            <a class="next" href="../heap-allocation/index.html">ヒープ割り当て &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">コメント</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Paging%20Implementation%20%28ja%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Paging Implementation (ja)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="ja"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Paging%20Implementation%20%28ja%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            可能な限りコメントは英語で残すようにしてください。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../paging-implementation/index.html">
+                        English (original)
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

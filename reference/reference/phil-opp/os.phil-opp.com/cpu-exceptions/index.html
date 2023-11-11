@@ -1,0 +1,570 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="CPU exceptions occur in various erroneous situations, for example, when accessing an invalid memory address or when dividing by zero. To react to them…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>CPU Exceptions | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#overview">Overview</a>
+            <ol>
+                <li>
+                    <a href="index.html#the-interrupt-descriptor-table">The Interrupt Descriptor Table</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#an-idt-type">An IDT Type</a>
+            
+        </li><li>
+            <a href="index.html#the-interrupt-calling-convention">The Interrupt Calling Convention</a>
+            <ol>
+                <li>
+                    <a href="index.html#preserved-and-scratch-registers">Preserved and Scratch Registers</a>
+                </li><li>
+                    <a href="index.html#preserving-all-registers">Preserving all Registers</a>
+                </li><li>
+                    <a href="index.html#the-interrupt-stack-frame">The Interrupt Stack Frame</a>
+                </li><li>
+                    <a href="index.html#behind-the-scenes">Behind the Scenes</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#implementation">Implementation</a>
+            <ol>
+                <li>
+                    <a href="index.html#loading-the-idt">Loading the IDT</a>
+                </li><li>
+                    <a href="index.html#running-it">Running it</a>
+                </li><li>
+                    <a href="index.html#adding-a-test">Adding a Test</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#too-much-magic">Too much Magic?</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>CPU Exceptions</h1>
+    <time datetime="2018-06-17" class="post-date">
+        Jun 17, 2018
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>CPU exceptions occur in various erroneous situations, for example, when accessing an invalid memory address or when dividing by zero. To react to them, we have to set up an <em>interrupt descriptor table</em> that provides handler functions. At the end of this post, our kernel will be able to catch <a href="https://wiki.osdev.org/Exceptions#Breakpoint">breakpoint exceptions</a> and resume normal execution afterward.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-05"><code>post-05</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#overview">Overview</a>
+                <ul>
+                    <li>
+                        <a href="index.html#the-interrupt-descriptor-table">The Interrupt Descriptor Table</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#an-idt-type">An IDT Type</a>
+                
+            </li><li>
+                <a href="index.html#the-interrupt-calling-convention">The Interrupt Calling Convention</a>
+                <ul>
+                    <li>
+                        <a href="index.html#preserved-and-scratch-registers">Preserved and Scratch Registers</a>
+                    </li><li>
+                        <a href="index.html#preserving-all-registers">Preserving all Registers</a>
+                    </li><li>
+                        <a href="index.html#the-interrupt-stack-frame">The Interrupt Stack Frame</a>
+                    </li><li>
+                        <a href="index.html#behind-the-scenes">Behind the Scenes</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#implementation">Implementation</a>
+                <ul>
+                    <li>
+                        <a href="index.html#loading-the-idt">Loading the IDT</a>
+                    </li><li>
+                        <a href="index.html#running-it">Running it</a>
+                    </li><li>
+                        <a href="index.html#adding-a-test">Adding a Test</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#too-much-magic">Too much Magic?</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="overview"><a class="zola-anchor" href="index.html#overview" aria-label="Anchor link for: overview">🔗</a>Overview</h2>
+<p>An exception signals that something is wrong with the current instruction. For example, the CPU issues an exception if the current instruction tries to divide by 0. When an exception occurs, the CPU interrupts its current work and immediately calls a specific exception handler function, depending on the exception type.</p>
+<p>On x86, there are about 20 different CPU exception types. The most important are:</p>
+<ul>
+<li><strong>Page Fault</strong>: A page fault occurs on illegal memory accesses. For example, if the current instruction tries to read from an unmapped page or tries to write to a read-only page.</li>
+<li><strong>Invalid Opcode</strong>: This exception occurs when the current instruction is invalid, for example, when we try to use new <a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE instructions</a> on an old CPU that does not support them.</li>
+<li><strong>General Protection Fault</strong>: This is the exception with the broadest range of causes. It occurs on various kinds of access violations, such as trying to execute a privileged instruction in user-level code or writing reserved fields in configuration registers.</li>
+<li><strong>Double Fault</strong>: When an exception occurs, the CPU tries to call the corresponding handler function. If another exception occurs <em>while calling the exception handler</em>, the CPU raises a double fault exception. This exception also occurs when there is no handler function registered for an exception.</li>
+<li><strong>Triple Fault</strong>: If an exception occurs while the CPU tries to call the double fault handler function, it issues a fatal <em>triple fault</em>. We can’t catch or handle a triple fault. Most processors react by resetting themselves and rebooting the operating system.</li>
+</ul>
+<p>For the full list of exceptions, check out the <a href="https://wiki.osdev.org/Exceptions">OSDev wiki</a>.</p>
+<h3 id="the-interrupt-descriptor-table"><a class="zola-anchor" href="index.html#the-interrupt-descriptor-table" aria-label="Anchor link for: the-interrupt-descriptor-table">🔗</a>The Interrupt Descriptor Table</h3>
+<p>In order to catch and handle exceptions, we have to set up a so-called <em>Interrupt Descriptor Table</em> (IDT). In this table, we can specify a handler function for each CPU exception. The hardware uses this table directly, so we need to follow a predefined format. Each entry must have the following 16-byte structure:</p>
+<table><thead><tr><th>Type</th><th>Name</th><th>Description</th></tr></thead><tbody>
+<tr><td>u16</td><td>Function Pointer [0:15]</td><td>The lower bits of the pointer to the handler function.</td></tr>
+<tr><td>u16</td><td>GDT selector</td><td>Selector of a code segment in the <a href="https://en.wikipedia.org/wiki/Global_Descriptor_Table">global descriptor table</a>.</td></tr>
+<tr><td>u16</td><td>Options</td><td>(see below)</td></tr>
+<tr><td>u16</td><td>Function Pointer [16:31]</td><td>The middle bits of the pointer to the handler function.</td></tr>
+<tr><td>u32</td><td>Function Pointer [32:63]</td><td>The remaining bits of the pointer to the handler function.</td></tr>
+<tr><td>u32</td><td>Reserved</td><td></td></tr>
+</tbody></table>
+<p>The options field has the following format:</p>
+<table><thead><tr><th>Bits</th><th>Name</th><th>Description</th></tr></thead><tbody>
+<tr><td>0-2</td><td>Interrupt Stack Table Index</td><td>0: Don’t switch stacks, 1-7: Switch to the n-th stack in the Interrupt Stack Table when this handler is called.</td></tr>
+<tr><td>3-7</td><td>Reserved</td><td></td></tr>
+<tr><td>8</td><td>0: Interrupt Gate, 1: Trap Gate</td><td>If this bit is 0, interrupts are disabled when this handler is called.</td></tr>
+<tr><td>9-11</td><td>must be one</td><td></td></tr>
+<tr><td>12</td><td>must be zero</td><td></td></tr>
+<tr><td>13‑14</td><td>Descriptor Privilege Level (DPL)</td><td>The minimal privilege level required for calling this handler.</td></tr>
+<tr><td>15</td><td>Present</td><td></td></tr>
+</tbody></table>
+<p>Each exception has a predefined IDT index. For example, the invalid opcode exception has table index 6 and the page fault exception has table index 14. Thus, the hardware can automatically load the corresponding IDT entry for each exception. The <a href="https://wiki.osdev.org/Exceptions">Exception Table</a> in the OSDev wiki shows the IDT indexes of all exceptions in the “Vector nr.” column.</p>
+<p>When an exception occurs, the CPU roughly does the following:</p>
+<ol>
+<li>Push some registers on the stack, including the instruction pointer and the <a href="https://en.wikipedia.org/wiki/FLAGS_register">RFLAGS</a> register. (We will use these values later in this post.)</li>
+<li>Read the corresponding entry from the Interrupt Descriptor Table (IDT). For example, the CPU reads the 14th entry when a page fault occurs.</li>
+<li>Check if the entry is present and, if not, raise a double fault.</li>
+<li>Disable hardware interrupts if the entry is an interrupt gate (bit 40 not set).</li>
+<li>Load the specified <a href="https://en.wikipedia.org/wiki/Global_Descriptor_Table">GDT</a> selector into the CS (code segment).</li>
+<li>Jump to the specified handler function.</li>
+</ol>
+<p>Don’t worry about steps 4 and 5 for now; we will learn about the global descriptor table and hardware interrupts in future posts.</p>
+<h2 id="an-idt-type"><a class="zola-anchor" href="index.html#an-idt-type" aria-label="Anchor link for: an-idt-type">🔗</a>An IDT Type</h2>
+<p>Instead of creating our own IDT type, we will use the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptDescriptorTable.html"><code>InterruptDescriptorTable</code> struct</a> of the <code>x86_64</code> crate, which looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[repr(C)]
+</span><span style="color:#569cd6;">pub struct </span><span>InterruptDescriptorTable {
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>divide_by_zero: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>debug: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>non_maskable_interrupt: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>breakpoint: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>overflow: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>bound_range_exceeded: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>invalid_opcode: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>device_not_available: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>double_fault: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>invalid_tss: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>segment_not_present: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>stack_segment_fault: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>general_protection_fault: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>page_fault: Entry&lt;PageFaultHandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>x87_floating_point: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>alignment_check: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>machine_check: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>simd_floating_point: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>virtualization: Entry&lt;HandlerFunc&gt;,
+</span><span>    </span><span style="color:#569cd6;">pub </span><span>security_exception: Entry&lt;HandlerFuncWithErrCode&gt;,
+</span><span>    </span><span style="color:#608b4e;">// some fields omitted
+</span><span>}
+</span></code></pre>
+<p>The fields have the type <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.Entry.html"><code>idt::Entry&lt;F&gt;</code></a>, which is a struct that represents the fields of an IDT entry (see the table above). The type parameter <code>F</code> defines the expected handler function type. We see that some entries require a <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/type.HandlerFunc.html"><code>HandlerFunc</code></a> and some entries require a <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/type.HandlerFuncWithErrCode.html"><code>HandlerFuncWithErrCode</code></a>. The page fault even has its own special type: <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/type.PageFaultHandlerFunc.html"><code>PageFaultHandlerFunc</code></a>.</p>
+<p>Let’s look at the <code>HandlerFunc</code> type first:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">type </span><span style="color:#4ec9b0;">HandlerFunc </span><span>= </span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn</span><span>(</span><span style="color:#569cd6;">_</span><span>: InterruptStackFrame);
+</span></code></pre>
+<p>It’s a <a href="https://doc.rust-lang.org/book/ch19-04-advanced-types.html#creating-type-synonyms-with-type-aliases">type alias</a> for an <code>extern &quot;x86-interrupt&quot; fn</code> type. The <code>extern</code> keyword defines a function with a <a href="https://doc.rust-lang.org/nomicon/ffi.html#foreign-calling-conventions">foreign calling convention</a> and is often used to communicate with C code (<code>extern &quot;C&quot; fn</code>). But what is the <code>x86-interrupt</code> calling convention?</p>
+<h2 id="the-interrupt-calling-convention"><a class="zola-anchor" href="index.html#the-interrupt-calling-convention" aria-label="Anchor link for: the-interrupt-calling-convention">🔗</a>The Interrupt Calling Convention</h2>
+<p>Exceptions are quite similar to function calls: The CPU jumps to the first instruction of the called function and executes it. Afterwards, the CPU jumps to the return address and continues the execution of the parent function.</p>
+<p>However, there is a major difference between exceptions and function calls: A function call is invoked voluntarily by a compiler-inserted <code>call</code> instruction, while an exception might occur at <em>any</em> instruction. In order to understand the consequences of this difference, we need to examine function calls in more detail.</p>
+<p><a href="https://en.wikipedia.org/wiki/Calling_convention">Calling conventions</a> specify the details of a function call. For example, they specify where function parameters are placed (e.g. in registers or on the stack) and how results are returned. On x86_64 Linux, the following rules apply for C functions (specified in the <a href="https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf">System V ABI</a>):</p>
+<ul>
+<li>the first six integer arguments are passed in registers <code>rdi</code>, <code>rsi</code>, <code>rdx</code>, <code>rcx</code>, <code>r8</code>, <code>r9</code></li>
+<li>additional arguments are passed on the stack</li>
+<li>results are returned in <code>rax</code> and <code>rdx</code></li>
+</ul>
+<p>Note that Rust does not follow the C ABI (in fact, <a href="https://github.com/rust-lang/rfcs/issues/600">there isn’t even a Rust ABI yet</a>), so these rules apply only to functions declared as <code>extern &quot;C&quot; fn</code>.</p>
+<h3 id="preserved-and-scratch-registers"><a class="zola-anchor" href="index.html#preserved-and-scratch-registers" aria-label="Anchor link for: preserved-and-scratch-registers">🔗</a>Preserved and Scratch Registers</h3>
+<p>The calling convention divides the registers into two parts: <em>preserved</em> and <em>scratch</em> registers.</p>
+<p>The values of <em>preserved</em> registers must remain unchanged across function calls. So a called function (the <em>“callee”</em>) is only allowed to overwrite these registers if it restores their original values before returning. Therefore, these registers are called <em>“callee-saved”</em>. A common pattern is to save these registers to the stack at the function’s beginning and restore them just before returning.</p>
+<p>In contrast, a called function is allowed to overwrite <em>scratch</em> registers without restrictions. If the caller wants to preserve the value of a scratch register across a function call, it needs to backup and restore it before the function call (e.g., by pushing it to the stack). So the scratch registers are <em>caller-saved</em>.</p>
+<p>On x86_64, the C calling convention specifies the following preserved and scratch registers:</p>
+<table><thead><tr><th>preserved registers</th><th>scratch registers</th></tr></thead><tbody>
+<tr><td><code>rbp</code>, <code>rbx</code>, <code>rsp</code>, <code>r12</code>, <code>r13</code>, <code>r14</code>, <code>r15</code></td><td><code>rax</code>, <code>rcx</code>, <code>rdx</code>, <code>rsi</code>, <code>rdi</code>, <code>r8</code>, <code>r9</code>, <code>r10</code>, <code>r11</code></td></tr>
+<tr><td><em>callee-saved</em></td><td><em>caller-saved</em></td></tr>
+</tbody></table>
+<p>The compiler knows these rules, so it generates the code accordingly. For example, most functions begin with a <code>push rbp</code>, which backups <code>rbp</code> on the stack (because it’s a callee-saved register).</p>
+<h3 id="preserving-all-registers"><a class="zola-anchor" href="index.html#preserving-all-registers" aria-label="Anchor link for: preserving-all-registers">🔗</a>Preserving all Registers</h3>
+<p>In contrast to function calls, exceptions can occur on <em>any</em> instruction. In most cases, we don’t even know at compile time if the generated code will cause an exception. For example, the compiler can’t know if an instruction causes a stack overflow or a page fault.</p>
+<p>Since we don’t know when an exception occurs, we can’t backup any registers before. This means we can’t use a calling convention that relies on caller-saved registers for exception handlers. Instead, we need a calling convention that preserves <em>all registers</em>. The <code>x86-interrupt</code> calling convention is such a calling convention, so it guarantees that all register values are restored to their original values on function return.</p>
+<p>Note that this does not mean all registers are saved to the stack at function entry. Instead, the compiler only backs up the registers that are overwritten by the function. This way, very efficient code can be generated for short functions that only use a few registers.</p>
+<h3 id="the-interrupt-stack-frame"><a class="zola-anchor" href="index.html#the-interrupt-stack-frame" aria-label="Anchor link for: the-interrupt-stack-frame">🔗</a>The Interrupt Stack Frame</h3>
+<p>On a normal function call (using the <code>call</code> instruction), the CPU pushes the return address before jumping to the target function. On function return (using the <code>ret</code> instruction), the CPU pops this return address and jumps to it. So the stack frame of a normal function call looks like this:</p>
+<p><img src="function-stack-frame.svg" alt="function stack frame" /></p>
+<p>For exception and interrupt handlers, however, pushing a return address would not suffice, since interrupt handlers often run in a different context (stack pointer, CPU flags, etc.). Instead, the CPU performs the following steps when an interrupt occurs:</p>
+<ol start="0">
+<li><strong>Saving the old stack pointer</strong>: The CPU reads the stack pointer (<code>rsp</code>) and stack segment (<code>ss</code>) register values and remembers them in an internal buffer.</li>
+<li><strong>Aligning the stack pointer</strong>: An interrupt can occur at any instruction, so the stack pointer can have any value, too. However, some CPU instructions (e.g., some SSE instructions) require that the stack pointer be aligned on a 16-byte boundary, so the CPU performs such an alignment right after the interrupt.</li>
+<li><strong>Switching stacks</strong> (in some cases): A stack switch occurs when the CPU privilege level changes, for example, when a CPU exception occurs in a user-mode program. It is also possible to configure stack switches for specific interrupts using the so-called <em>Interrupt Stack Table</em> (described in the next post).</li>
+<li><strong>Pushing the old stack pointer</strong>: The CPU pushes the <code>rsp</code> and <code>ss</code> values from step 0 to the stack. This makes it possible to restore the original stack pointer when returning from an interrupt handler.</li>
+<li><strong>Pushing and updating the <code>RFLAGS</code> register</strong>: The <a href="https://en.wikipedia.org/wiki/FLAGS_register"><code>RFLAGS</code></a> register contains various control and status bits. On interrupt entry, the CPU changes some bits and pushes the old value.</li>
+<li><strong>Pushing the instruction pointer</strong>: Before jumping to the interrupt handler function, the CPU pushes the instruction pointer (<code>rip</code>) and the code segment (<code>cs</code>). This is comparable to the return address push of a normal function call.</li>
+<li><strong>Pushing an error code</strong> (for some exceptions): For some specific exceptions, such as page faults, the CPU pushes an error code, which describes the cause of the exception.</li>
+<li><strong>Invoking the interrupt handler</strong>: The CPU reads the address and the segment descriptor of the interrupt handler function from the corresponding field in the IDT. It then invokes this handler by loading the values into the <code>rip</code> and <code>cs</code> registers.</li>
+</ol>
+<p>So the <em>interrupt stack frame</em> looks like this:</p>
+<p><img src="exception-stack-frame.svg" alt="interrupt stack frame" /></p>
+<p>In the <code>x86_64</code> crate, the interrupt stack frame is represented by the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptStackFrame.html"><code>InterruptStackFrame</code></a> struct. It is passed to interrupt handlers as <code>&amp;mut</code> and can be used to retrieve additional information about the exception’s cause. The struct contains no error code field, since only a few exceptions push an error code. These exceptions use the separate <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/type.HandlerFuncWithErrCode.html"><code>HandlerFuncWithErrCode</code></a> function type, which has an additional <code>error_code</code> argument.</p>
+<h3 id="behind-the-scenes"><a class="zola-anchor" href="index.html#behind-the-scenes" aria-label="Anchor link for: behind-the-scenes">🔗</a>Behind the Scenes</h3>
+<p>The <code>x86-interrupt</code> calling convention is a powerful abstraction that hides almost all of the messy details of the exception handling process. However, sometimes it’s useful to know what’s happening behind the curtain. Here is a short overview of the things that the <code>x86-interrupt</code> calling convention takes care of:</p>
+<ul>
+<li><strong>Retrieving the arguments</strong>: Most calling conventions expect that the arguments are passed in registers. This is not possible for exception handlers since we must not overwrite any register values before backing them up on the stack. Instead, the <code>x86-interrupt</code> calling convention is aware that the arguments already lie on the stack at a specific offset.</li>
+<li><strong>Returning using <code>iretq</code></strong>: Since the interrupt stack frame completely differs from stack frames of normal function calls, we can’t return from handler functions through the normal <code>ret</code> instruction. So instead, the <code>iretq</code> instruction must be used.</li>
+<li><strong>Handling the error code</strong>: The error code, which is pushed for some exceptions, makes things much more complex. It changes the stack alignment (see the next point) and needs to be popped off the stack before returning. The <code>x86-interrupt</code> calling convention handles all that complexity. However, it doesn’t know which handler function is used for which exception, so it needs to deduce that information from the number of function arguments. That means the programmer is still responsible for using the correct function type for each exception. Luckily, the <code>InterruptDescriptorTable</code> type defined by the <code>x86_64</code> crate ensures that the correct function types are used.</li>
+<li><strong>Aligning the stack</strong>: Some instructions (especially SSE instructions) require a 16-byte stack alignment. The CPU ensures this alignment whenever an exception occurs, but for some exceptions it destroys it again later when it pushes an error code. The <code>x86-interrupt</code> calling convention takes care of this by realigning the stack in this case.</li>
+</ul>
+<p>If you are interested in more details, we also have a series of posts that explain exception handling using <a href="https://github.com/rust-lang/rfcs/blob/master/text/1201-naked-fns.md">naked functions</a> linked <a href="index.html#too-much-magic">at the end of this post</a>.</p>
+<h2 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h2>
+<p>Now that we’ve understood the theory, it’s time to handle CPU exceptions in our kernel. We’ll start by creating a new interrupts module in <code>src/interrupts.rs</code>, that first creates an <code>init_idt</code> function that creates a new <code>InterruptDescriptorTable</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>interrupts;
+</span><span>
+</span><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptDescriptorTable;
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>}
+</span></code></pre>
+<p>Now we can add handler functions. We start by adding a handler for the <a href="https://wiki.osdev.org/Exceptions#Breakpoint">breakpoint exception</a>. The breakpoint exception is the perfect exception to test exception handling. Its only purpose is to temporarily pause a program when the breakpoint instruction <code>int3</code> is executed.</p>
+<p>The breakpoint exception is commonly used in debuggers: When the user sets a breakpoint, the debugger overwrites the corresponding instruction with the <code>int3</code> instruction so that the CPU throws the breakpoint exception when it reaches that line. When the user wants to continue the program, the debugger replaces the <code>int3</code> instruction with the original instruction again and continues the program. For more details, see the <a href="https://eli.thegreenplace.net/2011/01/27/how-debuggers-work-part-2-breakpoints">“<em>How debuggers work</em>”</a> series.</p>
+<p>For our use case, we don’t need to overwrite any instructions. Instead, we just want to print a message when the breakpoint instruction is executed and then continue the program. So let’s create a simple <code>breakpoint_handler</code> function and add it to our IDT:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+</span><span style="color:#569cd6;">use crate</span><span>::println;
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>    idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>breakpoint_handler(
+</span><span>    stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;EXCEPTION: BREAKPOINT</span><span style="color:#e3bbab;">\n</span><span style="color:#b4cea8;">{:#?}</span><span style="color:#d69d85;">&quot;</span><span>, stack_frame);
+</span><span>}
+</span></code></pre>
+<p>Our handler just outputs a message and pretty-prints the interrupt stack frame.</p>
+<p>When we try to compile it, the following error occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0658]: x86-interrupt ABI is experimental and subject to change (see issue #40180)
+</span><span>  --&gt; src/main.rs:53:1
+</span><span>   |
+</span><span>53 | / extern &quot;x86-interrupt&quot; fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+</span><span>54 | |     println!(&quot;EXCEPTION: BREAKPOINT\n{:#?}&quot;, stack_frame);
+</span><span>55 | | }
+</span><span>   | |_^
+</span><span>   |
+</span><span>   = help: add #![feature(abi_x86_interrupt)] to the crate attributes to enable
+</span></code></pre>
+<p>This error occurs because the <code>x86-interrupt</code> calling convention is still unstable. To use it anyway, we have to explicitly enable it by adding <code>#![feature(abi_x86_interrupt)]</code> at the top of our <code>lib.rs</code>.</p>
+<h3 id="loading-the-idt"><a class="zola-anchor" href="index.html#loading-the-idt" aria-label="Anchor link for: loading-the-idt">🔗</a>Loading the IDT</h3>
+<p>In order for the CPU to use our new interrupt descriptor table, we need to load it using the <a href="https://www.felixcloutier.com/x86/lgdt:lidt"><code>lidt</code></a> instruction. The <code>InterruptDescriptorTable</code> struct of the <code>x86_64</code> crate provides a <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptDescriptorTable.html#method.load"><code>load</code></a> method for that. Let’s try to use it:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>    idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>    idt.load();
+</span><span>}
+</span></code></pre>
+<p>When we try to compile it now, the following error occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error: `idt` does not live long enough
+</span><span>  --&gt; src/interrupts/mod.rs:43:5
+</span><span>   |
+</span><span>43 |     idt.load();
+</span><span>   |     ^^^ does not live long enough
+</span><span>44 | }
+</span><span>   | - borrowed value only lives until here
+</span><span>   |
+</span><span>   = note: borrowed value must be valid for the static lifetime...
+</span></code></pre>
+<p>So the <code>load</code> method expects a <code>&amp;'static self</code>, that is, a reference valid for the complete runtime of the program. The reason is that the CPU will access this table on every interrupt until we load a different IDT. So using a shorter lifetime than <code>'static</code> could lead to use-after-free bugs.</p>
+<p>In fact, this is exactly what happens here. Our <code>idt</code> is created on the stack, so it is only valid inside the <code>init</code> function. Afterwards, the stack memory is reused for other functions, so the CPU would interpret random stack memory as IDT. Luckily, the <code>InterruptDescriptorTable::load</code> method encodes this lifetime requirement in its function definition, so that the Rust compiler is able to prevent this possible bug at compile time.</p>
+<p>In order to fix this problem, we need to store our <code>idt</code> at a place where it has a <code>'static</code> lifetime. To achieve this, we could allocate our IDT on the heap using <a href="https://doc.rust-lang.org/std/boxed/struct.Box.html"><code>Box</code></a> and then convert it to a <code>'static</code> reference, but we are writing an OS kernel and thus don’t have a heap (yet).</p>
+<p>As an alternative, we could try to store the IDT as a <code>static</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = InterruptDescriptorTable::new();
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#b4cea8;">IDT</span><span>.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>    </span><span style="color:#b4cea8;">IDT</span><span>.load();
+</span><span>}
+</span></code></pre>
+<p>However, there is a problem: Statics are immutable, so we can’t modify the breakpoint entry from our <code>init</code> function. We could solve this problem by using a <a href="https://doc.rust-lang.org/1.30.0/book/second-edition/ch19-01-unsafe-rust.html#accessing-or-modifying-a-mutable-static-variable"><code>static mut</code></a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static mut </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = InterruptDescriptorTable::new();
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">IDT</span><span>.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        </span><span style="color:#b4cea8;">IDT</span><span>.load();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This variant compiles without errors but it’s far from idiomatic. <code>static mut</code>s are very prone to data races, so we need an <a href="https://doc.rust-lang.org/1.30.0/book/second-edition/ch19-01-unsafe-rust.html#unsafe-superpowers"><code>unsafe</code> block</a> on each access.</p>
+<h4 id="lazy-statics-to-the-rescue"><a class="zola-anchor" href="index.html#lazy-statics-to-the-rescue" aria-label="Anchor link for: lazy-statics-to-the-rescue">🔗</a>Lazy Statics to the Rescue</h4>
+<p>Fortunately, the <code>lazy_static</code> macro exists. Instead of evaluating a <code>static</code> at compile time, the macro performs the initialization when the <code>static</code> is referenced the first time. Thus, we can do almost everything in the initialization block and are even able to read runtime values.</p>
+<p>We already imported the <code>lazy_static</code> crate when we <a href="../vga-text-mode/index.html#lazy-statics">created an abstraction for the VGA text buffer</a>. So we can directly use the <code>lazy_static!</code> macro to create our static IDT:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_idt() {
+</span><span>    </span><span style="color:#b4cea8;">IDT</span><span>.load();
+</span><span>}
+</span></code></pre>
+<p>Note how this solution requires no <code>unsafe</code> blocks. The <code>lazy_static!</code> macro does use <code>unsafe</code> behind the scenes, but it is abstracted away in a safe interface.</p>
+<h3 id="running-it"><a class="zola-anchor" href="index.html#running-it" aria-label="Anchor link for: running-it">🔗</a>Running it</h3>
+<p>The last step for making exceptions work in our kernel is to call the <code>init_idt</code> function from our <code>main.rs</code>. Instead of calling it directly, we introduce a general <code>init</code> function in our <code>lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    interrupts::init_idt();
+</span><span>}
+</span></code></pre>
+<p>With this function, we now have a central place for initialization routines that can be shared between the different <code>_start</code> functions in our <code>main.rs</code>, <code>lib.rs</code>, and integration tests.</p>
+<p>Now we can update the <code>_start</code> function of our <code>main.rs</code> to call <code>init</code> and then trigger a breakpoint exception:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init(); </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// invoke a breakpoint exception
+</span><span>    x86_64::instructions::interrupts::int3(); </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// as before
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>When we run it in QEMU now (using <code>cargo run</code>), we see the following:</p>
+<p><img src="qemu-breakpoint-exception.png" alt="QEMU printing EXCEPTION: BREAKPOINT and the interrupt stack frame" /></p>
+<p>It works! The CPU successfully invokes our breakpoint handler, which prints the message, and then returns back to the <code>_start</code> function, where the <code>It did not crash!</code> message is printed.</p>
+<p>We see that the interrupt stack frame tells us the instruction and stack pointers at the time when the exception occurred. This information is very useful when debugging unexpected exceptions.</p>
+<h3 id="adding-a-test"><a class="zola-anchor" href="index.html#adding-a-test" aria-label="Anchor link for: adding-a-test">🔗</a>Adding a Test</h3>
+<p>Let’s create a test that ensures that the above continues to work. First, we update the <code>_start</code> function to also call <code>init</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Entry point for `cargo test`
+</span><span>#[cfg(test)]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    init();      </span><span style="color:#608b4e;">// new
+</span><span>    test_main();
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Remember, this <code>_start</code> function is used when running <code>cargo test --lib</code>, since Rust tests the <code>lib.rs</code> completely independently of the <code>main.rs</code>. We need to call <code>init</code> here to set up an IDT before running the tests.</p>
+<p>Now we can create a <code>test_breakpoint_exception</code> test:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_breakpoint_exception() {
+</span><span>    </span><span style="color:#608b4e;">// invoke a breakpoint exception
+</span><span>    x86_64::instructions::interrupts::int3();
+</span><span>}
+</span></code></pre>
+<p>The test invokes the <code>int3</code> function to trigger a breakpoint exception. By checking that the execution continues afterward, we verify that our breakpoint handler is working correctly.</p>
+<p>You can try this new test by running <code>cargo test</code> (all tests) or <code>cargo test --lib</code> (only tests of <code>lib.rs</code> and its modules). You should see the following in the output:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>blog_os::interrupts::test_breakpoint_exception...	[ok]
+</span></code></pre>
+<h2 id="too-much-magic"><a class="zola-anchor" href="index.html#too-much-magic" aria-label="Anchor link for: too-much-magic">🔗</a>Too much Magic?</h2>
+<p>The <code>x86-interrupt</code> calling convention and the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptDescriptorTable.html"><code>InterruptDescriptorTable</code></a> type made the exception handling process relatively straightforward and painless. If this was too much magic for you and you like to learn all the gory details of exception handling, we’ve got you covered: Our <a href="https://os.phil-opp.com/edition-1/extra/naked-exceptions/">“Handling Exceptions with Naked Functions”</a> series shows how to handle exceptions without the <code>x86-interrupt</code> calling convention and also creates its own IDT type. Historically, these posts were the main exception handling posts before the <code>x86-interrupt</code> calling convention and the <code>x86_64</code> crate existed. Note that these posts are based on the <a href="../edition-1">first edition</a> of this blog and might be out of date.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>We’ve successfully caught our first exception and returned from it! The next step is to ensure that we catch all exceptions because an uncaught exception causes a fatal <a href="https://wiki.osdev.org/Triple_Fault">triple fault</a>, which leads to a system reset. The next post explains how we can avoid this by correctly catching <a href="https://wiki.osdev.org/Double_Fault#Double_Fault">double faults</a>.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../testing/index.html">&laquo; Testing</a>
+        
+        
+            <a class="next" href="../double-fault-exceptions/index.html">Double Faults &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22CPU%20Exceptions%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="CPU Exceptions"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22CPU%20Exceptions%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="zh-CN" class=""><a href="../zh-CN/cpu-exceptions/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../ja/cpu-exceptions/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../fa/cpu-exceptions/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../ko/cpu-exceptions/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

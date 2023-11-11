@@ -1,0 +1,132 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="单指令多数据 指令允许在一个操作符（比如加法）内传入多组数据，以此加速程序执行速度。x86_64 架构支持多种SIMD标准：
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Disable SIMD | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Disable SIMD</h1>
+    <p><a href="https://en.wikipedia.org/wiki/SIMD">单指令多数据</a> 指令允许在一个操作符（比如加法）内传入多组数据，以此加速程序执行速度。<code>x86_64</code> 架构支持多种SIMD标准：</p>
+<span id="continue-reading"></span>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/MMX_(instruction_set)">MMX</a>: <em>多媒体扩展</em> 指令集于1997年发布，定义了8个64位寄存器，分别被称为 <code>mm0</code> 到 <code>mm7</code>，不过，这些寄存器只是 <a href="https://en.wikipedia.org/wiki/X87">x87浮点执行单元</a> 中寄存器的映射而已。</li>
+<li><a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a>: <em>流处理SIMD扩展</em> 指令集于1999年发布，不同于MMX的复用浮点执行单元，该指令集加入了一个完整的新寄存器组，即被称为 <code>xmm0</code> 到 <code>xmm15</code> 的16个128位寄存器。</li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a>: <em>先进矢量扩展</em> 用于进一步扩展多媒体寄存器的数量，它定义了 <code>ymm0</code> 到 <code>ymm15</code> 共16个256位寄存器，但是这些寄存器继承于 <code>xmm</code>，例如 <code>xmm0</code> 寄存器是 <code>ymm0</code> 的低128位。</li>
+</ul>
+<p>通过应用这些SIMD标准，计算机程序可以显著提高执行速度。优秀的编译器可以将常规循环自动优化为适用SIMD的代码，这种优化技术被称为 <a href="https://en.wikipedia.org/wiki/Automatic_vectorization">自动矢量化</a>。</p>
+<p>尽管如此，SIMD会让操作系统内核出现一些问题。具体来说，就是操作系统在处理硬件中断时，需要保存所有寄存器信息到内存中，在中断结束后再将其恢复以供使用。所以说，如果内核需要使用SIMD寄存器，那么每次处理中断需要备份非常多的数据（512-1600字节），这会显著地降低性能。要避免这部分性能损失，我们需要禁用 <code>sse</code> 和 <code>mmx</code> 这两个特性（<code>avx</code> 默认已禁用）。</p>
+<p>我们可以在编译配置文件中的 <code>features</code> 配置项做出如下修改，加入以减号为前缀的 <code>mmx</code> 和 <code>sse</code> 即可：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse&quot;
+</span></code></pre>
+<h2 id="fu-dian-shu">浮点数</h2>
+<p>还有一件不幸的事，<code>x86_64</code> 架构在处理浮点数计算时，会用到 <code>sse</code> 寄存器，因此，禁用SSE的前提下使用浮点数计算LLVM都一定会报错。 更大的问题在于Rust核心库里就存在着为数不少的浮点数运算（如 <code>f32</code> 和 <code>f64</code> 的数个trait），所以试图避免使用浮点数是不可能的。</p>
+<p>幸运的是，LLVM支持 <code>soft-float</code> 特性，这个特性可以使用整型运算在软件层面模拟浮点数运算，使得我们为内核关闭SSE成为了可能，只需要牺牲一点点性能。</p>
+<p>要为内核打开 <code>soft-float</code> 特性，我们只需要在编译配置文件中的 <code>features</code> 配置项做出如下修改即可：</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span></code></pre>
+
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Disable%20SIMD%20%28Extra%20Post%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Disable SIMD (Extra Post)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Disable%20SIMD%20%28Extra%20Post%29%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

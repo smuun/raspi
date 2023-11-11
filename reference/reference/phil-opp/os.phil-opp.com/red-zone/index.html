@@ -1,0 +1,122 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="The red zone is an optimization of the System V ABI that allows functions to temporarily use the 128 bytes below their stack frame without adjusting t…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Disable the Red Zone | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Disable the Red Zone</h1>
+    <p>The <a href="https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64#the-red-zone">red zone</a> is an optimization of the <a href="https://wiki.osdev.org/System_V_ABI">System V ABI</a> that allows functions to temporarily use the 128 bytes below their stack frame without adjusting the stack pointer:</p>
+<span id="continue-reading"></span>
+<p><img src="red-zone.svg" alt="stack frame with red zone" /></p>
+<p>The image shows the stack frame of a function with <code>n</code> local variables. On function entry, the stack pointer is adjusted to make room on the stack for the return address and the local variables.</p>
+<p>The red zone is defined as the 128 bytes below the adjusted stack pointer. The function can use this area for temporary data that’s not needed across function calls. Thus, the two instructions for adjusting the stack pointer can be avoided in some cases (e.g. in small leaf functions).</p>
+<p>However, this optimization leads to huge problems with exceptions or hardware interrupts. Let’s assume that an exception occurs while a function uses the red zone:</p>
+<p><img src="red-zone-overwrite.svg" alt="red zone overwritten by exception handler" /></p>
+<p>The CPU and the exception handler overwrite the data in the red zone. But this data is still needed by the interrupted function. So the function won’t work correctly anymore when we return from the exception handler. This might lead to strange bugs that <a href="https://forum.osdev.org/viewtopic.php?t=21720">take weeks to debug</a>.</p>
+<p>To avoid such bugs when we implement exception handling in the future, we disable the red zone right from the beginning. This is achieved by adding the <code>&quot;disable-redzone&quot;: true</code> line to our target configuration file.</p>
+
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Disable%20the%20Red%20Zone%20%28Extra%20Post%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Disable the Red Zone (Extra Post)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Disable%20the%20Red%20Zone%20%28Extra%20Post%29%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

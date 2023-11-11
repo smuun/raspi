@@ -1,0 +1,695 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="在这篇文章中，我们会探索 double fault 异常的细节，它的触发条件是调用错误处理函数失败。通过捕获该异常，我们可以阻止致命的 triple faults 异常导致系统重启。为了尽可能避免 triple faults ，我们会在一个独立的内核栈配置 中断栈表 来捕捉 double fault…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Double Faults | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#he-wei-double-fault">何谓 Double Fault</a>
+            <ol>
+                <li>
+                    <a href="index.html#bu-zhuo-double-fault">捕捉 Double Fault</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#chu-li-double-fault">处理 Double Fault</a>
+            
+        </li><li>
+            <a href="index.html#double-faults-de-cheng-yin">Double Faults 的成因</a>
+            <ol>
+                <li>
+                    <a href="index.html#nei-he-zhan-yi-chu">内核栈溢出</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#qie-huan-zhan">切换栈</a>
+            <ol>
+                <li>
+                    <a href="index.html#isthe-tss">IST和TSS</a>
+                </li><li>
+                    <a href="index.html#chuang-jian-yi-ge-tss">创建一个TSS</a>
+                </li><li>
+                    <a href="index.html#quan-ju-miao-shu-fu-biao">全局描述符表</a>
+                </li><li>
+                    <a href="index.html#zui-zhong-bu-zou">最终步骤</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#zhan-yi-chu-ce-shi">栈溢出测试</a>
+            <ol>
+                <li>
+                    <a href="index.html#shi-xian-start">实现 _start</a>
+                </li><li>
+                    <a href="index.html#ce-shi-idt">测试 IDT</a>
+                </li><li>
+                    <a href="index.html#double-fault-chu-li-han-shu">Double Fault 处理函数</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#zong-jie">总结</a>
+            
+        </li><li>
+            <a href="index.html#xia-qi-yu-gao">下期预告</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Double Faults</h1>
+    <time datetime="2018-06-18" class="post-date">
+        Jun 18, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../double-fault-exceptions/index.html">Double Faults</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/liuyuran">@liuyuran</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/JiangengDong">@JiangengDong</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>在这篇文章中，我们会探索 double fault 异常的细节，它的触发条件是调用错误处理函数失败。通过捕获该异常，我们可以阻止致命的 <em>triple faults</em> 异常导致系统重启。为了尽可能避免 triple faults ，我们会在一个独立的内核栈配置 <em>中断栈表</em> 来捕捉 double faults。</p>
+<span id="continue-reading"></span>
+<p>这个系列的blog在<a href="https://github.com/phil-opp/blog_os">GitHub</a>上开放开发，如果你有任何问题，请在这里开一个issue来讨论。当然你也可以在<a href="index.html#comments">底部</a>留言。你可以在<a href="https://github.com/phil-opp/blog_os/tree/post-06"><code>post-06</code></a>找到这篇文章的完整源码。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#he-wei-double-fault">何谓 Double Fault</a>
+                <ul>
+                    <li>
+                        <a href="index.html#bu-zhuo-double-fault">捕捉 Double Fault</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#chu-li-double-fault">处理 Double Fault</a>
+                
+            </li><li>
+                <a href="index.html#double-faults-de-cheng-yin">Double Faults 的成因</a>
+                <ul>
+                    <li>
+                        <a href="index.html#nei-he-zhan-yi-chu">内核栈溢出</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#qie-huan-zhan">切换栈</a>
+                <ul>
+                    <li>
+                        <a href="index.html#isthe-tss">IST和TSS</a>
+                    </li><li>
+                        <a href="index.html#chuang-jian-yi-ge-tss">创建一个TSS</a>
+                    </li><li>
+                        <a href="index.html#quan-ju-miao-shu-fu-biao">全局描述符表</a>
+                    </li><li>
+                        <a href="index.html#zui-zhong-bu-zou">最终步骤</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#zhan-yi-chu-ce-shi">栈溢出测试</a>
+                <ul>
+                    <li>
+                        <a href="index.html#shi-xian-start">实现 _start</a>
+                    </li><li>
+                        <a href="index.html#ce-shi-idt">测试 IDT</a>
+                    </li><li>
+                        <a href="index.html#double-fault-chu-li-han-shu">Double Fault 处理函数</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#zong-jie">总结</a>
+                
+            </li><li>
+                <a href="index.html#xia-qi-yu-gao">下期预告</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="he-wei-double-fault"><a class="zola-anchor" href="index.html#he-wei-double-fault" aria-label="Anchor link for: he-wei-double-fault">🔗</a>何谓 Double Fault</h2>
+<p>简而言之，double fault 就是当CPU执行错误处理函数失败时抛出的特殊异常。比如，你没有注册在 <a href="../../cpu-exceptions/index.html#the-interrupt-descriptor-table">中断描述符表</a> 中注册对应 page fault 异常的处理函数，然后程序偏偏就抛出了一个 page fault 异常，这时候就会接着抛出 double fault 异常。这个异常的处理函数就比较类似于具备异常处理功能的编程语言里的 catch-all 语法的效果，比如 C++ 里的 <code>catch(...)</code> 和 JAVA/C# 里的 <code>catch(Exception e)</code>。</p>
+<p>double fault 的行为和普通异常十分相似，我们可以通过在IDT中注册 <code>8</code> 号位的处理函数来拦截该异常。这个处理函数十分重要，如果你不处理这个异常，CPU就会直接抛出 <em>triple fault</em> 异常，该异常无法被任何方式处理，而且会直接导致绝大多数硬件强制重启。</p>
+<h3 id="bu-zhuo-double-fault"><a class="zola-anchor" href="index.html#bu-zhuo-double-fault" aria-label="Anchor link for: bu-zhuo-double-fault">🔗</a>捕捉 Double Fault</h3>
+<p>我们先来试试看不捕捉 double fault 的情况下触发它会有什么后果：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a page fault
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        *(</span><span style="color:#b5cea8;">0xdeadbeef </span><span style="color:#569cd6;">as *mut u64</span><span>) = </span><span style="color:#b5cea8;">42</span><span>;
+</span><span>    };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// as before
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>这里我们使用 <code>unsafe</code> 块直接操作了一个无效的内存地址 <code>0xdeadbeef</code>，由于该虚拟地址并未在页表中映射到物理内存，所以必然会抛出 page fault 异常。我们又并未在 <a href="../../cpu-exceptions/index.html#the-interrupt-descriptor-table">IDT</a> 中注册对应的处理器，所以 double fault 会紧接着被抛出。</p>
+<p>现在启动内核，我们可以看到它直接陷入了崩溃和重启的无限循环，其原因如下：</p>
+<ol>
+<li>CPU试图向 <code>0xdeadbeef</code> 写入数据，这就造成了 page fault 异常。</li>
+<li>CPU没有在IDT中找到相应的处理函数，所以又抛出了 double fault 异常。</li>
+<li>CPU再一次没有在IDT中找到相应的处理函数，所以又抛出了 <em>triple fault</em> 异常。</li>
+<li>在抛出 triple fault 之后就没有然后了，这个错误是致命级别，如同大多数硬件一样，QEMU对此的处理方式就是重置系统，也就是重启。</li>
+</ol>
+<p>通过这个小实验，我们知道在这种情况下，需要提前注册 page faults 或者 double fault 的处理函数才行，但如果想要在任何场景下避免触发 triple faults 异常，则必须注册能够捕捉一切未注册异常类型的 double fault 处理函数。</p>
+<h2 id="chu-li-double-fault"><a class="zola-anchor" href="index.html#chu-li-double-fault" aria-label="Anchor link for: chu-li-double-fault">🔗</a>处理 Double Fault</h2>
+<p>double fault 是一个带错误码的常规错误，所以我们可以参照 breakpoint 处理函数定义一个 double fault 处理函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        idt.double_fault.set_handler_fn(double_fault_handler); </span><span style="color:#608b4e;">// new
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// new
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>double_fault_handler(
+</span><span>    stack_frame: InterruptStackFrame, _error_code: </span><span style="color:#569cd6;">u64</span><span>) -&gt; </span><span style="color:#569cd6;">!
+</span><span>{
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;EXCEPTION: DOUBLE FAULT</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">{:#?}&quot;</span><span>, stack_frame);
+</span><span>}
+</span></code></pre>
+<p>我们的处理函数打印了一行简短的信息，并将栈帧转写了出来。其中错误码一直是0，所以没有必要把它打印出来。要说这和 breakpoint 处理函数有什么区别，那就是 double fault 的处理函数是 <a href="https://doc.rust-lang.org/stable/rust-by-example/fn/diverging.html">发散的</a>，这是因为 <code>x86_64</code> 架构不允许从 double fault 异常中返回任何东西。</p>
+<p>那么再次启动内核，我们可以看到 double fault 的处理函数被成功调用：</p>
+<p><img src="qemu-catch-double-fault.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and the exception stack frame" /></p>
+<p>让我们来分析一下又发生了什么：</p>
+<ol>
+<li>CPU尝试往 <code>0xdeadbeef</code> 写入数据，引发了 page fault 异常。</li>
+<li>如同上次运行一样，CPU并没有在IDT里找到对应的处理函数，所以又引发了 double fault 异常。</li>
+<li>CPU又跳转到了我们刚刚定义的 double fault 处理函数。</li>
+</ol>
+<p>现在 triple fault 及其衍生的重启循环不会再出现了，因为CPU已经妥善处理了 double fault 异常。</p>
+<p>这还真是直截了当对吧，但为什么要为这点内容单独写一篇文章呢？没错，我们的确已经可以捕获 <em>大部分</em> double faults 异常，但在部分情况下，这样的做法依然不够。</p>
+<h2 id="double-faults-de-cheng-yin"><a class="zola-anchor" href="index.html#double-faults-de-cheng-yin" aria-label="Anchor link for: double-faults-de-cheng-yin">🔗</a>Double Faults 的成因</h2>
+<p>在解释这些部分情况之前，我们需要先明确一下 double faults 的成因，上文中我们使用了一个模糊的定义：</p>
+<blockquote>
+<p>double fault 就是当CPU执行错误处理函数失败时抛出的特殊异常。 </p>
+</blockquote>
+<p>但究竟什么叫 <em>“调用失败”</em> ？没有提供处理函数？处理函数被<a href="http://pages.cs.wisc.edu/~remzi/OSTEP/vm-beyondphys.pdf">换出</a>内存了？或者处理函数本身也出现了异常？</p>
+<p>比如以下情况出现时：</p>
+<ol>
+<li>如果 breakpoint 异常被触发，但其对应的处理函数已经被换出内存了？</li>
+<li>如果 page fault 异常被触发，但其对应的处理函数已经被换出内存了？</li>
+<li>如果 divide-by-zero 异常处理函数又触发了 breakpoint 异常，但 breakpoint 异常处理函数已经被换出内存了？</li>
+<li>如果我们的内核发生了栈溢出，意外访问到了 <em>guard page</em> ？</li>
+</ol>
+<p>幸运的是，AMD64手册（<a href="https://www.amd.com/system/files/TechDocs/24593.pdf">PDF</a>）给出了一个准确的定义（在8.2.9这个章节中）。
+根据里面的说法，“double fault” 异常 <em>会</em> 在执行主要（一层）异常处理函数时触发二层异常时触发。
+这个“会”字十分重要：只有特定的两个异常组合会触发 double fault。
+这些异常组合如下：</p>
+<table><thead><tr><th>一层异常</th><th>二层异常</th></tr></thead><tbody>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Divide-by-zero_Error">Divide-by-zero</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td><td><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td></tr>
+<tr><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">Page Fault</a></td><td><a href="https://wiki.osdev.org/Exceptions#Page_Fault">Page Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#Invalid_TSS">Invalid TSS</a>,<br><a href="https://wiki.osdev.org/Exceptions#Segment_Not_Present">Segment Not Present</a>,<br><a href="https://wiki.osdev.org/Exceptions#Stack-Segment_Fault">Stack-Segment Fault</a>,<br><a href="https://wiki.osdev.org/Exceptions#General_Protection_Fault">General Protection Fault</a></td></tr>
+</tbody></table>
+<p>所以那些假设里的 divide-by-zero 异常处理函数触发了 page fault 并不会出问题，只会紧接着触发下一个异常处理函数。但如果 divide-by-zero 异常处理函数触发的是 general-protection fault，则一定会触发 double fault。</p>
+<p>那么根据上表，我们可以回答刚刚的假设中的前三个：</p>
+<ol>
+<li>如果 breakpoint 异常被触发，但对应的处理函数被换出了内存，<em>page fault</em> 异常就会被触发，并调用其对应的异常处理函数。</li>
+<li>如果 page fault 异常被触发，但对应的处理函数被换出了内存，那么 <em>double fault</em> 异常就会被触发，并调用其对应的处理函数。</li>
+<li>如果 divide-by-zero 异常处理函数又触发了 breakpoint 异常，但 breakpoint 异常处理函数已经被换出内存了，那么被触发的就是 <em>page fault</em> 异常。</li>
+</ol>
+<p>实际上，因在IDT里找不到对应处理函数而抛出异常的内部机制是：当异常发生时，CPU会去试图读取对应的IDT条目，如果该条目不是一个有效的条目，即其值为0，就会触发 <em>general protection fault</em> 异常。但我们同样没有为该异常注册处理函数，所以又一个 general protection fault 被触发了，随后 double fault 也被触发了。</p>
+<h3 id="nei-he-zhan-yi-chu"><a class="zola-anchor" href="index.html#nei-he-zhan-yi-chu" aria-label="Anchor link for: nei-he-zhan-yi-chu">🔗</a>内核栈溢出</h3>
+<p>现在让我们看一下第四个假设：</p>
+<blockquote>
+<p>如果我们的内核发生了栈溢出，意外访问到了 <em>guard page</em> ？</p>
+</blockquote>
+<p>guard page 是一类位于栈底部的特殊内存页，所以如果发生了栈溢出，最典型的现象就是访问这里。这类内存页不会映射到物理内存中，所以访问这里只会造成 page fault 异常，而不会污染其他内存。bootloader 已经为我们的内核栈设置好了一个 guard page，所以栈溢出会导致 <em>page fault</em> 异常。</p>
+<p>当 page fault 发生时，CPU会在IDT寻找对应的处理函数，并尝试将 <a href="../../cpu-exceptions/index.html#the-interrupt-stack-frame">中断栈帧</a> 入栈，但此时栈指针指向了一个实际上并不存在的 guard page，然后第二个 page fault 异常就被触发了，根据上面的表格，double fault 也随之被触发了。</p>
+<p>这时，CPU会尝试调用 <em>double fault</em> 对应的处理函数，然而CPU依然会试图将错误栈帧入栈，由于栈指针依然指向 guard page，于是 <em>第三次</em> page fault 发生了，最终导致 <em>triple fault</em> 异常的抛出，系统因此重启。所以仅仅是注册错误处理函数并不能在此种情况下阻止 triple fault 的发生。</p>
+<p>让我们来尝试一下，写一个能造成栈溢出的递归函数非常简单：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// 禁止函数名自动修改
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>        stack_overflow(); </span><span style="color:#608b4e;">// 每一次递归都会将返回地址入栈
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// 触发 stack overflow
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), println(…), and loop {}
+</span><span>}
+</span></code></pre>
+<p>我们在QEMU执行这段程序，然后系统就再次进入了重启循环。</p>
+<p>所以我们要如何避免这种情况？我们无法忽略异常栈帧入栈这一步，因为这个逻辑是内置在CPU里的。所以我们需要找个办法，让栈在 double fault 异常发生后始终有效。幸运的是，x86_64 架构对于这个问题已经给出了解决方案。</p>
+<h2 id="qie-huan-zhan"><a class="zola-anchor" href="index.html#qie-huan-zhan" aria-label="Anchor link for: qie-huan-zhan">🔗</a>切换栈</h2>
+<p>x86_64 架构允许在异常发生时，将栈切换为一个预定义的完好栈，这个切换是执行在硬件层次的，所以完全可以在CPU将异常栈帧入栈之前执行。</p>
+<p>这个切换机制是由 <em>中断栈表</em> （IST）实现的，IST是一个由7个确认可用的完好栈的指针组成的，用 Rust 语言可以表述为：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">struct </span><span>InterruptStackTable {
+</span><span>    stack_pointers: [Option&lt;StackPointer&gt;; 7],
+</span><span>}
+</span></code></pre>
+<p>对于每一个错误处理函数，我们都可以通过对应的<a href="../../cpu-exceptions/index.html#the-interrupt-descriptor-table">IDT条目</a>中的 <code>stack_pointers</code> 条目指定IST中的一个栈。比如我们可以让 double fault 对应的处理函数使用IST中的第一个栈指针，则CPU会在这个异常发生时，自动将栈切换为该栈。该切换行为会在所有入栈操作之前进行，由此可以避免进一步触发 triple fault 异常。</p>
+<h3 id="isthe-tss"><a class="zola-anchor" href="index.html#isthe-tss" aria-label="Anchor link for: isthe-tss">🔗</a>IST和TSS</h3>
+<p>中断栈表（IST）其实是一个名叫 <em><a href="https://en.wikipedia.org/wiki/Task_state_segment">任务状态段</a>（TSS）</em> 的古老遗留结构的一部分。
+TSS是用来存储32位任务中的零碎信息，比如处理器寄存器的状态，一般用于 <a href="https://wiki.osdev.org/Context_Switching#Hardware_Context_Switching">硬件上下文切换</a>。但是硬件上下文切换已经不再适用于64位模式，并且TSS的实际数据结构也已经发生了彻底的改变。</p>
+<p>在 x86_64 架构中，TSS已经不再存储任何任务相关信息，取而代之的是两个栈表（IST正是其中之一）。
+32位TSS和64位TSS唯一的共有字段恐怕就是指向 <a href="https://en.wikipedia.org/wiki/Task_state_segment#I.2FO_port_permissions">I/O端口权限位图</a> 的指针了。</p>
+<p>64位TSS的格式如下：</p>
+<table><thead><tr><th>字段</th><th>类型</th></tr></thead><tbody>
+<tr><td><span style="opacity: 0.5">(保留)</span></td><td><code>u32</code></td></tr>
+<tr><td>特权栈表</td><td><code>[u64; 3]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(保留)</span></td><td><code>u64</code></td></tr>
+<tr><td>中断栈表</td><td><code>[u64; 7]</code></td></tr>
+<tr><td><span style="opacity: 0.5">(保留)</span></td><td><code>u64</code></td></tr>
+<tr><td><span style="opacity: 0.5">(保留)</span></td><td><code>u16</code></td></tr>
+<tr><td>I/O映射基准地址</td><td><code>u16</code></td></tr>
+</tbody></table>
+<p><em>特权栈表</em> 在 CPU 特权等级变更的时候会被用到。例如当 CPU 在用户态（特权等级3）中触发一个异常时，一般情况下 CPU 会在执行错误处理函数前切换到内核态（特权等级0），在这种情况下，CPU 会切换为特权栈表的第0层（0层是目标特权等级）。但是目前我们还没有用户态的程序，所以暂且可以忽略这个表。</p>
+<h3 id="chuang-jian-yi-ge-tss"><a class="zola-anchor" href="index.html#chuang-jian-yi-ge-tss" aria-label="Anchor link for: chuang-jian-yi-ge-tss">🔗</a>创建一个TSS</h3>
+<p>那么我们来创建一个新的包含单独的 double fault 专属栈以及中断栈表的TSS。为此我们需要一个TSS结构体，幸运的是 <code>x86_64</code> crate 也已经自带了 <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/tss/struct.TaskStateSegment.html"><code>TaskStateSegment</code> 结构</a> 用来映射它。</p>
+<p>那么我们新建一个 <code>gdt</code> 模块（稍后会说明为何要使用这个名字）用来创建TSS：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>gdt;
+</span><span>
+</span><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::tss::TaskStateSegment;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>: </span><span style="color:#569cd6;">u16 </span><span>= </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TSS</span><span>: TaskStateSegment = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> tss = TaskStateSegment::new();
+</span><span>        tss.interrupt_stack_table[</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX </span><span style="color:#569cd6;">as usize</span><span>] = {
+</span><span>            </span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">STACK_SIZE</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">4096 </span><span>* </span><span style="color:#b5cea8;">5</span><span>;
+</span><span>            </span><span style="color:#569cd6;">static mut </span><span style="color:#b4cea8;">STACK</span><span>: [</span><span style="color:#569cd6;">u8</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>] = [</span><span style="color:#b5cea8;">0</span><span>; </span><span style="color:#b4cea8;">STACK_SIZE</span><span>];
+</span><span>
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_start = VirtAddr::from_ptr(</span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">STACK </span><span>});
+</span><span>            </span><span style="color:#569cd6;">let</span><span> stack_end = stack_start + </span><span style="color:#b4cea8;">STACK_SIZE</span><span>;
+</span><span>            stack_end
+</span><span>        };
+</span><span>        tss
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>这次依然是使用 <code>lazy_static</code>，Rust的静态变量求值器还没有强大到能够在编译器执行初始化代码。我们将IST的0号位定义为 double fault 的专属栈（其他IST序号也可以如此施为）。然后我们将栈的高地址指针写入0号位，之所以这样做，那是因为 x86 的栈内存分配是从高地址到低地址的。</p>
+<p>由于我们还没有实现内存管理机制，所以目前无法直接申请新栈，但我们可以使用 <code>static mut</code> 形式的数组来在内存中模拟出栈存储区。<code>unsafe</code> 块也是必须的，因为编译器认为这种可以被竞争的变量是不安全的，而且这里必须是 <code>static mut</code> 而不是不可修改的 <code>static</code>，否则 bootloader 会将其分配到只读页中。当然，在后续的文章中，我们会将其修改为真正的栈分配，<code>unsafe</code> 块也一定会去掉的。</p>
+<p>但要注意，由于现在 double fault 获取的栈不再具有用于防止栈溢出的 guard page，所以我们不应该做任何栈密集型操作了，否则就有可能会污染到栈下方的内存区域。</p>
+<h4 id="jia-zai-tss"><a class="zola-anchor" href="index.html#jia-zai-tss" aria-label="Anchor link for: jia-zai-tss">🔗</a>加载TSS</h4>
+<p>我们已经创建了一个TSS，现在的问题就是怎么让CPU使用它。不幸的是这事有点繁琐，因为TSS用到了分段系统（历史原因）。但我们可以不直接加载，而是在<a href="https://web.archive.org/web/20190217233448/https://www.flingos.co.uk/docs/reference/Global-Descriptor-Table/">全局描述符表</a>（GDT）中添加一个段描述符，然后我们就可以通过<a href="https://www.felixcloutier.com/x86/ltr"><code>ltr</code> 指令</a>加上GDT序号加载我们的TSS。（这也是为什么我们将模块取名为 <code>gdt</code>。）</p>
+<h3 id="quan-ju-miao-shu-fu-biao"><a class="zola-anchor" href="index.html#quan-ju-miao-shu-fu-biao" aria-label="Anchor link for: quan-ju-miao-shu-fu-biao">🔗</a>全局描述符表</h3>
+<p>全局描述符表（GDT）是分页模式成为事实标准之前，用于<a href="https://en.wikipedia.org/wiki/X86_memory_segmentation">内存分段</a>的遗留结构，但它在64位模式下仍然需要处理一些事情，比如内核态/用户态的配置以及TSS载入。</p>
+<p>GDT是包含了程序 <em>段信息</em> 的结构，在分页模式成为标准前，它在旧架构下起到隔离程序执行环境的作用。要了解更多关于分段的知识，可以查看 <a href="http://pages.cs.wisc.edu/~remzi/OSTEP/">“Three Easy Pieces” book</a> 这本书的同名章节。尽管GDT在64位模式下已经不再受到支持，但其依然有两个作用，切换内核空间和用户空间，以及加载TSS结构。</p>
+<h4 id="chuang-jian-gdt"><a class="zola-anchor" href="index.html#chuang-jian-gdt" aria-label="Anchor link for: chuang-jian-gdt">🔗</a>创建GDT</h4>
+<p>我们来创建一个包含了静态 <code>TSS</code> 段的 <code>GDT</code> 静态结构：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor};
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: GlobalDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        gdt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>就像以前一样，我们依然使用了 <code>lazy_static</code> 宏，我们通过这段代码创建了TSS和GDT两个结构。</p>
+<h4 id="jia-zai-gdt"><a class="zola-anchor" href="index.html#jia-zai-gdt" aria-label="Anchor link for: jia-zai-gdt">🔗</a>加载GDT</h4>
+<p>我们先创建一个在 <code>init</code> 函数中调用的 <code>gdt::init</code> 函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.load();
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>}
+</span></code></pre>
+<p>现在GDT成功加载了进去（<code>_start</code> 会调用 <code>init</code> 函数），但我们依然会看到由于栈溢出引发的重启循环。</p>
+<h3 id="zui-zhong-bu-zou"><a class="zola-anchor" href="index.html#zui-zhong-bu-zou" aria-label="Anchor link for: zui-zhong-bu-zou">🔗</a>最终步骤</h3>
+<p>现在的问题就变成了GDT并未被激活，代码段寄存器和TSS实际上依然引用着旧的GDT，并且我们也需要修改 double fault 对应的IDT条目，使其使用新的栈。</p>
+<p>总结一下，我们需要做这些事情：</p>
+<ol>
+<li><strong>重载代码段寄存器</strong>: 我们修改了GDT，所以就需要重载代码段寄存器 <code>cs</code>，这一步对于修改GDT信息而言是必须的，比如覆写TSS。</li>
+<li><strong>加载TSS</strong> : 我们已经加载了包含TSS信息的GDT，但我们还需要告诉CPU使用新的TSS。</li>
+<li><strong>更新IDT条目</strong>: 当TSS加载完毕后，CPU就可以访问到新的中断栈表（IST）了，下面我们需要通过修改IDT条目告诉CPU使用新的 double fault 专属栈。</li>
+</ol>
+<p>通过前两步，我们可以在 <code>gdt::init</code> 函数中调用 <code>code_selector</code> 和 <code>tss_selector</code> 两个变量，我们可以将两者打包为一个 <code>Selectors</code> 结构便于使用：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::gdt::SegmentSelector;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">GDT</span><span>: (GlobalDescriptorTable, Selectors) = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> gdt = GlobalDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+</span><span>        </span><span style="color:#569cd6;">let</span><span> tss_selector = gdt.add_entry(Descriptor::tss_segment(</span><span style="color:#569cd6;">&amp;</span><span style="color:#b4cea8;">TSS</span><span>));
+</span><span>        (gdt, Selectors { code_selector, tss_selector })
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Selectors {
+</span><span>    code_selector: SegmentSelector,
+</span><span>    tss_selector: SegmentSelector,
+</span><span>}
+</span></code></pre>
+<p>现在我们可以使用这两个变量去重载代码段寄存器 <code>cs</code> 并重载 <code>TSS</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/gdt.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::tables::load_tss;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::segmentation::{</span><span style="color:#b4cea8;">CS</span><span>, Segment};
+</span><span>    
+</span><span>    </span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">0.</span><span>load();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">CS</span><span>::set_reg(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>code_selector);
+</span><span>        load_tss(</span><span style="color:#b4cea8;">GDT</span><span>.</span><span style="color:#b5cea8;">1.</span><span>tss_selector);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>我们通过 <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/segmentation/fn.set_cs.html"><code>set_cs</code></a> 覆写了代码段寄存器，然后使用 <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/tables/fn.load_tss.html"><code>load_tss</code></a> 来重载了TSS，不过这两个函数都被标记为 <code>unsafe</code>，所以 <code>unsafe</code> 代码块是必须的。
+原因很简单，如果通过这两个函数加载了无效的指针，那么很可能就会破坏掉内存安全性。</p>
+<p>现在我们已经加载了有效的TSS和中断栈表，我们可以在IDT中为 double fault 对应的处理函数设置栈序号：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use crate</span><span>::gdt;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault.set_handler_fn(double_fault_handler)
+</span><span>                .set_stack_index(gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>); </span><span style="color:#608b4e;">// new
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p><code>set_stack_index</code> 函数也是不安全的，因为栈序号的有效性和引用唯一性是需要调用者去确保的。</p>
+<p>搞定！现在CPU会在 double fault 异常被触发时自动切换到安全栈了，我们可以捕捉到 <em>所有</em> 的 double fault，包括内核栈溢出：</p>
+<p><img src="qemu-double-fault-on-stack-overflow.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT and a dump of the exception stack frame" /></p>
+<p>现在开始我们应该不会再看到 triple fault 了，但要确保这部分逻辑不被破坏，我们还需要为其添加一个测试。</p>
+<h2 id="zhan-yi-chu-ce-shi"><a class="zola-anchor" href="index.html#zhan-yi-chu-ce-shi" aria-label="Anchor link for: zhan-yi-chu-ce-shi">🔗</a>栈溢出测试</h2>
+<p>要测试我们的 <code>gdt</code> 模块，并确保在栈溢出时可以正确捕捉 double fault，我们可以添加一个集成测试。基本上就是在测试函数中主动触发一个 double fault 异常，确认异常处理函数是否正确运行了。</p>
+<p>让我们建立一个最小化框架：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>就如同 <code>panic_handler</code> 这个测试一样，该测试应该是一个 <a href="../../testing/index.html#no-harness-tests">无约束测试</a>，其原因就是我们无法在 double fault 被抛出后继续运行，所以连续进行多个测试其实是说不通的。要将测试修改为无约束模式，我们需要将这一段配置加入 <code>Cargo.toml</code>：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[[</span><span style="color:#808080;">test</span><span>]]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;stack_overflow&quot;
+</span><span style="color:#569cd6;">harness </span><span>= </span><span style="color:#569cd6;">false
+</span></code></pre>
+<p>现在 <code>cargo test --test stack_overflow</code> 命令应当可以通过编译了。但是毫无疑问的是还是会执行失败，因为 <code>unimplemented</code> 宏必然会导致程序报错。</p>
+<h3 id="shi-xian-start"><a class="zola-anchor" href="index.html#shi-xian-start" aria-label="Anchor link for: shi-xian-start">🔗</a>实现 <code>_start</code></h3>
+<p><code>_start</code> 函数实现后的样子是这样的:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::serial_print;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;stack_overflow::stack_overflow...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>
+</span><span>    blog_os::gdt::init();
+</span><span>    init_test_idt();
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// trigger a stack overflow
+</span><span>    stack_overflow();
+</span><span>
+</span><span>    panic!(</span><span style="color:#d69d85;">&quot;Execution continued after stack overflow&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span>#[allow(unconditional_recursion)]
+</span><span style="color:#569cd6;">fn </span><span>stack_overflow() {
+</span><span>    stack_overflow(); </span><span style="color:#608b4e;">// for each recursion, the return address is pushed
+</span><span>    volatile::Volatile::new(</span><span style="color:#b5cea8;">0</span><span>).read(); </span><span style="color:#608b4e;">// prevent tail recursion optimizations
+</span><span>}
+</span></code></pre>
+<p>我们调用了 <code>gdt::init</code> 函数来初始化GDT，但我们并没有调用 <code>interrupts::init_idt</code> 函数，而是调用了一个全新的 <code>init_test_idt</code> 函数，我们稍后来实现它。原因就是，我们需要注册一个自定义的 double fault 处理函数，在被触发的时候调用 <code>exit_qemu(QemuExitCode::Success)</code> 函数，而非使用默认的逻辑。</p>
+<p><code>stack_overflow</code> 函数和我们之前在 <code>main.rs</code> 中写的那个函数几乎一模一样，唯一的区别就是在函数的最后使用 <a href="https://docs.rs/volatile/0.2.6/volatile/struct.Volatile.html"><code>Volatile</code></a> 类型 加入了一个 <a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a> 读取操作，用来阻止编译器进行 <a href="https://en.wikipedia.org/wiki/Tail_call"><em>尾调用优化</em></a>。除却其他乱七八糟的效果，这个优化最主要的影响就是会让编辑器将最后一行是递归语句的函数转化为普通的循环。由于没有通过递归创建新的栈帧，所以栈自然也不会出问题。</p>
+<p>在当前用例中，stack overflow 是必须要触发的，所以我们在函数尾部加入了一个无效的 volatile 读取操作来让编译器无法进行此类优化，递归也就无法被自动降级为循环了。当然，为了关闭编译器针对递归的安全警告，我们也需要为这个函数加上 <code>allow(unconditional_recursion)</code> 开关。</p>
+<h3 id="ce-shi-idt"><a class="zola-anchor" href="index.html#ce-shi-idt" aria-label="Anchor link for: ce-shi-idt">🔗</a>测试 IDT</h3>
+<p>作为上一小节的补充，我们说过要在测试专用的IDT中实现一个自定义的 double fault 异常处理函数，就像这样：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptDescriptorTable;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">TEST_IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            idt.double_fault
+</span><span>                .set_handler_fn(test_double_fault_handler)
+</span><span>                .set_stack_index(blog_os::gdt::</span><span style="color:#b4cea8;">DOUBLE_FAULT_IST_INDEX</span><span>);
+</span><span>        }
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init_test_idt() {
+</span><span>    </span><span style="color:#b4cea8;">TEST_IDT</span><span>.load();
+</span><span>}
+</span></code></pre>
+<p>这和我们在 <code>interrupts.rs</code> 中实现的版本十分相似，如同正常的IDT一样，我们都为 double fault 使用IST序号设置了特殊的栈，而上文中提到的 <code>init_test_idt</code> 函数则通过 <code>load</code> 函数将配置成功装载到CPU。</p>
+<h3 id="double-fault-chu-li-han-shu"><a class="zola-anchor" href="index.html#double-fault-chu-li-han-shu" aria-label="Anchor link for: double-fault-chu-li-han-shu">🔗</a>Double Fault 处理函数</h3>
+<p>那么现在就差处理函数本身了，它看起来是这样子的：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/stack_overflow.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::{exit_qemu, QemuExitCode, serial_println};
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::idt::InterruptStackFrame;
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>test_double_fault_handler(
+</span><span>    _stack_frame: InterruptStackFrame,
+</span><span>    _error_code: </span><span style="color:#569cd6;">u64</span><span>,
+</span><span>) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>这个处理函数被调用后，我们会使用代表成功的返回值退出QEMU，以此即可标记测试完成，但由于集成测试处于完全独立的运行环境，也记得在测试入口文件的头部再次加入 <code>#![feature(abi_x86_interrupt)]</code> 开关。</p>
+<p>现在我们可以执行 <code>cargo test --test stack_overflow</code> 运行当前测试（或者执行 <code>cargo test</code> 运行所有测试），应当可以在控制台看到 <code>stack_overflow... [ok]</code> 这样的输出。另外，也可以试一下注释掉 <code>set_stack_index</code> 这一行的命令，可以观察到失败情况下的输出。</p>
+<h2 id="zong-jie"><a class="zola-anchor" href="index.html#zong-jie" aria-label="Anchor link for: zong-jie">🔗</a>总结</h2>
+<p>在本文中，我们学到了 double fault 是什么，以及触发它的原因。我们为 double fault 写了相应的处理函数、将错误信息打印到控制台并为它添加了一个集成测试。</p>
+<p>同时，我们为 double fault 启用了栈指针切换功能，使其在栈溢出时也可以正常工作。在实现这个功能的同时，我们也学习了在旧架构中用于内存分段的任务状态段（TSS），而该结构又包含了中断栈表（IST）和全局描述符表（GDT）。</p>
+<h2 id="xia-qi-yu-gao"><a class="zola-anchor" href="index.html#xia-qi-yu-gao" aria-label="Anchor link for: xia-qi-yu-gao">🔗</a>下期预告</h2>
+<p>在下一篇文章中，我们会展开来说外部设备（如定时器、键盘、网络控制器）中断的处理方式。这些硬件中断十分类似于上文所说的异常，都需要通过IDT进行处理，只是中断并不是由CPU抛出的。 <em>中断控制器</em> 会代理这些中断事件，并根据中断的优先级将其转发给CPU处理。我们将会以 <a href="https://en.wikipedia.org/wiki/Intel_8259">Intel 8259</a> (PIC) 中断控制器为例对其进行探索，并实现对键盘的支持。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../cpu-exceptions/index.html">&laquo; CPU异常处理</a>
+        
+        
+            <a class="next" href="../hardware-interrupts/index.html">硬件中断 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Double%20Faults%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Double Faults (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Double%20Faults%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../double-fault-exceptions/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/double-fault-exceptions/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/double-fault-exceptions/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/double-fault-exceptions/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

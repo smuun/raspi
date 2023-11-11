@@ -1,0 +1,540 @@
+<!doctype html>
+
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Dans cet article, nous créons un noyau Rust 64-bit minimal pour l’architecture x86. Nous continuons le travail fait dans l’article précédent “Un binai…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Un noyau Rust minimal | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/fr" title="All Posts">« Tous les articles</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table des matières</h2>
+    <ol>
+        <li>
+            <a href="index.html#le-processus-d-amorcage">Le processus d’amorçage</a>
+            <ol>
+                <li>
+                    <a href="index.html#amorcage-bios">Amorçage BIOS</a>
+                </li><li>
+                    <a href="index.html#uefi">UEFI</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#un-noyau-minimal">Un noyau minimal</a>
+            <ol>
+                <li>
+                    <a href="index.html#installer-une-version-nocturne-de-rust">Installer une version nocturne de Rust</a>
+                </li><li>
+                    <a href="index.html#specification-de-la-cible">Spécification de la cible</a>
+                </li><li>
+                    <a href="index.html#construction-de-notre-noyau">Construction de notre noyau</a>
+                </li><li>
+                    <a href="index.html#afficher-a-l-ecran">Afficher à l’écran</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#executer-notre-noyau">Exécuter notre noyau</a>
+            <ol>
+                <li>
+                    <a href="index.html#creer-une-image-d-amorcage">Créer une image d’amorçage</a>
+                </li><li>
+                    <a href="index.html#amorcage-dans-qemu">Amorçage dans QEMU</a>
+                </li><li>
+                    <a href="index.html#veritable-ordinateur">Véritable ordinateur</a>
+                </li><li>
+                    <a href="index.html#utilisation-de-cargo-run">Utilisation de cargo run</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#et-ensuite">Et ensuite?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Commentaires</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Un noyau Rust minimal</h1>
+    <time datetime="2018-02-10" class="post-date">
+        Feb 10, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>Contenu traduit : </b>
+            Ceci est une traduction communautaire de l'article <strong><a href="../../minimal-rust-kernel/index.html">A Minimal Rust Kernel</a></strong>. Il peut être incomplet, obsolète ou contenir des erreurs. Veuillez signaler les quelconques problèmes !
+            </p>
+            <p>
+                Traduit par :  <a href="https://github.com/TheMimiCodes">@TheMimiCodes</a> et <a href="https://github.com/maximevaillancourt">@maximevaillancourt</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/alaincao">@alaincao</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>Dans cet article, nous créons un noyau Rust 64-bit minimal pour l’architecture x86. Nous continuons le travail fait dans l’article précédent “<a href="../freestanding-rust-binary/index.html">Un binaire Rust autonome</a>” pour créer une image de disque amorçable qui affiche quelque chose à l’écran. </p>
+<span id="continue-reading"></span>
+<p>Cet article est développé de manière ouverte sur <a href="https://github.com/phil-opp/blog_os">GitHub</a>. Si vous avez des problèmes ou des questions, veuillez ouvrir une <em>Issue</em> sur GitHub. Vous pouvez aussi laisser un commentaire <a href="index.html#comments">au bas de la page</a>. Le code source complet pour cet article se trouve dans la branche <a href="https://github.com/phil-opp/blog_os/tree/post-02"><code>post-02</code></a>.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table des matières</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#le-processus-d-amorcage">Le processus d’amorçage</a>
+                <ul>
+                    <li>
+                        <a href="index.html#amorcage-bios">Amorçage BIOS</a>
+                    </li><li>
+                        <a href="index.html#uefi">UEFI</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#un-noyau-minimal">Un noyau minimal</a>
+                <ul>
+                    <li>
+                        <a href="index.html#installer-une-version-nocturne-de-rust">Installer une version nocturne de Rust</a>
+                    </li><li>
+                        <a href="index.html#specification-de-la-cible">Spécification de la cible</a>
+                    </li><li>
+                        <a href="index.html#construction-de-notre-noyau">Construction de notre noyau</a>
+                    </li><li>
+                        <a href="index.html#afficher-a-l-ecran">Afficher à l’écran</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#executer-notre-noyau">Exécuter notre noyau</a>
+                <ul>
+                    <li>
+                        <a href="index.html#creer-une-image-d-amorcage">Créer une image d’amorçage</a>
+                    </li><li>
+                        <a href="index.html#amorcage-dans-qemu">Amorçage dans QEMU</a>
+                    </li><li>
+                        <a href="index.html#veritable-ordinateur">Véritable ordinateur</a>
+                    </li><li>
+                        <a href="index.html#utilisation-de-cargo-run">Utilisation de cargo run</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#et-ensuite">Et ensuite?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Commentaires</a></li>
+        </ul>
+    </details>
+
+<h2 id="le-processus-d-amorcage"><a class="zola-anchor" href="index.html#le-processus-d-amorcage" aria-label="Anchor link for: le-processus-d-amorcage">🔗</a>Le processus d’amorçage</h2>
+<p>Quand vous allumez un ordinateur, il commence par exécuter le code du micrologiciel qui est enregistré dans la carte mère (<a href="https://fr.wikipedia.org/wiki/M%C3%A9moire_morte">ROM</a>). Ce code performe un <a href="https://fr.wikipedia.org/wiki/Power-on_self-test_(informatique)">test d’auto-diagnostic de démarrage</a>, détecte la mémoire volatile disponible, et pré-initialise le processeur et le matériel. Par la suite, il recherche un disque amorçable et commence le processus d’amorçage du noyau du système d’exploitation.</p>
+<p>Sur x86, il existe deux standards pour les micrologiciels : le “Basic Input/Output System“ (<strong><a href="https://fr.wikipedia.org/wiki/BIOS_(informatique)">BIOS</a></strong>) et le nouvel “Unified Extensible Firmware Interface” (<strong><a href="https://fr.wikipedia.org/wiki/UEFI">UEFI</a></strong>). Le BIOS standard est vieux et dépassé, mais il est simple et bien supporté sur toutes les machines x86 depuis les années 1980. Au contraire, l’UEFI est moderne et offre davantage de fonctionnalités. Cependant, il est plus complexe à installer (du moins, selon moi).</p>
+<p>Actuellement, nous offrons seulement un support BIOS, mais nous planifions aussi du support pour l’UEFI. Si vous aimeriez nous aider avec cela, consultez l’<a href="https://github.com/phil-opp/blog_os/issues/349"><em>issue</em> sur GitHub</a>.</p>
+<h3 id="amorcage-bios"><a class="zola-anchor" href="index.html#amorcage-bios" aria-label="Anchor link for: amorcage-bios">🔗</a>Amorçage BIOS</h3>
+<p>Presque tous les systèmes x86 peuvent amorcer le BIOS, y compris les nouvelles machines UEFI qui utilisent un BIOS émulé. C’est une bonne chose car cela permet d’utiliser la même logique d’amorçage sur toutes les machines du dernier siècle. Cependant, cette grande compatibilité est aussi le plus grand inconvénient de l’amorçage BIOS, car cela signifie que le CPU est mis dans un mode de compatibilité 16-bit appelé <em><a href="https://fr.wikipedia.org/wiki/Mode_r%C3%A9el">real mode</a></em> avant l’amorçage afin que les bootloaders archaïques des années 1980 puissent encore fonctionner. </p>
+<p>Mais commençons par le commencement :</p>
+<p>Quand vous allumez votre ordinateur, il charge le BIOS provenant d’un emplacement de mémoire flash spéciale localisée sur la carte mère. Le BIOS exécute des tests d’auto-diagnostic et des routines d’initialisation du matériel, puis il cherche des disques amorçables. S’il en trouve un, le contrôle est transféré à son <em>bootloader</em>, qui est une portion de 512 octets de code exécutable enregistré au début du disque. Vu que la plupart des bootloaders dépassent 512 octets, ils sont généralement divisés en deux phases: la première, plus petite, tient dans ces 512 octets, tandis que la seconde phase est chargée subséquemment.</p>
+<p>Le bootloader doit déterminer l’emplacement de l’image de noyau sur le disque et la charger en mémoire. Il doit aussi passer le processeur de 16-bit (<a href="https://fr.wikipedia.org/wiki/Mode_r%C3%A9el">real mode</a>) à 32-bit (<a href="https://fr.wikipedia.org/wiki/Mode_prot%C3%A9g%C3%A9">protected mode</a>), puis à 64-bit (<a href="https://en.wikipedia.org/wiki/Long_mode">long mode</a>), dans lequel les registres 64-bit et la totalité de la mémoire principale sont disponibles. Sa troisième responsabilité est de récupérer certaines informations (telle que les associations mémoires) du BIOS et de les transférer au noyau du système d’exploitation. </p>
+<p>Implémenter un bootloader est fastidieux car cela requiert l’écriture en language assembleur ainsi que plusieurs autres étapes particulières comme “écrire une valeur magique dans un registre du processeur“. Par conséquent, nous ne couvrons pas la création d’un bootloader dans cet article et fournissons plutôt un outil appelé <a href="https://github.com/rust-osdev/bootimage">bootimage</a> qui ajoute automatiquement un bootloader au noyau.</p>
+<p>Si vous êtes intéressé par la création de votre propre booloader : restez dans le coin, plusieurs articles sur ce sujet sont déjà prévus à ce sujet! <!-- , jetez un coup d'oeil à nos articles “_[Writing a Bootloader]_”, où nous expliquons en détails comment écrire un bootloader. --></p>
+<h4 id="le-standard-multiboot"><a class="zola-anchor" href="index.html#le-standard-multiboot" aria-label="Anchor link for: le-standard-multiboot">🔗</a>Le standard Multiboot</h4>
+<p>Pour éviter que chaque système d’exploitation implémente son propre bootloader, qui est seulement compatible avec un seul système d’exploitation, la <a href="https://fr.wikipedia.org/wiki/Free_Software_Foundation">Free Software Foundation</a> a créé en 1995 un bootloader standard public appelé <a href="https://wiki.osdev.org/Multiboot">Multiboot</a>. Le standard définit une interface entre le bootloader et le système d’exploitation afin que n’importe quel bootloader compatible Multiboot puisse charger n’importe quel système d’exploitation compatible Multiboot. L’implémentation de référence est <a href="https://fr.wikipedia.org/wiki/GNU_GRUB">GNU GRUB</a>, qui est le bootloader le plus populaire pour les systèmes Linux. </p>
+<p>Pour créer un noyau compatible Multiboot, il suffit d’insérer une <a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#OS-image-format">en-tête Multiboot</a> au début du fichier du noyau. Cela rend très simple l’amorçage d’un système d’exploitation depuis GRUB. Cependant, GRUB et le standard Multiboot présentent aussi quelques problèmes : </p>
+<ul>
+<li>Ils supportent seulement le “protected mode” 32-bit. Cela signifie que vous devez encore effectuer la configuration du processeur pour passer au “long mode” 64-bit.</li>
+<li>Ils sont conçus pour simplifier le bootloader plutôt que le noyau. Par exemple, le noyau doit être lié avec une <a href="https://wiki.osdev.org/Multiboot#Multiboot_2">taille de page prédéfinie</a>, étant donné que GRUB ne peut pas trouver les entêtes Multiboot autrement. Un autre exemple est que l’<a href="https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format">information de boot</a>, qui est fournies au noyau, contient plusieurs structures spécifiques à l’architecture au lieu de fournir des abstractions pures. </li>
+<li>GRUB et le standard Multiboot sont peu documentés.</li>
+<li>GRUB doit être installé sur un système hôte pour créer une image de disque amorçable depuis le fichier du noyau. Cela rend le développement sur Windows ou sur Mac plus difficile.</li>
+</ul>
+<p>En raison de ces désavantages, nous avons décidé de ne pas utiliser GRUB ou le standard Multiboot. Cependant, nous avons l’intention d’ajouter le support Multiboot à notre outil <a href="https://github.com/rust-osdev/bootimage">bootimage</a>, afin qu’il soit aussi possible de charger le noyau sur un système GRUB. Si vous êtes interessé par l’écriture d’un noyau Multiboot conforme, consultez la <a href="../../edition-1">première édition</a> de cette série d’articles. </p>
+<h3 id="uefi"><a class="zola-anchor" href="index.html#uefi" aria-label="Anchor link for: uefi">🔗</a>UEFI</h3>
+<p>(Nous ne fournissons pas le support UEFI à l’heure actuelle, mais nous aimerions bien! Si vous voulez aider, dites-le nous dans cette <a href="https://github.com/phil-opp/blog_os/issues/349"><em>issue</em> GitHub</a>.)</p>
+<h2 id="un-noyau-minimal"><a class="zola-anchor" href="index.html#un-noyau-minimal" aria-label="Anchor link for: un-noyau-minimal">🔗</a>Un noyau minimal</h2>
+<p>Maintenant que nous savons à peu près comment un ordinateur démarre, il est temps de créer notre propre noyau minimal. Notre objectif est de créer une image de disque qui affiche “Hello World!” à l’écran lorsqu’il démarre. Nous ferons ceci en améliorant le <a href="../freestanding-rust-binary/index.html">binaire Rust autonome</a> du dernier article.</p>
+<p>Comme vous vous en rappelez peut-être, nous avons créé un binaire autonome grâce à <code>cargo</code>, mais selon le système d’exploitation, nous avions besoin de différents points d’entrée et d’options de compilation. C’est dû au fait que <code>cargo</code> construit pour <em>système hôte</em> par défaut, c’est-à-dire le système que vous utilisez. Ce n’est pas ce que nous voulons pour notre noyau, car un noyau qui s’exécute, par exemple, sur Windows n’a pas de sens. Nous voulons plutôt compiler pour un <em>système cible</em> bien défini.</p>
+<h3 id="installer-une-version-nocturne-de-rust"><a class="zola-anchor" href="index.html#installer-une-version-nocturne-de-rust" aria-label="Anchor link for: installer-une-version-nocturne-de-rust">🔗</a>Installer une version nocturne de Rust</h3>
+<p>Rust a trois canaux de distribution : <em>stable</em>, <em>beta</em>, et <em>nightly</em>. Le Livre de Rust explique bien les différences entre ces canaux, alors prenez une minute et <a href="https://doc.rust-lang.org/book/appendix-07-nightly-rust.html#choo-choo-release-channels-and-riding-the-trains">jetez y un coup d’oeil</a>. Pour construire un système d’exploitation, nous aurons besoin de fonctionalités expérimentales qui sont disponibles uniquement sur le canal de distribution nocturne. Donc nous devons installer une version nocturne de Rust.</p>
+<p>Pour gérer l’installation de Rust, je recommande fortement <a href="https://www.rustup.rs/">rustup</a>. Il vous permet d’installer les versions nocturne, beta et stable du compilateur côte-à-côte et facilite leurs mises à jour. Avec rustup, vous pouvez utiliser un canal de distribution nocturne pour le dossier actuel en exécutant <code>rustup override set nightly</code>. Par ailleurs, vous pouvez ajouter un fichier appelé <code>rust-toolchain</code> avec le contenu <code>nightly</code> au dossier racine du projet. Vous pouvez vérifier que vous avez une version nocturne installée en exécutant <code>rustc --version</code>: Le numéro de la version devrait comprendre <code>-nightly</code> à la fin.</p>
+<p>La version nocturne du compilateur nous permet d’activer certaines fonctionnalités expérimentales en utilisant certains <em>drapeaux de fonctionalité</em> dans le haut de notre fichier. Par exemple, nous pourrions activer <a href="https://doc.rust-lang.org/stable/reference/inline-assembly.html">macro expérimentale <code>asm!</code></a> pour écrire du code assembleur intégré en ajoutant <code>#![feature(asm)]</code> au haut de notre <code>main.rs</code>. Notez que ces fonctionnalités expérimentales sont tout à fait instables, ce qui veut dire que des versions futures de Rust pourraient les changer ou les retirer sans préavis. Pour cette raison, nous les utiliserons seulement lorsque strictement nécessaire.</p>
+<h3 id="specification-de-la-cible"><a class="zola-anchor" href="index.html#specification-de-la-cible" aria-label="Anchor link for: specification-de-la-cible">🔗</a>Spécification de la cible</h3>
+<p>Cargo supporte différent systèmes cibles avec le paramètre <code>--target</code>. La cible est définie par un soi-disant <em><a href="https://clang.llvm.org/docs/CrossCompilation.html#target-triple">triplet de cible</a></em>, qui décrit l’architecteur du processeur, le fabricant, le système d’exploitation, et l’interface binaire d’application (<a href="https://stackoverflow.com/a/2456882">ABI</a>). Par exemple, le triplet <code>x86_64-unknown-linux-gnu</code> décrit un système avec un processeur <code>x86_64</code>, sans fabricant défini, et un système d’exploitation Linux avec l’interface binaire d’application GNU. Rust supporte <a href="https://forge.rust-lang.org/release/platform-support.html">plusieurs différents triplets de cible</a>, incluant <code>arm-linux-androideabi</code> pour Android ou <a href="https://www.hellorust.com/setup/wasm-target/"><code>wasm32-unknown-unknown</code> pour WebAssembly</a>.</p>
+<p>Pour notre système cible toutefois, nous avons besoin de paramètres de configuration spéciaux (par exemple, pas de système d’explotation sous-jacent), donc aucun des <a href="https://forge.rust-lang.org/release/platform-support.html">triplets de cible existants</a> ne convient. Heureusement, Rust nous permet de définir <a href="https://doc.rust-lang.org/nightly/rustc/targets/custom.html">notre propre cible</a> par l’entremise d’un fichier JSON. Par exemple, un fichier JSON qui décrit une cible <code>x86_64-unknown-linux-gnu</code> ressemble à ceci:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;linux&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;pre-link-args&quot;</span><span>: [</span><span style="color:#d69d85;">&quot;-m64&quot;</span><span>],
+</span><span>    </span><span style="color:#d69d85;">&quot;morestack&quot;</span><span>: </span><span style="color:#569cd6;">false
+</span><span>}
+</span></code></pre>
+<p>La plupart des champs sont requis par LLVM pour générer le code pour cette plateforme. Par exemple, le champ <a href="https://llvm.org/docs/LangRef.html#data-layout"><code>data-layout</code></a> définit la taille de divers types d’entiers, de nombres à virgule flottante, et de pointeurs. Puis, il y a des champs que Rust utilise pour de la compilation conditionelle, comme <code>target-pointer-width</code>. Le troisième type de champ définit comment la crate doit être construite. Par exemple, le champ <code>pre-link-args</code> spécifie les arguments fournis au <a href="https://en.wikipedia.org/wiki/Linker_(computing)">lieur</a>.</p>
+<p>Nous pouvons aussi cibler les systèmes <code>x86_64</code> avec notre noyau, donc notre spécification de cible ressemblera beaucoup à celle plus haut. Commençons par créer un fichier <code>x86_64-blog_os.json</code> (utilisez le nom de votre choix) avec ce contenu commun:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true
+</span><span>}
+</span></code></pre>
+<p>Notez que nous avons changé le système d’exploitation dans le champs <code>llvm-target</code> et <code>os</code> en <code>none</code>, puisque nous ferons l’exécution sur du “bare metal” (donc, sans système d’exploitation sous-jacent).</p>
+<p>Nous ajoutons ensuite les champs suivants reliés à la construction:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span></code></pre>
+<p>Plutôt que d’utiliser le lieur par défaut de la plateforme (qui pourrait ne pas supporter les cibles Linux), nous utilisons le lieur multi-plateforme <a href="https://lld.llvm.org/">LLD</a> qui est inclut avec Rust pour lier notre noyau.</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span></code></pre>
+<p>Ce paramètre spécifie que la cible ne permet pas le <a href="https://www.bogotobogo.com/cplusplus/stackunwinding.php">déroulement de la pile</a> lorsque le noyau panique, alors le système devrait plutôt s’arrêter directement. Ceci mène au même résultat que l’option <code>panic = &quot;abort&quot;</code> dans notre Cargo.toml, alors nous pouvons la retirer de ce fichier. (Notez que, contrairement à l’option Cargo.toml, cette option de cible s’applique aussi quand nous recompilerons la bibliothèque <code>core</code> plus loin dans cet article. Ainsi, même si vous préférez garder l’option Cargo.toml, gardez cette option.)</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span></code></pre>
+<p>Nous écrivons un noyau, donc nous devrons éventuellement gérer les interruptions. Pour ce faire en toute sécurité, nous devons désactiver une optimisation de pointeur de pile nommée la <em>“zone rouge“</em>, puisqu’elle causerait une corruption de la pile autrement. Pour plus d’informations, lire notre article séparé à propos de la <a href="../../red-zone/index.html">désactivation de la zone rouge</a>.</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;</span><span>,
+</span></code></pre>
+<p>Le champ <code>features</code> active/désactive des fonctionalités de la cible. Nous désactivons les fonctionalités <code>mmx</code> et <code>sse</code> en les précédant d’un signe “moins” et activons la fonctionnalité <code>soft-float</code> en la précédant d’un signe “plus”. Notez qu’il ne doit pas y avoir d’espace entre les différentes fonctionnalités, sinon LLVM n’arrive pas à analyser la chaîne de caractères des fonctionnalités.</p>
+<p>Les fonctionnalités <code>mmx</code> et <code>sse</code> déterminent le support les instructions <a href="https://fr.wikipedia.org/wiki/Single_instruction_multiple_data">Single Instruction Multiple Data (SIMD)</a>, qui peuvent souvent significativement accélérer les programmes. Toutefois, utiliser les grands registres SIMD dans les noyaux des systèmes d’exploitation mène à des problèmes de performance. Ceci parce que le noyau a besoin de restaurer tous les registres à leur état original avant de continuer un programme interrompu. Cela signifie que le noyau doit enregistrer l’état SIMD complet dans la mémoire principale à chaque appel système ou interruption matérielle. Puisque l’état SIMD est très grand (512–1600 octets) et que les interruptions peuvent survenir très fréquemment, ces opérations d’enregistrement/restauration additionnelles nuisent considérablement à la performance. Pour prévenir cela, nous désactivons SIMD pour notre noyau (pas pour les applications qui s’exécutent dessus!).</p>
+<p>Un problème avec la désactivation de SIMD est que les opérations sur les nombres à virgule flottante sur <code>x86_64</code> nécessitent les registres SIMD par défaut. Pour résoudre ce problème, nous ajoutons la fonctionnalité <code>soft-float</code>, qui émule toutes les opérations à virgule flottante avec des fonctions logicielles utilisant des entiers normaux.</p>
+<p>Pour plus d’informations, voir notre article sur la <a href="../../disable-simd/index.html">désactivation de SIMD</a>.</p>
+<h4 id="assembler-le-tout"><a class="zola-anchor" href="index.html#assembler-le-tout" aria-label="Anchor link for: assembler-le-tout">🔗</a>Assembler le tout</h4>
+<p>Notre fichier de spécification de cible ressemble maintenant à ceci :</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>    </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;executables&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;ld.lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;linker&quot;</span><span>: </span><span style="color:#d69d85;">&quot;rust-lld&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<h3 id="construction-de-notre-noyau"><a class="zola-anchor" href="index.html#construction-de-notre-noyau" aria-label="Anchor link for: construction-de-notre-noyau">🔗</a>Construction de notre noyau</h3>
+<p>Compiler pour notre nouvelle cible utilisera les conventions Linux (je ne suis pas trop certain pourquoi; j’assume que c’est simplement le comportement par défaut de LLVM). Cela signifie que nos avons besoin d’un point d’entrée nommé <code>_start</code> comme décrit dans <a href="../freestanding-rust-binary/index.html">l’article précédent</a>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std] </span><span style="color:#608b4e;">// ne pas lier la bibliothèque standard Rust
+</span><span>#![no_main] </span><span style="color:#608b4e;">// désactiver tous les points d&#39;entrée Rust
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#608b4e;">/// Cette fonction est invoquée lorsque le système panique
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// ne pas massacrer le nom de cette fonction
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// cette fonction est le point d&#39;entrée, puisque le lieur cherche une fonction
+</span><span>    </span><span style="color:#608b4e;">// nommée `_start` par défaut
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Notez que le point d’entrée doit être appelé <code>_start</code> indépendamment du système d’exploitation hôte.</p>
+<p>Nous pouvons maintenant construire le noyau pour notre nouvelle cible en fournissant le nom du fichier JSON comme <code>--target</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>
+</span><span>error[E0463]: can&#39;t find crate for `core`
+</span></code></pre>
+<p>Cela échoue! L’erreur nous dit que le compilateur ne trouve plus la <a href="https://doc.rust-lang.org/nightly/core/index.html">bibliothèque <code>core</code></a>. Cette bibliothèque contient les types de base Rust comme <code>Result</code>, <code>Option</code>, les itérateurs, et est implicitement liée à toutes les crates <code>no_std</code>.</p>
+<p>Le problème est que la bibliothèque <code>core</code> est distribuée avec le compilateur Rust comme biliothèque <em>precompilée</em>. Donc, elle est seulement valide pour les triplets d’hôtes supportés (par exemple, <code>x86_64-unknown-linux-gnu</code>) mais pas pour notre cible personnalisée. Si nous voulons compiler du code pour d’autres cibles, nous devons d’abord recompiler <code>core</code> pour ces cibles.</p>
+<h4 id="l-option-build-std"><a class="zola-anchor" href="index.html#l-option-build-std" aria-label="Anchor link for: l-option-build-std">🔗</a>L’option <code>build-std</code></h4>
+<p>C’est ici que la <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std">fonctionnalité <code>build-std</code></a> de cargo entre en jeu. Elle permet de recompiler <code>core</code> et d’autres crates de la bibliothèque standard sur demande, plutôt que d’utiliser des versions précompilées incluses avec l’installation de Rust. Cette fonctionnalité est très récente et n’est pas encore complète, donc elle est définie comme instable et est seulement disponible avec les <a href="index.html#installer-une-version-nocturne-de-rust">versions nocturnes du compilateur Rust</a>.</p>
+<p>Pour utiliser cette fonctionnalité, nous devons créer un fichier de <a href="https://doc.rust-lang.org/cargo/reference/config.html">configuration cargo</a> dans <code>.cargo/config.toml</code> avec le contenu suivant:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># dans .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>Ceci indique à cargo qu’il doit recompiler les bibliothèques <code>core</code> et <code>compiler_builtins</code>. Celle-ci est nécessaire pour qu’elle ait une dépendance de <code>core</code>. Afin de recompiler ces bibliothèques, cargo doit avoir accès au code source de Rust, que nous pouvons installer avec <code>rustup component add rust-src</code>.</p>
+<div class="note">
+<p><strong>Note:</strong> La clé de configuration <code>unstable.build-std</code> nécessite une version nocturne de Rust plus récente que 2020-07-15.</p>
+</div>
+<p>Après avoir défini la clé de configuration <code>unstable.build-std</code> et installé la composante <code>rust-src</code>, nous pouvons exécuter notre commande de construction à nouveau:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo build --target x86_64-blog_os.json
+</span><span>   Compiling core v0.0.0 (/…/rust/src/libcore)
+</span><span>   Compiling rustc-std-workspace-core v1.99.0 (/…/rust/src/tools/rustc-std-workspace-core)
+</span><span>   Compiling compiler_builtins v0.1.32
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.29 secs
+</span></code></pre>
+<p>Nous voyons que <code>cargo build</code> recompile maintenant les bibliothèques <code>core</code>, <code>rustc-std-workspace-core</code> (une dépendance de <code>compiler_builtins</code>), et <code>compiler_builtins</code> pour notre cible personnalisée.</p>
+<h4 id="details-relies-a-la-memoire"><a class="zola-anchor" href="index.html#details-relies-a-la-memoire" aria-label="Anchor link for: details-relies-a-la-memoire">🔗</a>Détails reliés à la mémoire</h4>
+<p>Le compilateur Rust assume qu’un certain ensemble de fonctions intégrées sont disponibles pour tous les systèmes. La plupart de ces fonctions sont fournies par la crate <code>compiler_builtins</code> que nous venons de recompiler. Toutefois, certaines fonctions liées à la mémoire dans cette crate ne sont pas activées par défaut puisqu’elles sont normalement fournies par la bibliothèque C sur le système. Parmi ces fonctions, on retrouve <code>memset</code>, qui définit tous les octets dans un bloc mémoire à une certaine valeur, <code>memcpy</code>, qui copie un bloc mémoire vers un autre, et <code>memcmp</code>, qui compare deux blocs mémoire. Alors que nous n’avions pas besoin de ces fonctions pour compiler notre noyau maintenant, elles seront nécessaires aussitôt que nous lui ajouterons plus de code (par exemple, lorsque nous copierons des <code>struct</code>).</p>
+<p>Puisque nous ne pouvons pas lier avec la bibliothèque C du système d’exploitation, nous avons besoin d’une méthode alternative de fournir ces fonctions au compilateur. Une approche possible pour ce faire serait d’implémenter nos propre fonctions <code>memset</code>, etc. et de leur appliquer l’attribut <code>#[no_mangle]</code> (pour prévenir le changement de nom automatique pendant la compilation). Or, ceci est dangereux puisque toute erreur dans l’implémentation pourrait mener à un comportement indéterminé. Par exemple, implémenter <code>memcpy</code> avec une boucle <code>for</code> pourrait mener à une recursion infinie puisque les boucles <code>for</code> invoquent implicitement la méthode <em>trait</em> <a href="https://doc.rust-lang.org/stable/core/iter/trait.IntoIterator.html#tymethod.into_iter"><code>IntoIterator::into_iter</code></a>, qui pourrait invoquer <code>memcpy</code> de nouveau. C’est donc une bonne idée de plutôt réutiliser des implémentations existantes et éprouvées.</p>
+<p>Heureusement, la crate <code>compiler_builtins</code> contient déjà des implémentations pour toutes les fonctions nécessaires, elles sont seulement désactivées par défaut pour ne pas interférer avec les implémentations de la bibliothèque C. Nous pouvons les activer en définissant le drapeau <a href="https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#build-std-features"><code>build-std-features</code></a> de cargo à <code>[&quot;compiler-builtins-mem&quot;]</code>. Comme pour le drapeau <code>build-std</code>, ce drapeau peut être soit fourni en ligne de commande avec <code>-Z</code> ou configuré dans la table <code>unstable</code> du fichier <code>.cargo/config.toml</code>. Puisque nous voulons toujours construire avec ce drapeau, l’option du fichier de configuration fait plus de sens pour nous:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># dans .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">unstable</span><span>]
+</span><span style="color:#569cd6;">build-std-features </span><span>= [</span><span style="color:#d69d85;">&quot;compiler-builtins-mem&quot;</span><span>]
+</span><span style="color:#569cd6;">build-std </span><span>= [</span><span style="color:#d69d85;">&quot;core&quot;</span><span>, </span><span style="color:#d69d85;">&quot;compiler_builtins&quot;</span><span>]
+</span></code></pre>
+<p>(Le support pour la fonctionnalité <code>compiler-builtins-mem</code> a <a href="https://github.com/rust-lang/rust/pull/77284">été ajouté assez récemment</a>, donc vous aurez besoin de la version nocturne <code>2020-09-30</code> de Rust ou plus récent pour l’utiliser.)</p>
+<p>Dans les coulisses, ce drapeau active la <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/Cargo.toml#L54-L55">fonctionnalité <code>mem</code></a> de la crate <code>compiler_builtins</code>. Le résultat est que l’attribut <code>#[no_mangle]</code> est appliqué aux <a href="https://github.com/rust-lang/compiler-builtins/blob/eff506cd49b637f1ab5931625a33cef7e91fbbf6/src/mem.rs#L12-L69">implémentations <code>memcpy</code> et autres</a> de la caise, ce qui les rend disponible au lieur.</p>
+<p>Avec ce changement, notre noyau a des implémentations valides pour toutes les fonctions requises par le compilateur, donc il peut continuer à compiler même si notre code devient plus complexe.</p>
+<h4 id="definir-une-cible-par-defaut"><a class="zola-anchor" href="index.html#definir-une-cible-par-defaut" aria-label="Anchor link for: definir-une-cible-par-defaut">🔗</a>Définir une cible par défaut</h4>
+<p>Pour ne pas avoir à fournir le paramètre <code>--target</code> à chaque invocation de <code>cargo build</code>, nous pouvons définir la cible par défaut. Pour ce faire, nous ajoutons le code suivant à notre fichier de <a href="https://doc.rust-lang.org/cargo/reference/config.html">configuration Cargo</a> dans <code>.cargo/config.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># dans .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">build</span><span>]
+</span><span style="color:#569cd6;">target </span><span>= </span><span style="color:#d69d85;">&quot;x86_64-blog_os.json&quot;
+</span></code></pre>
+<p>Ceci indique à <code>cargo</code> d’utiliser notre cible <code>x86_64-blog_os.json</code> quand il n’y a pas d’argument de cible <code>--target</code> explicitement fourni. Ceci veut dire que nous pouvons maintenant construire notre noyau avec un simple <code>cargo build</code>. Pour plus d’informations sur les options de configuration cargo, jetez un coup d’oeil à la <a href="https://doc.rust-lang.org/cargo/reference/config.html">documentation officielle de cargo</a>.</p>
+<p>Nous pouvons maintenant construire notre noyau pour une cible “bare metal” avec un simple <code>cargo build</code>. Toutefois, notre point d’entrée <code>_start</code>, qui sera appelé par le bootloader, est encore vide. Il est temps de lui faire afficher quelque chose à l’écran.</p>
+<h3 id="afficher-a-l-ecran"><a class="zola-anchor" href="index.html#afficher-a-l-ecran" aria-label="Anchor link for: afficher-a-l-ecran">🔗</a>Afficher à l’écran</h3>
+<p>La façon la plus facile d’afficher à l’écran à ce stade est grâce au tampon texte VGA. C’est un emplacement mémoire spécial associé au matériel VGA qui contient le contenu affiché à l’écran. Il consiste normalement en 25 lines qui contiennent chacune 80 cellules de caractère. Chaque cellule de caractère affiche un caractère ASCII avec des couleurs d’avant-plan et d’arrière-plan. Le résultat à l’écran ressemble à ceci:</p>
+<p><img src="https://upload.wikimedia.org/wikipedia/commons/f/f8/Codepage-437.png" alt="sortie à l’écran pour des caractères ASCII ordinaires" /></p>
+<p>Nous discuterons de la disposition exacte du tampon VGA dans le prochain article, où nous lui écrirons un premier petit pilote. Pour afficher “Hello World!”, nous devons seulement savoir que le tampon est situé à l’adresse <code>0xb8000</code> et que chaque cellule de caractère consiste en un octet ASCII et un octet de couleur.</p>
+<p>L’implémentation ressemble à ceci :</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">static </span><span style="color:#b4cea8;">HELLO</span><span>: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">u8</span><span>] = </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&quot;Hello World!&quot;</span><span>;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> vga_buffer = </span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut u8</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, </span><span style="color:#569cd6;">&amp;</span><span>byte) </span><span style="color:#569cd6;">in </span><span style="color:#b4cea8;">HELLO</span><span>.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2</span><span>) = byte;
+</span><span>            *vga_buffer.offset(i </span><span style="color:#569cd6;">as isize </span><span>* </span><span style="color:#b5cea8;">2 </span><span>+ </span><span style="color:#b5cea8;">1</span><span>) = </span><span style="color:#b5cea8;">0xb</span><span>;
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>D’abord, nous transformons l’entier <code>0xb8000</code> en un <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html#dereferencing-a-raw-pointer">pointeur brut</a>. Puis nous <a href="https://doc.rust-lang.org/stable/book/ch13-02-iterators.html">parcourons</a> les octets de la <a href="https://doc.rust-lang.org/reference/tokens.html#byte-string-literals">chaîne d’octets</a> <a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#the-static-lifetime">statique</a> <code>HELLO</code>. Nous utilisons la méthode <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a> pour aussi obtenir une variable <code>i</code>. Dans le corps de la boucle <code>for</code>, nous utilisons la méthode <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.offset"><code>offset</code></a> pour écrire la chaîne d’octets et l’octet de couleur correspondant(<code>0xb</code> est un cyan pâle).</p>
+<p>Notez qu’il y a un bloc <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html"><code>unsafe</code></a> qui enveloppe les écritures mémoire. La raison en est que le compilateur Rust ne peut pas prouver que les pointeurs bruts que nous créons sont valides. Ils pourraient pointer n’importe où et mener à une corruption de données. En les mettant dans un bloc <code>unsafe</code>, nous disons fondamentalement au compilateur que nous sommes absolument certains que les opérations sont valides. Notez qu’un bloc <code>unsafe</code> ne désactive pas les contrôles de sécurité de Rust. Il permet seulement de faire <a href="https://doc.rust-lang.org/stable/book/ch19-01-unsafe-rust.html#unsafe-superpowers">cinq choses supplémentaires</a>.</p>
+<p>Je veux souligner que <strong>ce n’est pas comme cela que les choses se font en Rust!</strong> Il est très facile de faire des erreurs en travaillant avec des pointeurs bruts à l’intérieur de blocs <code>unsafe</code>. Par exemple, nous pourrions facilement écrire au-delà de la fin du tampon si nous ne sommes pas prudents.</p>
+<p>Alors nous voulons minimiser l’utilisation de <code>unsafe</code> autant que possible. Rust nous offre la possibilité de le faire en créant des abstractions de sécurité. Par exemple, nous pourrions créer un type tampon VGA qui encapsule les risques et qui s’assure qu’il est impossible de faire quoi que ce soit d’incorrect à l’extérieur de ce type. Ainsi, nous aurions besoin de très peu de code <code>unsafe</code> et nous serions certains que nous ne violons pas la <a href="https://en.wikipedia.org/wiki/Memory_safety">sécurité de mémoire</a>. Nous allons créer une telle abstraction de tampon VGA buffer dans le prochain article.</p>
+<h2 id="executer-notre-noyau"><a class="zola-anchor" href="index.html#executer-notre-noyau" aria-label="Anchor link for: executer-notre-noyau">🔗</a>Exécuter notre noyau</h2>
+<p>Maintenant que nous avons un exécutable qui fait quelque chose de perceptible, il est temps de l’exécuter. D’abord, nous devons transformer notre noyau compilé en une image de disque amorçable en le liant à un bootloader. Ensuite, nous pourrons exécuter l’image de disque dans une machine virtuelle <a href="https://www.qemu.org/">QEMU</a> ou l’amorcer sur du véritable matériel en utilisant une clé USB.</p>
+<h3 id="creer-une-image-d-amorcage"><a class="zola-anchor" href="index.html#creer-une-image-d-amorcage" aria-label="Anchor link for: creer-une-image-d-amorcage">🔗</a>Créer une image d’amorçage</h3>
+<p>Pour transformer notre noyau compilé en image de disque amorçable, nous devons le lier avec un bootloader. Comme nous l’avons appris dans la <a href="index.html#le-processus-d-amorcage">section à propos du lancement</a>, le bootloader est responsable de l’initialisation du processeur et du chargement de notre noyau.</p>
+<p>Plutôt que d’écrire notre propre bootloader, ce qui est un projet en soi, nous utilisons la crate <a href="https://crates.io/crates/bootloader"><code>bootloader</code></a>. Cette crate propose un bootloader BIOS de base sans dépendance C. Seulement du code Rust et de l’assembleur intégré. Pour l’utiliser afin de lancer notre noyau, nous devons ajouter une dépendance à cette crate:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># dans Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= </span><span style="color:#d69d85;">&quot;0.9.8&quot;
+</span></code></pre>
+<p>Ajouter le bootloader comme dépendance n’est pas suffisant pour réellement créer une image de disque amorçable. Le problème est que nous devons lier notre noyau avec le bootloader après la compilation, mais cargo ne supporte pas les <a href="https://github.com/rust-lang/cargo/issues/545">scripts post-build</a>.</p>
+<p>Pour résoudre ce problème, nous avons créé un outil nommé <code>bootimage</code> qui compile d’abord le noyau et le bootloader, et les lie ensuite ensemble pour créer une image de disque amorçable. Pour installer cet outil, exécutez la commande suivante dans votre terminal:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install bootimage
+</span></code></pre>
+<p>Pour exécuter <code>bootimage</code> et construire le bootloader, vous devez avoir la composante rustup <code>llvm-tools-preview</code> installée. Vous pouvez l’installer en exécutant <code>rustup component add llvm-tools-preview</code>.</p>
+<p>Après avoir installé <code>bootimage</code> et ajouté la composante <code>llvm-tools-preview</code>, nous pouvons créer une image de disque amorçable en exécutant:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo bootimage
+</span></code></pre>
+<p>Nous voyons que l’outil recompile notre noyau en utilisant <code>cargo build</code>, donc il utilisera automatiquement tout changements que vous faites. Ensuite, il compile le bootloader, ce qui peut prendre un certain temps. Comme toutes les dépendances de crates, il est seulement construit une fois puis il est mis en cache, donc les builds subséquentes seront beaucoup plus rapides. Enfin, <code>bootimage</code> combine le bootloader et le noyau en une image de disque amorçable.</p>
+<p>Après avoir exécuté la commande, vous devriez voir une image de disque amorçable nommée <code>bootimage-blog_os.bin</code> dans votre dossier <code>target/x86_64-blog_os/debug</code>. Vous pouvez la lancer dans une machine virtuelle ou la copier sur une clé USB pour la lancer sur du véritable matériel. (Notez que ceci n’est pas une image CD, qui est un format différent, donc la graver sur un CD ne fonctionne pas).</p>
+<h4 id="comment-cela-fonctionne-t-il"><a class="zola-anchor" href="index.html#comment-cela-fonctionne-t-il" aria-label="Anchor link for: comment-cela-fonctionne-t-il">🔗</a>Comment cela fonctionne-t-il?</h4>
+<p>L’outil <code>bootimage</code> effectue les étapes suivantes en arrière-plan:</p>
+<ul>
+<li>Il compile notre noyau en un fichier <a href="https://en.wikipedia.org/wiki/Executable_and_Linkable_Format">ELF</a>.</li>
+<li>Il compile notre dépendance bootloader en exécutable autonome.</li>
+<li>Il lie les octets du fichier ELF noyau au bootloader.</li>
+</ul>
+<p>Lorsque lancé, le bootloader lit et analyse le fichier ELF ajouté. Il associe ensuite les segments du programme aux adresses virtuelles dans les tables de pages, réinitialise la section <code>.bss</code>, puis met en place une pile. Finalement, il lit le point d’entrée (notre fonction <code>_start</code>) et s’y rend.</p>
+<h3 id="amorcage-dans-qemu"><a class="zola-anchor" href="index.html#amorcage-dans-qemu" aria-label="Anchor link for: amorcage-dans-qemu">🔗</a>Amorçage dans QEMU</h3>
+<p>Nous pouvons maintenant lancer l’image disque dans une machine virtuelle. Pour la démarrer dans <a href="https://www.qemu.org/">QEMU</a>, exécutez la commande suivante :</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; qemu-system-x86_64 -drive format=raw,file=target/x86_64-blog_os/debug/bootimage-blog_os.bin
+</span><span>warning: TCG doesn&#39;t support requested feature: CPUID.01H:ECX.vmx [bit 5]
+</span></code></pre>
+<p>Ceci ouvre une fenêtre séparée qui devrait ressembler à cela:</p>
+<p><img src="qemu.png" alt="QEMU showing “Hello World!”" /></p>
+<p>Nous voyoons que notre “Hello World!” est visible à l’écran.</p>
+<h3 id="veritable-ordinateur"><a class="zola-anchor" href="index.html#veritable-ordinateur" aria-label="Anchor link for: veritable-ordinateur">🔗</a>Véritable ordinateur</h3>
+<p>Il est aussi possible d’écrire l’image disque sur une clé USB et de le lancer sur un véritable ordinateur, <strong>mais soyez prudent</strong> et choisissez le bon nom de périphérique, parce que <strong>tout sur ce périphérique sera écrasé</strong>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; dd if=target/x86_64-blog_os/debug/bootimage-blog_os.bin of=/dev/sdX &amp;&amp; sync
+</span></code></pre>
+<p>Où <code>sdX</code> est le nom du périphérique de votre clé USB.</p>
+<p>Après l’écriture de l’image sur votre clé USB, vous pouvez l’exécuter sur du véritable matériel en l’amorçant à partir de la clé USB. Vous devrez probablement utiliser un menu d’amorçage spécial ou changer l’ordre d’amorçage dans votre configuration BIOS pour amorcer à partir de la clé USB. Notez que cela ne fonctionne actuellement pas avec des ordinateurs UEFI, puisque la crate <code>bootloader</code> ne supporte pas encore UEFI.</p>
+<h3 id="utilisation-de-cargo-run"><a class="zola-anchor" href="index.html#utilisation-de-cargo-run" aria-label="Anchor link for: utilisation-de-cargo-run">🔗</a>Utilisation de <code>cargo run</code></h3>
+<p>Pour faciliter l’exécution de notre noyau dans QEMU, nous pouvons définir la clé de configuration <code>runner</code> pour cargo:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># dans .cargo/config.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">target.</span><span style="color:#d69d85;">&#39;cfg(target_os = &quot;none&quot;)&#39;</span><span>]
+</span><span style="color:#569cd6;">runner </span><span>= </span><span style="color:#d69d85;">&quot;bootimage runner&quot;
+</span></code></pre>
+<p>La table <code>target.'cfg(target_os = &quot;none&quot;)'</code> s’applique à toutes les cibles dont le champ <code>&quot;os&quot;</code> dans le fichier de configuration est défini à <code>&quot;none&quot;</code>. Ceci inclut notre cible <code>x86_64-blog_os.json</code>. La clé <code>runner</code> key spécifie la commande qui doit être invoquée pour <code>cargo run</code>. La commande est exécutée après une build réussie avec le chemin de l’exécutable comme premier argument. Voir la <a href="https://doc.rust-lang.org/cargo/reference/config.html">configuration cargo</a> pour plus de détails.</p>
+<p>La commande <code>bootimage runner</code> est spécifiquement conçue pour être utilisable comme un exécutable <code>runner</code>. Elle lie l’exécutable fourni avec le bootloader duquel dépend le projet et lance ensuite QEMU. Voir le <a href="https://github.com/rust-osdev/bootimage">README de <code>bootimage</code></a> pour plus de détails et les options de configuration possibles.</p>
+<p>Nous pouvons maintenant utiliser <code>cargo run</code> pour compiler notre noyau et le lancer dans QEMU.</p>
+<h2 id="et-ensuite"><a class="zola-anchor" href="index.html#et-ensuite" aria-label="Anchor link for: et-ensuite">🔗</a>Et ensuite?</h2>
+<p>Dans le prochain article, nous explorerons le tampon texte VGA plus en détails et nous écrirons une interface sécuritaire pour l’utiliser. Nous allons aussi mettre en place la macro <code>println</code>.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../freestanding-rust-binary/index.html">&laquo; Un binaire Rust autonome</a>
+        
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Commentaires</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28fr%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="A Minimal Rust Kernel (fr)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="fr"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22A%20Minimal%20Rust%20Kernel%20%28fr%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            Veuillez commenter en Anglais si possible.
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../minimal-rust-kernel/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="zh-CN" class=""><a href="../../zh-CN/minimal-rust-kernel/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/minimal-rust-kernel/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/minimal-rust-kernel/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ru" class=""><a href="../../ru/minimal-rust-kernel/index.html">
+                        Russian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/minimal-rust-kernel/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

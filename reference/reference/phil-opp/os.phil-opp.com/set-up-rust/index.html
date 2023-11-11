@@ -1,0 +1,906 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    <link href="../css/edition-1/poole.css" rel="stylesheet">
+    <link href="../css/edition-1/main.css" rel="stylesheet">
+    <link href="../css/edition-1/isso.css" rel="stylesheet">
+
+    <script async src="../js/edition-1/main.js"></script>
+
+    <title>Set Up Rust | Writing an OS in Rust (First Edition)</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <h2 class="masthead-title">
+                <a href="../edition-1" title="Home">Writing an OS in Rust (First Edition)</a>
+            </h2>
+            <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+        </header>
+
+        <main>
+    <h1>Set Up Rust</h1>
+    <time datetime="2015-09-02" class="post-date">
+        Sep 02, 2015
+         (updated on Apr 12, 2017) 
+    </time>
+
+    <aside id="toc-aside">
+        <h2>Table of Contents</h2>
+        <ol>
+            <li>
+                <a href="index.html#installing-rust">Installing Rust</a>
+                
+            </li><li>
+                <a href="index.html#creating-a-cargo-project">Creating a Cargo project</a>
+                
+            </li><li>
+                <a href="index.html#building-rust">Building Rust</a>
+                <ol>
+                    <li>
+                        <a href="index.html#target-specifications">Target Specifications</a>
+                    </li><li>
+                        <a href="index.html#a-kernel-target-specification">A Kernel Target Specification</a>
+                    </li><li>
+                        <a href="index.html#compiling">Compiling</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#integrating-rust">Integrating Rust</a>
+                <ol>
+                    <li>
+                        <a href="index.html#adjusting-the-makefile">Adjusting the Makefile</a>
+                    </li><li>
+                        <a href="index.html#calling-rust">Calling Rust</a>
+                    </li><li>
+                        <a href="index.html#fixing-linker-errors">Fixing Linker Errors</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#hello-world">Hello World!</a>
+                <ol>
+                    <li>
+                        <a href="index.html#stack-overflows">Stack Overflows</a>
+                    </li>
+                </ol>
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+        </ol>
+    </aside>
+
+    <div class="warning">
+        <b>No longer updated!</b> You are viewing the a post of the first edition of “Writing an OS in Rust”, which is no longer updated. You can find the second edition <a href="../edition-2/index.html">here</a>.
+    </div>
+
+    <p>In the previous posts we created a <a href="../multiboot-kernel/index.html">minimal Multiboot kernel</a> and <a href="../entering-longmode/index.html">switched to Long Mode</a>. Now we can finally switch to <a href="https://www.rust-lang.org/">Rust</a> code. Rust is a high-level language without runtime. It allows us to not link the standard library and write bare metal code. Unfortunately the setup is not quite hassle-free yet.</p>
+<span id="continue-reading"></span>
+<p>This blog post tries to set up Rust step-by-step and point out the different problems. If you have any questions, problems, or suggestions please <a href="https://github.com/phil-opp/blog_os/issues">file an issue</a> or create a comment at the bottom. The code from this post is in a <a href="https://github.com/phil-opp/blog_os/tree/first_edition_post_3">Github repository</a>, too.</p>
+<h2 id="installing-rust"><a class="zola-anchor" href="index.html#installing-rust" aria-label="Anchor link for: installing-rust">🔗</a>Installing Rust</h2>
+<p>We need a nightly compiler, as we will use many unstable features. To manage Rust installations I highly recommend <a href="https://www.rustup.rs/">rustup</a>. It allows you to install nightly, beta, and stable compilers side-by-side and makes it easy to update them. To use a nightly compiler for the current directory, you can run <code>rustup override add nightly</code>. Alternatively, you can add a file called <code>rust-toolchain</code> to the project’s root directory:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>nightly
+</span></code></pre>
+<p>The code from this post (and all following) is <a href="https://travis-ci.org/phil-opp/blog_os">automatically tested</a> every day and should always work for the newest nightly. If it doesn’t, please <a href="https://github.com/phil-opp/blog_os/issues">file an issue</a>.</p>
+<h2 id="creating-a-cargo-project"><a class="zola-anchor" href="index.html#creating-a-cargo-project" aria-label="Anchor link for: creating-a-cargo-project">🔗</a>Creating a Cargo project</h2>
+<p><a href="https://doc.crates.io/guide.html">Cargo</a> is Rust’s excellent package manager. Normally you would call <code>cargo new</code> when you want to create a new project folder. We can’t use it because our folder already exists, so we need to do it manually. Fortunately we only need to add a cargo configuration file named <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">package</span><span>]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;blog_os&quot;
+</span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;0.1.0&quot;
+</span><span style="color:#569cd6;">authors </span><span>= [</span><span style="color:#d69d85;">&quot;Philipp Oppermann &lt;dev@phil-opp.com&gt;&quot;</span><span>]
+</span><span>
+</span><span>[</span><span style="color:#808080;">lib</span><span>]
+</span><span style="color:#569cd6;">crate-type </span><span>= [</span><span style="color:#d69d85;">&quot;staticlib&quot;</span><span>]
+</span></code></pre>
+<p>The <code>package</code> section contains required project metadata such as the <a href="https://doc.rust-lang.org/cargo/reference/manifest.html#the-package-section">semantic crate version</a>. The <code>lib</code> section specifies that we want to build a static library, i.e. a library that contains all of its dependencies. This is required to link the Rust project with our kernel.</p>
+<p>Now we place our root source file in <code>src/lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#![feature(lang_items)]
+</span><span>#![no_std]
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {}
+</span><span>
+</span><span>#[lang </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;eh_personality&quot;</span><span>] #[no_mangle] </span><span style="color:#569cd6;">pub extern fn </span><span>eh_personality() {}
+</span><span>#[lang </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;panic_fmt&quot;</span><span>] #[no_mangle] </span><span style="color:#569cd6;">pub extern fn </span><span>panic_fmt() -&gt; </span><span style="color:#569cd6;">! </span><span>{</span><span style="color:#569cd6;">loop</span><span>{}}
+</span></code></pre>
+<p>Let’s break it down:</p>
+<ul>
+<li><code>#!</code> defines an <a href="https://doc.rust-lang.org/book/attributes.html">attribute</a> of the current module. Since we are at the root module, the attributes apply to the crate itself.</li>
+<li>The <code>feature</code> attribute is used to allow the specified <em>feature-gated</em> attributes in this crate. You can’t do that in a stable/beta compiler, so this is one reason we need a Rust nighly.</li>
+<li>The <code>no_std</code> attribute prevents the automatic linking of the standard library. We can’t use <code>std</code> because it relies on operating system features like files, system calls, and various device drivers. Remember that currently the only “feature” of our OS is printing <code>OKAY</code> :).</li>
+<li>A <code>#</code> without a <code>!</code> afterwards defines an attribute for the <em>following</em> item (a function in our case).</li>
+<li>The <code>no_mangle</code> attribute disables the automatic <a href="https://en.wikipedia.org/wiki/Name_mangling">name mangling</a> that Rust uses to get unique function names. We want to do a <code>call rust_main</code> from our assembly code, so this function name must stay as it is.</li>
+<li>We mark our main function as <code>extern</code> to make it compatible to the standard C <a href="https://en.wikipedia.org/wiki/Calling_convention">calling convention</a>.</li>
+<li>The <code>lang</code> attribute defines a Rust <a href="https://doc.rust-lang.org/1.10.0/book/lang-items.html">language item</a>.</li>
+<li>The <code>eh_personality</code> function is used for Rust’s <a href="https://doc.rust-lang.org/nomicon/unwinding.html">unwinding</a> on <code>panic!</code>. We can leave it empty since we don’t have any unwinding support in our OS yet.</li>
+<li>The <code>panic_fmt</code> function is the entry point on panic. Right now we can’t do anything useful, so we just make sure that it doesn’t return (required by the <code>!</code> return type).</li>
+</ul>
+<h2 id="building-rust"><a class="zola-anchor" href="index.html#building-rust" aria-label="Anchor link for: building-rust">🔗</a>Building Rust</h2>
+<p>We can now build it using <code>cargo build</code>, which creates a static library at <code>target/debug/libblog_os.a</code>. However, the resulting library is specific to our <em>host</em> operating system. This is undesirable, because our target system might be different.</p>
+<p>Let’s define some properties of our target system:</p>
+<ul>
+<li><strong>x86_64</strong>: Our target CPU is a recent <code>x86_64</code> CPU.</li>
+<li><strong>No operating system</strong>: Our target does not run any operating system (we’re currently writing it), so the compiler should not assume any OS-specific functionality.</li>
+<li><strong>Handles hardware interrupts</strong>: We’re writing a kernel, so we’ll need to handle asynchronous hardware interrupts at some point. This means that we have to disable a certain stack pointer optimization (the so-called <a href="https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64#the-red-zone">red zone</a>), because it would cause stack corruptions otherwise.</li>
+<li><strong>No SSE</strong>: Our target might not have <a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a> support. Even if it does, we probably don’t want to use SSE instructions in our kernel, because it makes interrupt handling much slower. We will explain this in detail in the <a href="../handling-exceptions/index.html">“Handling Exceptions”</a> post.</li>
+<li><strong>No hardware floats</strong>: The <code>x86_64</code> architecture uses SSE instructions for floating point operations, which we don’t want to use (see the previous point). So we also need to avoid hardware floating point operations in our kernel. Instead, we will use <em>soft floats</em>, which are basically software functions that emulate floating point operations using normal integers.</li>
+</ul>
+<h3 id="target-specifications"><a class="zola-anchor" href="index.html#target-specifications" aria-label="Anchor link for: target-specifications">🔗</a>Target Specifications</h3>
+<p>Rust allows us to define <a href="https://doc.rust-lang.org/1.1.0/rustc_back/target/">custom targets</a> through a JSON configuration file. A minimal target specification equal to <code>x86_64-unknown-linux-gnu</code> (the default 64-bit Linux target) looks like this:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-linux-gnu&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;linux&quot;
+</span><span>}
+</span></code></pre>
+<p>The <code>llvm-target</code> field specifies the target triple that is passed to LLVM. <a href="https://llvm.org/docs/LangRef.html#target-triple">Target triples</a> are a naming convention that define the CPU architecture (e.g., <code>x86_64</code> or <code>arm</code>), the vendor (e.g., <code>apple</code> or <code>unknown</code>), the operating system (e.g., <code>windows</code> or <code>linux</code>), and the <a href="https://en.wikipedia.org/wiki/Application_binary_interface">ABI</a> (e.g., <code>gnu</code> or <code>msvc</code>). For example, the target triple for 64-bit Linux is <code>x86_64-unknown-linux-gnu</code> and for 32-bit Windows the target triple is <code>i686-pc-windows-msvc</code>.</p>
+<p>The <code>data-layout</code> field is also passed to LLVM and specifies how data should be laid out in memory. It consists of various specifications separated by a <code>-</code> character. For example, the <code>e</code> means little endian and <code>S128</code> specifies that the stack should be 128 bits (= 16 byte) aligned. The format is described in detail in the <a href="https://llvm.org/docs/LangRef.html#data-layout">LLVM documentation</a> but there shouldn’t be a reason to change this string.</p>
+<p>The <code>linker-flavor</code> field was recently introduced in <a href="https://github.com/rust-lang/rust/pull/40018">#40018</a> with the intention to add support for the LLVM linker <a href="https://lld.llvm.org/">LLD</a>, which is platform independent. In the future, this might allow easy cross compilation without the need to install a gcc cross compiler for linking.</p>
+<p>The other fields are used for conditional compilation. This allows crate authors to use <code>cfg</code> variables to write special code for depending on the OS or the architecture. There isn’t any up-to-date documentation about these fields but the <a href="https://github.com/rust-lang/rust/blob/c772948b687488a087356cb91432425662e034b9/src/librustc_back/target/mod.rs#L194-L214">corresponding source code</a> is quite readable.</p>
+<h3 id="a-kernel-target-specification"><a class="zola-anchor" href="index.html#a-kernel-target-specification" aria-label="Anchor link for: a-kernel-target-specification">🔗</a>A Kernel Target Specification</h3>
+<p>For our target system, we define the following JSON configuration in a file named <code>x86_64-blog_os.json</code>:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;llvm-target&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64-unknown-none&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;data-layout&quot;</span><span>: </span><span style="color:#d69d85;">&quot;e-m:e-i64:64-f80:128-n8:16:32:64-S128&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;linker-flavor&quot;</span><span>: </span><span style="color:#d69d85;">&quot;gcc&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-endian&quot;</span><span>: </span><span style="color:#d69d85;">&quot;little&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-pointer-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;target-c-int-width&quot;</span><span>: </span><span style="color:#d69d85;">&quot;32&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;arch&quot;</span><span>: </span><span style="color:#d69d85;">&quot;x86_64&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;os&quot;</span><span>: </span><span style="color:#d69d85;">&quot;none&quot;</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;disable-redzone&quot;</span><span>: </span><span style="color:#569cd6;">true</span><span>,
+</span><span>  </span><span style="color:#d69d85;">&quot;features&quot;</span><span>: </span><span style="color:#d69d85;">&quot;-mmx,-sse,+soft-float&quot;
+</span><span>}
+</span></code></pre>
+<p>As <code>llvm-target</code> we use <code>x86_64-unknown-none</code>, which defines the <code>x86_64</code> architecture, an <code>unknown</code> vendor, and no operating system (<code>none</code>). The ABI doesn’t matter for us, so we just leave it off. The <code>data-layout</code> field is just copied from the <code>x86_64-unknown-linux-gnu</code> target. We also use the same values for the <code>target-endian</code>, <code>target-pointer-width</code>, <code>target-c-int-width</code>, and <code>arch</code> fields. For the <code>os</code> field we choose <code>none</code>, since our kernel runs on bare metal.</p>
+<h4 id="the-red-zone"><a class="zola-anchor" href="index.html#the-red-zone" aria-label="Anchor link for: the-red-zone">🔗</a>The Red Zone</h4>
+<p>The <a href="https://eli.thegreenplace.net/2011/09/06/stack-frame-layout-on-x86-64#the-red-zone">red zone</a> is an optimization of the <a href="https://wiki.osdev.org/System_V_ABI">System V ABI</a> that allows functions to temporary use the 128 bytes below its stack frame without adjusting the stack pointer:</p>
+<p><img src="red-zone.svg" alt="stack frame with red zone" /></p>
+<p>The image shows the stack frame of a function with <code>n</code> local variables. On function entry, the stack pointer is adjusted to make room on the stack for the local variables.</p>
+<p>The red zone is defined as the 128 bytes below the adjusted stack pointer. The function can use this area for temporary data that’s not needed across function calls. Thus, the two instructions for adjusting the stack pointer can be avoided in some cases (e.g. in small leaf functions).</p>
+<p>However, this optimization leads to huge problems with exceptions or hardware interrupts. Let’s assume that an exception occurs while a function uses the red zone:</p>
+<p><img src="red-zone-overwrite.svg" alt="red zone overwritten by exception handler" /></p>
+<p>The CPU and the exception handler overwrite the data in red zone. But this data is still needed by the interrupted function. So the function won’t work correctly anymore when we return from the exception handler. This might lead to strange bugs that <a href="https://forum.osdev.org/viewtopic.php?t=21720">take weeks to debug</a>.</p>
+<p>To avoid such bugs when we implement exception handling in the future, we disable the red zone right from the beginning. This is achieved by adding the <code>&quot;disable-redzone&quot;: true</code> line to our target configuration file.</p>
+<h4 id="simd-extensions"><a class="zola-anchor" href="index.html#simd-extensions" aria-label="Anchor link for: simd-extensions">🔗</a>SIMD Extensions</h4>
+<p>The <code>features</code> field enables/disables target features. We disable the <code>mmx</code> and <code>sse</code> features by prefixing them with a minus and enable the <code>soft-float</code> feature by prefixing it with a plus.  The <code>mmx</code> and <code>sse</code> features determine support for <a href="https://en.wikipedia.org/wiki/SIMD">Single Instruction Multiple Data (SIMD)</a> instructions, which simultaneously perform an operation (e.g. addition) on multiple data words. The <code>x86</code> architecture supports the following standards:</p>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/MMX_(instruction_set)">MMX</a>: The <em>Multi Media Extension</em> instruction set was introduced in 1997 and defines eight 64 bit registers called <code>mm0</code> through <code>mm7</code>. These registers are just aliases for the registers of the <a href="https://en.wikipedia.org/wiki/X87">x87 floating point unit</a>.</li>
+<li><a href="https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions">SSE</a>: The <em>Streaming SIMD Extensions</em> instruction set was introduced in 1999. Instead of re-using the floating point registers, it adds a completely new register set. The sixteen new registers are called <code>xmm0</code> through <code>xmm15</code> and are 128 bits each.</li>
+<li><a href="https://en.wikipedia.org/wiki/Advanced_Vector_Extensions">AVX</a>: The <em>Advanced Vector Extensions</em> are extensions that further increase the size of the multimedia registers. The new registers are called <code>ymm0</code> through <code>ymm15</code> and are 256 bits each. They extend the <code>xmm</code> registers, so e.g. <code>xmm0</code> is the lower half of <code>ymm0</code>.</li>
+</ul>
+<p>By using such SIMD standards, programs can often speed up significantly. Good compilers are able to transform normal loops into such SIMD code automatically through a process called <a href="https://en.wikipedia.org/wiki/Automatic_vectorization">auto-vectorization</a>.</p>
+<p>However, the large SIMD registers lead to problems in OS kernels. The reason is that the kernel has to backup all registers that it uses on each hardware interrupt (we will look into this in the <a href="../handling-exceptions/index.html">“Handling Exceptions”</a> post). So if the kernel uses SIMD registers, it has to backup a lot more data, which noticeably decreases performance. To avoid this performance loss, we disable the <code>sse</code> and <code>mmx</code> features (the <code>avx</code> feature is disabled by default).</p>
+<p>As noted above, floating point operations on <code>x86_64</code> use SSE registers, so floats are no longer usable without SSE. Unfortunately, the Rust core library already uses floats (e.g., it implements traits for <code>f32</code> and <code>f64</code>), so we need an alternative way to implement float operations. The <code>soft-float</code> feature solves this problem by emulating all floating point operations through software functions based on normal integers.</p>
+<h3 id="compiling"><a class="zola-anchor" href="index.html#compiling" aria-label="Anchor link for: compiling">🔗</a>Compiling</h3>
+<p>To build our kernel for our new target, we pass the configuration file’s name as <code>--target</code> argument. There is currently an <a href="https://github.com/rust-lang/cargo/issues/4905">open bug</a> for custom target specifications, so you also need to set the <code>RUST_TARGET_PATH</code> environment variable to the current directory, otherwise Rust doesn’t find your target. The full command is:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>RUST_TARGET_PATH=$(pwd) cargo build --target x86_64-blog_os
+</span></code></pre>
+<p>However, the following error occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0463]: can&#39;t find crate for `core`
+</span><span>  |
+</span><span>  = note: the `x86_64-blog_os` target may not be installed
+</span></code></pre>
+<p>The error tells us that the Rust compiler no longer finds the core library. The <a href="https://doc.rust-lang.org/nightly/core/index.html">core library</a> is implicitly linked to all <code>no_std</code> crates and contains things such as <code>Result</code>, <code>Option</code>, and iterators.</p>
+<p>The problem is that the core library is distributed together with the Rust compiler as a <em>precompiled</em> library. So it is only valid for the host triple (e.g., <code>x86_64-unknown-linux-gnu</code>) but not for our custom target. If we want to compile code for other targets, we need to recompile <code>core</code> for these targets first.</p>
+<h4 id="xargo"><a class="zola-anchor" href="index.html#xargo" aria-label="Anchor link for: xargo">🔗</a>Xargo</h4>
+<p>That’s where <a href="https://github.com/japaric/xargo">xargo</a> comes in. It is a wrapper for cargo that eases cross compilation. We can install it by executing:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>cargo install xargo
+</span></code></pre>
+<p>Xargo depends on the rust source code, which we can install with <code>rustup component add rust-src</code>.</p>
+<p>Xargo is “a drop-in replacement for cargo”, so every cargo command also works with <code>xargo</code>. You can do e.g. <code>xargo --help</code>, <code>xargo clean</code>, or <code>xargo doc</code>. However, the <code>build</code> command gains additional functionality: <code>xargo build</code> will automatically cross compile the <code>core</code> library when compiling for custom targets.</p>
+<p>Let’s try it:</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>&gt; RUST_TARGET_PATH=$(pwd) xargo build --target=x86_64-blog_os
+</span><span>   Compiling core v0.0.0 (file:///…/rust/src/libcore)
+</span><span>    Finished release </span><span style="color:#569cd6;">[</span><span>optimized</span><span style="color:#569cd6;">]</span><span> target(s) in 22.87 secs
+</span><span>   Compiling blog_os v0.1.0 (file:///…/blog_os/tags)
+</span><span>    Finished dev </span><span style="color:#569cd6;">[</span><span>unoptimized + debuginfo</span><span style="color:#569cd6;">]</span><span> target(s) in 0.29 secs
+</span></code></pre>
+<p>It worked! We see that <code>xargo</code> cross-compiled the <code>core</code> library for our new custom target and then continued to compile our <code>blog_os</code> crate. After compilation, we can find a static library at <code>target/x86_64-blog_os/debug/libblog_os.a</code>, which can be linked with our assembly kernel.</p>
+<h2 id="integrating-rust"><a class="zola-anchor" href="index.html#integrating-rust" aria-label="Anchor link for: integrating-rust">🔗</a>Integrating Rust</h2>
+<p>Let’s try to integrate our Rust library into our assembly kernel so that we can call the <code>rust_main</code> function. For that we need to pass the <code>libblog_os.a</code> file to the linker, together with the assembly object files.</p>
+<h3 id="adjusting-the-makefile"><a class="zola-anchor" href="index.html#adjusting-the-makefile" aria-label="Anchor link for: adjusting-the-makefile">🔗</a>Adjusting the Makefile</h3>
+<p>To build and link the rust library on <code>make</code>, we extend our <code>Makefile</code>(<a href="https://github.com/phil-opp/blog_os/blob/first_edition_post_3/Makefile">full file</a>):</p>
+<pre data-lang="make" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-make "><code class="language-make" data-lang="make"><span style="color:#608b4e;"># ...
+</span><span>target ?= </span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">arch</span><span style="background-color:#282828;color:#569cd6;">)</span><span style="background-color:#282828;color:#d69d85;">-blog_os</span><span>
+</span><span>rust_os := </span><span style="background-color:#282828;color:#d69d85;">target/</span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">target</span><span style="background-color:#282828;color:#569cd6;">)</span><span style="background-color:#282828;color:#d69d85;">/debug/libblog_os.a</span><span>
+</span><span style="color:#608b4e;"># ...
+</span><span>.PHONY: </span><span style="background-color:#282828;color:#d69d85;">all clean run iso kernel</span><span>
+</span><span style="color:#608b4e;"># ...
+</span><span style="color:#569cd6;">$(</span><span>kernel</span><span style="color:#569cd6;">)</span><span>: </span><span style="background-color:#282828;color:#d69d85;">kernel </span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">rust_os</span><span style="background-color:#282828;color:#569cd6;">) $(</span><span style="background-color:#282828;color:#dcdcdc;">assembly_object_files</span><span style="background-color:#282828;color:#569cd6;">) $(</span><span style="background-color:#282828;color:#dcdcdc;">linker_script</span><span style="background-color:#282828;color:#569cd6;">)</span><span>
+</span><span>	</span><span style="color:#569cd6;">@</span><span>ld -n -T </span><span style="color:#569cd6;">$(</span><span>linker_script</span><span style="color:#569cd6;">)</span><span> -o </span><span style="color:#569cd6;">$(</span><span>kernel</span><span style="color:#569cd6;">) </span><span>\
+</span><span>		</span><span style="color:#569cd6;">$(</span><span>assembly_object_files</span><span style="color:#569cd6;">) $(</span><span>rust_os</span><span style="color:#569cd6;">)
+</span><span>
+</span><span>kernel:
+</span><span>	</span><span style="color:#569cd6;">@</span><span>RUST_TARGET_PATH=</span><span style="color:#569cd6;">$(</span><span>shell pwd</span><span style="color:#569cd6;">) </span><span>xargo build --target </span><span style="color:#569cd6;">$(</span><span>target</span><span style="color:#569cd6;">)
+</span></code></pre>
+<p>We add a new <code>kernel</code> target that just executes <code>xargo build</code> and modify the <code>$(kernel)</code> target to link the created static lib. We also add the new <code>kernel</code> target to the <code>.PHONY</code> list, since it does not belong to a file with that name.</p>
+<p>But now <code>xargo build</code> is executed on every <code>make</code>, even if no source file was changed. And the ISO is recreated on every <code>make iso</code>/<code>make run</code>, too. We could try to avoid this by adding dependencies on all rust source and cargo configuration files to the <code>kernel</code> target, but the ISO creation takes only half a second on my machine and most of the time we will have changed a Rust file when we run <code>make</code>. So we keep it simple for now and let cargo do the bookkeeping of changed files (it does it anyway).</p>
+<h3 id="calling-rust"><a class="zola-anchor" href="index.html#calling-rust" aria-label="Anchor link for: calling-rust">🔗</a>Calling Rust</h3>
+<p>Now we can call the main method in <code>long_mode_start</code>:</p>
+<pre data-lang="nasm" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-nasm "><code class="language-nasm" data-lang="nasm"><span>bits 64
+</span><span>long_mode_start:
+</span><span>    ...
+</span><span>
+</span><span style="color:#608b4e;">    ; call the rust main
+</span><span>    extern rust_main</span><span style="color:#608b4e;">     ; new
+</span><span>    </span><span style="color:#569cd6;">call </span><span>rust_main</span><span style="color:#608b4e;">       ; new
+</span><span>
+</span><span style="color:#608b4e;">    ; print `OKAY` to screen
+</span><span>    </span><span style="color:#569cd6;">mov </span><span>rax, </span><span style="color:#b4cea8;">0x2f592f412f4b2f4f
+</span><span>    </span><span style="color:#569cd6;">mov </span><span>qword [</span><span style="color:#b4cea8;">0xb8000</span><span>], rax
+</span><span>    </span><span style="color:#569cd6;">hlt
+</span></code></pre>
+<p>By defining <code>rust_main</code> as <code>extern</code> we tell nasm that the function is defined in another file. As the linker takes care of linking them together, we’ll get a linker error if we have a typo in the name or forget to mark the rust function as <code>pub extern</code>.</p>
+<p>If we’ve done everything right, we should still see the green <code>OKAY</code> when executing <code>make run</code>. That means that we successfully called the Rust function and returned back to assembly.</p>
+<h3 id="fixing-linker-errors"><a class="zola-anchor" href="index.html#fixing-linker-errors" aria-label="Anchor link for: fixing-linker-errors">🔗</a>Fixing Linker Errors</h3>
+<p>Now we can try some Rust code:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> x = [</span><span style="color:#d69d85;">&quot;Hello&quot;</span><span>, </span><span style="color:#d69d85;">&quot;World&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>];
+</span><span>    </span><span style="color:#569cd6;">let</span><span> y = x;
+</span><span>}
+</span></code></pre>
+<p>When we test it using <code>make run</code>, it fails with <code>undefined reference to 'memcpy'</code>. The <code>memcpy</code> function is one of the basic functions of the C library (<code>libc</code>). Usually the <code>libc</code> crate is linked to every Rust program together with the standard library, but we opted out through <code>#![no_std]</code>. We could try to fix this by adding the <a href="https://doc.rust-lang.org/1.10.0/libc/index.html">libc crate</a> as <code>extern crate</code>. But <code>libc</code> is just a wrapper for the system <code>libc</code>, for example <code>glibc</code> on Linux, so this won’t work for us. Instead we need to recreate the basic <code>libc</code> functions such as <code>memcpy</code>, <code>memmove</code>, <code>memset</code>, and <code>memcmp</code> in Rust.</p>
+<h4 id="rlibc"><a class="zola-anchor" href="index.html#rlibc" aria-label="Anchor link for: rlibc">🔗</a>rlibc</h4>
+<p>Fortunately there already is a crate for that: <a href="https://crates.io/crates/rlibc">rlibc</a>. When we look at its <a href="https://github.com/alexcrichton/rlibc/blob/defb486e765846417a8e73329e8c5196f1dca49a/src/lib.rs">source code</a> we see that it contains no magic, just some <a href="https://doc.rust-lang.org/book/raw-pointers.html">raw pointer</a> operations in a while loop. To add <code>rlibc</code> as a dependency we just need to add two lines to the <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#ff3333;">...
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">rlibc </span><span>= </span><span style="color:#d69d85;">&quot;1.0&quot;
+</span></code></pre>
+<p>and an <code>extern crate</code> definition in our <code>src/lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">...
+</span><span style="color:#569cd6;">extern crate</span><span> rlibc;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {
+</span><span style="color:#569cd6;">...
+</span></code></pre>
+<p>Now <code>make run</code> doesn’t complain about <code>memcpy</code> anymore. Instead it will show a pile of new ugly linker errors:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>target/x86_64-blog_os/debug/libblog_os.a(core-92335f822fa6c9a6.0.o):
+</span><span>    In function `_$LT$f32$u20$as$u20$core..num..dec2flt..
+</span><span>        rawfp..RawFloat$GT$::from_int::h50f7952efac3fdca&#39;:
+</span><span>    core.cgu-0.rs:(.text._ZN59_$LT$f32$u20$as$u20$core..num..dec2flt..
+</span><span>        rawfp..RawFloat$GT$8from_int17h50f7952efac3fdcaE+0x2):
+</span><span>    undefined reference to `__floatundisf&#39;
+</span><span>target/x86_64-blog_os/debug/libblog_os.a(core-92335f822fa6c9a6.0.o):
+</span><span>    In function `_$LT$f64$u20$as$u20$core..num..dec2flt..rawfp..
+</span><span>        RawFloat$GT$::from_int::h12a81f175246914a&#39;:
+</span><span>    core.cgu-0.rs:(.text._ZN59_$LT$f64$u20$as$u20$core..num..dec2flt..rawfp..
+</span><span>        RawFloat$GT$8from_int17h12a81f175246914aE+0x2):
+</span><span>    undefined reference to `__floatundidf&#39;
+</span><span>target/x86_64-blog_os/debug/libblog_os.a(core-92335f822fa6c9a6.0.o):
+</span><span>    In function `core::num::from_str_radix::h09b12650704e0508&#39;:
+</span><span>    core.cgu-0.rs:(.text._ZN4core3num14from_str_radix
+</span><span>        17h09b12650704e0508E+0xcf):
+</span><span>    undefined reference to `__muloti4&#39;
+</span><span>...
+</span></code></pre>
+<h4 id="gc-sections"><a class="zola-anchor" href="index.html#gc-sections" aria-label="Anchor link for: gc-sections">🔗</a>–gc-sections</h4>
+<p>The new errors are linker errors about various missing functions such as <code>__floatundisf</code> or <code>__muloti4</code>. These functions are part of LLVM’s <a href="https://compiler-rt.llvm.org/"><code>compiler-rt</code> builtins</a> and are normally linked by the standard library. For <code>no_std</code> crates like ours, one has to link the <code>compiler-rt</code> library manually. Unfortunately, this library is implemented in C and the build process is a bit cumbersome. Alternatively, there is the <a href="https://github.com/rust-lang-nursery/compiler-builtins">compiler-builtins</a> crate that tries to port the library to Rust, but it isn’t complete yet.</p>
+<p>In our case, there is a much simpler solution, since our kernel doesn’t really need any of those functions yet. So we can just tell the linker to remove unused program sections and hopefully all references to these functions will disappear. Removing unused sections is generally a good idea as it reduces kernel size. The magic linker flag for this is <code>--gc-sections</code>, which stands for “garbage collect sections”. Let’s add it to the <code>$(kernel)</code> target in our <code>Makefile</code>:</p>
+<pre data-lang="make" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-make "><code class="language-make" data-lang="make"><span style="color:#569cd6;">$(</span><span>kernel</span><span style="color:#569cd6;">)</span><span>: </span><span style="background-color:#282828;color:#d69d85;">xargo </span><span style="background-color:#282828;color:#569cd6;">$(</span><span style="background-color:#282828;color:#dcdcdc;">rust_os</span><span style="background-color:#282828;color:#569cd6;">) $(</span><span style="background-color:#282828;color:#dcdcdc;">assembly_object_files</span><span style="background-color:#282828;color:#569cd6;">) $(</span><span style="background-color:#282828;color:#dcdcdc;">linker_script</span><span style="background-color:#282828;color:#569cd6;">)</span><span>
+</span><span>	</span><span style="color:#569cd6;">@</span><span>ld -n --gc-sections -T </span><span style="color:#569cd6;">$(</span><span>linker_script</span><span style="color:#569cd6;">)</span><span> -o </span><span style="color:#569cd6;">$(</span><span>kernel</span><span style="color:#569cd6;">) </span><span>\
+</span><span>		</span><span style="color:#569cd6;">$(</span><span>assembly_object_files</span><span style="color:#569cd6;">) $(</span><span>rust_os</span><span style="color:#569cd6;">)
+</span></code></pre>
+<p>Now we can do a <code>make run</code> again and it compiles without errors again. However, it doesn’t boot anymore:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>GRUB error: no multiboot header found.
+</span></code></pre>
+<p>What happened? Well, the linker removed unused sections. And since we don’t use the Multiboot section anywhere, <code>ld</code> removes it, too. So we need to tell the linker explicitly that it should keep this section. The <code>KEEP</code> command does exactly that, so we add it to the linker script (<code>linker.ld</code>):</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>.boot :
+</span><span>{
+</span><span>    /* ensure that the multiboot header is at the beginning */
+</span><span>    KEEP(*(.multiboot_header))
+</span><span>}
+</span></code></pre>
+<p>Now everything should work again (the green <code>OKAY</code>). But there is another linking issue, which is triggered by some other example code.</p>
+<h4 id="panic-abort"><a class="zola-anchor" href="index.html#panic-abort" aria-label="Anchor link for: panic-abort">🔗</a>panic = “abort”</h4>
+<p>The following snippet still fails:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>    </span><span style="color:#569cd6;">...
+</span><span>    </span><span style="color:#569cd6;">let</span><span> test = (</span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">3</span><span>).flat_map(|x| </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span>x).zip(</span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span>);
+</span></code></pre>
+<p>The error is a linker error again (hence the ugly error message):</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>target/x86_64-blog_os/debug/libblog_os.a(blog_os-b5a29f28b14f1f1f.0.o):
+</span><span>    In function `core::ptr::drop_in_place&lt;core::iter::Zip&lt;
+</span><span>        core::iter::FlatMap&lt;core::ops::Range&lt;i32&gt;, core::ops::Range&lt;i32&gt;,
+</span><span>        closure&gt;, core::ops::RangeFrom&lt;i32&gt;&gt;&gt;&#39;:
+</span><span>        /…/rust/src/libcore/ptr.rs:66:
+</span><span>    undefined reference to `_Unwind_Resume&#39;
+</span><span>target/x86_64-blog_os/debug/libblog_os.a(blog_os-b5a29f28b14f1f1f.0.o):
+</span><span>    In function `core::iter::iterator::Iterator::zip&lt;core::iter::FlatMap&lt;
+</span><span>        core::ops::Range&lt;i32&gt;, core::ops::Range&lt;i32&gt;, closure&gt;,
+</span><span>        core::ops::RangeFrom&lt;i32&gt;&gt;&#39;:
+</span><span>        /…/rust/src/libcore/iter/iterator.rs:389:
+</span><span>    undefined reference to `_Unwind_Resume&#39;
+</span><span>...
+</span></code></pre>
+<p>So the linker can’t find a function named <code>_Unwind_Resume</code> that is referenced e.g. in <code>iter/iterator.rs:389</code> in libcore. This reference is not really there at <a href="https://github.com/rust-lang/rust/blob/c58c928e658d2e45f816fd05796a964aa83759da/src/libcore/iter/iterator.rs#L389">line 389</a> of libcore’s <code>iterator.rs</code>. Instead, it is a compiler inserted <em>landing pad</em>, which is used for panic handling.</p>
+<p>By default, the destructors of all stack variables are run when a <code>panic</code> occurs. This is called <em>unwinding</em> and allows parent threads to recover from panics. However, it requires a platform specific gcc library, which isn’t available in our kernel.</p>
+<p>Fortunately, Rust allows us to disable unwinding for our target. For that we add the following line to our <code>x86_64-blog_os.json</code> file:</p>
+<pre data-lang="json" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-json "><code class="language-json" data-lang="json"><span>{
+</span><span>  </span><span style="color:#d69d85;">&quot;...&quot;</span><span style="color:#ff3333;">,
+</span><span>  </span><span style="color:#d69d85;">&quot;panic-strategy&quot;</span><span>: </span><span style="color:#d69d85;">&quot;abort&quot;
+</span><span>}
+</span><span>
+</span></code></pre>
+<p>By setting the <a href="https://github.com/nox/rust-rfcs/blob/master/text/1513-less-unwinding.md">panic strategy</a> to <code>abort</code> instead of the default <code>unwind</code>, we disable all unwinding in our kernel. Let’s try <code>make run</code> again:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>   Compiling core v0.0.0 (file:///…/rust/src/libcore)
+</span><span>    Finished release [optimized] target(s) in 22.24 secs
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.5 secs
+</span><span>target/x86_64-blog_os/debug/libblog_os.a(blog_os-b5a29f28b14f1f1f.0.o):
+</span><span>    In function `core::ptr::drop_in_place&lt;…&gt;&#39;:
+</span><span>    /…/src/libcore/ptr.rs:66:
+</span><span>    undefined reference to `_Unwind_Resume&#39;
+</span><span>...
+</span></code></pre>
+<p>We see that <code>xargo</code> recompiles the <code>core</code> crate, but the <code>_Unwind_Resume</code> error still occurs. This is because our <code>blog_os</code> crate was not recompiled somehow and thus still references the unwinding function. To fix this, we need to force a recompile using <code>cargo clean</code>:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo clean
+</span><span>&gt; make run
+</span><span>   Compiling rlibc v1.0.0
+</span><span>   Compiling blog_os v0.1.0 (file:///home/philipp/Documents/blog_os/tags)
+</span><span>warning: unused variable: `test` […]
+</span><span>
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.60 secs
+</span></code></pre>
+<p>It worked! We no longer see linker errors and our kernel prints <code>OKAY</code> again.</p>
+<h2 id="hello-world"><a class="zola-anchor" href="index.html#hello-world" aria-label="Anchor link for: hello-world">🔗</a>Hello World!</h2>
+<p>Finally, it’s time for a <code>Hello World!</code> from Rust:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern fn </span><span>rust_main() {
+</span><span>    </span><span style="color:#608b4e;">// ATTENTION: we have a very small stack and no guard page
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> hello = </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&quot;Hello World!&quot;</span><span>;
+</span><span>    </span><span style="color:#569cd6;">let</span><span> color_byte = </span><span style="color:#b5cea8;">0x1f</span><span>; </span><span style="color:#608b4e;">// white foreground, blue background
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> hello_colored = [color_byte; </span><span style="color:#b5cea8;">24</span><span>];
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, char_byte) </span><span style="color:#569cd6;">in</span><span> hello.into_iter().enumerate() {
+</span><span>        hello_colored[i*</span><span style="color:#b5cea8;">2</span><span>] = *char_byte;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// write `Hello World!` to the center of the VGA text buffer
+</span><span>    </span><span style="color:#569cd6;">let</span><span> buffer_ptr = (</span><span style="color:#b5cea8;">0xb8000 </span><span>+ </span><span style="color:#b5cea8;">1988</span><span>) </span><span style="color:#569cd6;">as *mut _</span><span>;
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ *buffer_ptr = hello_colored };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Some notes:</p>
+<ul>
+<li>The <code>b</code> prefix creates a <a href="https://doc.rust-lang.org/reference/tokens.html#characters-and-strings">byte string</a>, which is just an array of <code>u8</code></li>
+<li><a href="https://doc.rust-lang.org/nightly/core/iter/trait.Iterator.html#method.enumerate">enumerate</a> is an <code>Iterator</code> method that adds the current index <code>i</code> to elements</li>
+<li><code>buffer_ptr</code> is a <a href="https://doc.rust-lang.org/book/raw-pointers.html">raw pointer</a> that points to the center of the VGA text buffer</li>
+<li>Rust doesn’t know the VGA buffer and thus can’t guarantee that writing to the <code>buffer_ptr</code> is safe (it could point to important data). So we need to tell Rust that we know what we are doing by using an <a href="https://doc.rust-lang.org/book/unsafe.html">unsafe block</a>.</li>
+</ul>
+<h3 id="stack-overflows"><a class="zola-anchor" href="index.html#stack-overflows" aria-label="Anchor link for: stack-overflows">🔗</a>Stack Overflows</h3>
+<p>Since we still use the small 64 byte <a href="../entering-longmode/index.html#creating-a-stack">stack from the last post</a>, we must be careful not to <a href="https://en.wikipedia.org/wiki/Stack_overflow">overflow</a> it. Normally, Rust tries to avoid stack overflows through <em>guard pages</em>: The page below the stack isn’t mapped and such a stack overflow triggers a page fault (instead of silently overwriting random memory). But we can’t unmap the page below our stack right now since we currently use only a single big page. Fortunately the stack is located just above the page tables. So some important page table entry would probably get overwritten on stack overflow and then a page fault occurs, too.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>Until now we write magic bits to some memory location when we want to print something to screen. In the <a href="../printing-to-screen/index.html">next post</a> we create a abstraction for the VGA text buffer that allows us to print strings in different colors and provides a simple interface.</p>
+
+</main>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../entering-longmode/index.html">&laquo; Entering Long Mode</a>
+        
+        
+            <a class="next" href="../printing-to-screen/index.html">Printing to Screen &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2>Comments (Archived)</h2>
+        <section id="isso-thread">
+    
+        
+<div id="isso-root"><div id="isso-80" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6334312b9f4a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">emk1024</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-80" class="permalink"><time title="Fri Oct 30 2015 15:05:07 GMT+0100 (Central European Standard Time)" datetime="2015-09-05T14:05:07Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>If you decide to add interrupt support to your OS (for keyboard input, for example), you may not want Rust to be generating SSE code. If you use SEE code in the kernel, then you need to save SSE registers in interrupts, and saving SSE registers is slow and takes a lot of RAM. As far as I can tell, a lot of kernels simply avoid floating point to help keep interrupts and system calls efficient.</p><p>Also, as you noted in your bug on GitHub, you'll also want to set no-redzone to prevent memory corruption during interrupts.</p><p>Since we need to set a bunch of compiler flags for all generated code, including libcore, the right answer may be to replace the target x86_64-unknown-linux-gnu with a custom target that uses the right options by default. There's <a rel="nofollow" href="http://antoinealb.net/programming/2015/05/01/rust-on-arm-microcontroller.html">a discussion here</a> and an example target file <a rel="nofollow" href="https://github.com/hackndev/zinc/blob/master/thumbv7em-none-eabi.json">in the zinc OS</a>.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-81" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6334312b9f4a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">emk1024</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-81" class="permalink"><time title="Sat Oct 31 2015 12:52:53 GMT+0100 (Central European Standard Time)" datetime="2015-09-06T11:52:53Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>OK, it took almost a day, but I think I've got this figured out. This is probably overkill for your great blog posts, but I'll leave it here for the next person to pass this way.</p><p>Here's the basic strategy to getting an SSE-free, redzone-free kernel:</p><p>1. Define a new target <code>x86_64-unknown-none-gnu</code>, where <code>none</code> means running on bare metal without an OS. This can be done by creating a file <code>x86_64-unknown-none-gnu.json</code> and filling it in with the right options. See below. You can just drop this in your top-level build directory and Rust will find it.</p><p>2. Check out the same Rust you're compiling with, and patch libcore to remove floating point. You can usually find a current libcore patch in thepowersgang/rust-barebones-kernel on GitHub.</p><p>3. Build libcore with <code>--target $(target) --cfg disable_float</code>, and put it in <code>~/.multirust/toolchains/nightly/lib/rustlib/$(target)/lib</code>.</p><p>4. Run cargo normally, specifying your custom target with <code>--target $(target)</code>.</p><p>Here's my custom <code>x86_64-unknown-none-gnu.json</code> file</p><p></p><pre>{<br>  "llvm-target": "x86_64-unknown-none-gnu",<br>  "target-endian": "little",<br>  "target-pointer-width": "64",<br>  "os": "none",<br>  "arch": "x86_64",<br>  "data-layout": "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64-S128",<br>  "pre-link-args": [ "-m64" ],<br>  "cpu": "x86-64",<br>  "features": "-mmx,-sse,-sse2,-sse3,-ssse3",<br>  "disable-redzone": true,<br>  "eliminate-frame-pointer": false,<br>  "linker-is-gnu": true,<br>  "no-compiler-rt": true,<br>  "archive-format": "gnu"<br>}</pre><p></p><p>This seems like a good approach, because I'm not compiling Rust code for the Linux user-space, and then trying to convince it to run on bare metal. Instead, I'm compiling Rust code against a properly-configured bare metal target, and if I don't like the compiler options, I can quickly change them for all crates. And if any floating point code tries to sneak into kernel space, I'll get an error immediately, instead of finding it when floating point registers get clobbered by an interrupt that used MMX code.</p><p>The osdev wiki claims that this the harder but wiser course of action:</p><p></p><blockquote>Common examples [of beginner mistakes] include being too lazy to use a Cross-Compiler, developing in Real Mode instead of Protected Mode or Long Mode, relying on BIOS calls rather than writing real hardware drivers, using flat binaries instead of ELF, and so on.</blockquote><p></p><p>Since they know way more about this than I do, I'm going with their suggestions for now. :-)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-82" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-82" class="permalink"><time title="Sat Oct 31 2015 13:42:58 GMT+0100 (Central European Standard Time)" datetime="2015-09-06T12:42:58Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Why does your target.json file include</p><p></p><blockquote>"features": "-mmx,-sse,-sse2,-sse3,-ssse3"</blockquote><p></p><p>And doesn't Rust use the `xmm` registers to optimize non-floating-point code, too?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-83" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="6334312b9f4a"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="4" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="36" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">emk1024</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-83" class="permalink"><time title="Sat Oct 31 2015 22:04:28 GMT+0100 (Central European Standard Time)" datetime="2015-09-06T21:04:28Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>In theory, "-mmx" means "disable mmx", and so on. I'm attempting to convince Rust and LLVM to leave all those registers alone in kernel space, and to never generate any code which uses them. The goal here is not to need to save that huge block of registers (plus FPU state) on every interrupt. This seems to be a popular choice for x86 kernels.</p><p>Does it work? We'll see.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-84" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-84" class="permalink"><time title="Sun Nov 01 2015 10:57:38 GMT+0100 (Central European Standard Time)" datetime="2015-10-00T09:57:38Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Ah, I see...  It seems like there is no documentation about this. Hopefully the <a rel="nofollow" href="https://github.com/rust-lang/rust/issues/26449">libcore-without-sse issue</a> gets resolved soon. Manually patching libcore seems like a really ugly solution.</p><p>I think I will choose the "slow" solution and just save the sse registers on every interrupt. It's required anyway when switching between (user) processes.</p><p>In my opinion the best solution would be an annotation to disable SSE just for the interrupt handlers. </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-89" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="52d51808d36f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Alister Lee</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-89" class="permalink"><time title="Mon Dec 14 2015 10:57:10 GMT+0100 (Central European Standard Time)" datetime="2015-11-01T09:57:10Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>This is currently also hard on ARM, because I can't work out the features to disable to avoid emitting fpu instructions. I've raised a bug on llvm to seek clarification: <a rel="nofollow" href="https://llvm.org/bugs/show_bug.cgi?id=25818">https://llvm.org/bugs/show_...</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-loader-80" class="isso-comment-loader"><a rel="nofollow" href="index.html#" class="load_hidden">3 versteckt</a></div></div></div></div><div id="isso-85" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="52d51808d36f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">alilee</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-85" class="permalink"><time title="Sat Nov 21 2015 10:07:13 GMT+0100 (Central European Standard Time)" datetime="2015-10-06T09:07:13Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks heaps Phil. Just a comment for others that the rlib dependency strategy you describe won't work under a cross-compiling (ie. arm / r-pi) because the multirust nightly won't include the libcore necessary for the dependant crates to build, and they won't refer to the ones inside /target. See here: <a rel="nofollow" href="https://github.com/rust-lang/cargo/issues/2158">https://github.com/rust-lan...</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-92" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="52d51808d36f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Alister Lee</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-92" class="permalink"><time title="Thu Dec 17 2015 12:35:17 GMT+0100 (Central European Standard Time)" datetime="2015-11-04T11:35:17Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Right, have learned a lot in the last month, following you on ARM. I expect I'll need rlibc, but I haven't yet.</p><p>What I have needed is `compiler-rt`, which you have avoided because you are building on a (tier 3) supported build target which is [not the case](<a rel="nofollow" href="http://stackoverflow.com/questions/31494087">http://stackoverflow.com/qu...</a>) for `arm-none-eabi`.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-93" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-93" class="permalink"><time title="Thu Dec 17 2015 16:32:01 GMT+0100 (Central European Standard Time)" datetime="2015-11-04T15:32:01Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>You can avoid compiler-rt by using a custom target file that contains `"no-compiler-rt": true`.</p><p>You can then use <a rel="nofollow" href="https://github.com/phil-opp/nightly-libcore">nightly-libcore</a> to cross compile libcore for your new target. </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-86" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="714492631d63"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">the_boffin</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-86" class="permalink"><time title="Fri Nov 27 2015 20:21:56 GMT+0100 (Central European Standard Time)" datetime="2015-10-05T19:21:56Z">vor 4 Jahren</time></a><span class="note"></span></div><div class="text"><p>For OS X/Darwin users who have made it this far:</p><p><a rel="nofollow" href="https://github.com/rust-lang/rust/issues/16259">https://github.com/rust-lan...</a></p><p>It's been a good run, but Apple's modifications to clang and ld for the Darwin system completely destroy rust's existing cross-compile capabilities, which means building an x86_64-compatibile libcore simply isn't possible without monumental amounts of work.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-112" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="609cc45a3928"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Aaron D</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-112" class="permalink"><time title="Sat Jan 07 2017 14:33:11 GMT+0100 (Central European Standard Time)" datetime="2017-00-06T13:33:11Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>You might want to try again, I've been following along with all of the latest posts on macOS 10.11 without problems.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-388" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="705e429077c8"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Rajiv</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-388" class="permalink"><time title="Sun Feb 25 2018 17:04:21 GMT+0100 (Central European Standard Time)" datetime="2018-01-00T16:04:21Z">vor 10 Monaten</time></a><span class="note"></span></div><div class="text"><p>Doesn't the linker problem still exist? Most  of the options used by GNU 'ld' are not supported by macOS 10.11 'ld'.
+May be you used cross compiled 'ld' ?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-87" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="995efeabfe17"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Jeff Westfahl</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-87" class="permalink"><time title="Sat Dec 12 2015 05:00:24 GMT+0100 (Central European Standard Time)" datetime="2015-11-06T04:00:24Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>I guess there's a reason you can't enable SSE in your 32-bit assembly file before you switch to long mode?</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-88" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-88" class="permalink"><time title="Sat Dec 12 2015 13:18:31 GMT+0100 (Central European Standard Time)" datetime="2015-11-06T12:18:31Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>It should be totally possible to do it in the 32-bit file. I just tested it and it works without problems. I think I used to do more things in the `long_mode_init` file in a previous system so that there was already an error function. But since it's now the only function that needs the 64-bit error function, we could remove that function if we moved the `setup_SEE` function.</p><p>Thanks for the hint! I opened an <a rel="nofollow" href="https://github.com/phil-opp/blog_os/issues/64">issue</a> for this.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-94" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="64f202301cc5"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="12" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="12" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">stephane geneix</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-94" class="permalink"><time title="Fri Dec 25 2015 16:25:21 GMT+0100 (Central European Standard Time)" datetime="2015-11-05T15:25:21Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>on my box, I couldn't reproduce the SSE error. It looks like "a += 1;" doesn't generate SSE instructions anymore by default.</p><p>objdump still shows some in what looks like exception handling code but seems to never execute<br>~/dev/rustOS/$rustc --version<br>rustc 1.7.0-nightly (81dd3824f 2015-12-11)<br>~/dev/rustOS/$cargo --version<br>cargo 0.8.0-nightly (028ac34 2015-12-10)</p><p>Thank you very much for this series though, it's probably one of the most interesting ways I've seen to learn about OS boot sequence I've seen</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-95" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-95" class="permalink"><time title="Sat Dec 26 2015 01:34:46 GMT+0100 (Central European Standard Time)" datetime="2015-11-06T00:34:46Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p></p><p>Thanks a lot! I opened an <a rel="nofollow" href="https://github.com/phil-opp/blog_os/issues/89">issue</a> for this.</p><p>How about the following example?:</p><p></p><pre>let mut a = ("hello", 42);<br>a.1 += 1;<br></pre><p></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-96" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="64f202301cc5"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="12" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="12" width="8" height="8" style="fill: #f19670"></rect><rect x="12" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="28" y="20" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="4" width="8" height="8" style="fill: #f19670"></rect><rect x="20" y="12" width="8" height="8" style="fill: #f19670"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">stephane geneix</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-96" class="permalink"><time title="Sat Dec 26 2015 08:40:59 GMT+0100 (Central European Standard Time)" datetime="2015-11-06T07:40:59Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>yes, that one breaks down without SSE</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-97" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-97" class="permalink"><time title="Sat Dec 26 2015 12:26:33 GMT+0100 (Central European Standard Time)" datetime="2015-11-06T11:26:33Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Perfect! I will update it </p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-98" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="651ad584561b"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">suvash</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-98" class="permalink"><time title="Wed Jan 13 2016 23:58:29 GMT+0100 (Central European Standard Time)" datetime="2016-00-03T22:58:29Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>so much fun ! Thanks for this 💥🍾🍻 ! Can we have a emoji Hello World ? Just kidding.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-99" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-99" class="permalink"><time title="Thu Jan 14 2016 08:34:48 GMT+0100 (Central European Standard Time)" datetime="2016-00-04T07:34:48Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p></p><p>Actually there are two smileys in <a rel="nofollow" href="https://en.wikipedia.org/wiki/Code_page_437">code page 437</a>.</p><p>Smiley Hello World:</p><p></p><pre>....<br>let hello = b"\x02\x01 Hello World! \x01\x02";<br>let color_byte = 0x1f;<br><br>let mut hello_colored = [color_byte; 36];<br>...<br></pre><p></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-100" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="651ad584561b"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">suvash</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-100" class="permalink"><time title="Thu Jan 14 2016 22:03:00 GMT+0100 (Central European Standard Time)" datetime="2016-00-04T21:03:00Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>omg. this is brilliant, almost forgot about these (ascii?) codes. Thanks !</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-102" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="2b59bd7de342"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="12" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Aleksey Kladov</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-102" class="permalink"><time title="Sat Apr 16 2016 13:18:03 GMT+0200 (Central European Summer Time)" datetime="2016-03-06T11:18:03Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Awesome! I've made a buffer overrun error, because I've added a comma to the "Hello, World!", and Rust have actually caught it at run time, and started looping.</p><p>Using</p><p></p><pre><code><br>#[lang = "panic_fmt" ] <br>extern fn panic_fmt() -&gt; ! {<br>    let buffer_ptr = (0xb8000) as *mut _;<br>    let red = 0x4f;<br>    unsafe {<br>        *buffer_ptr = [b'P', red, b'a', red, b'n', red, b'i', red, b'c', red, b'!', red];<br>    };<br>    loop { }<br>}<br></code></pre><p></p><p>Helped a lot.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-103" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="53fda2e9bfef"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Erdos</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-103" class="permalink"><time title="Mon May 02 2016 03:01:17 GMT+0200 (Central European Summer Time)" datetime="2016-04-01T01:01:17Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Using the most recent nightly build for this, the no-landing-pads snippet also generates SSE, so it's a bit of a two-for-one. :)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-104" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-104" class="permalink"><time title="Mon May 02 2016 15:01:54 GMT+0200 (Central European Summer Time)" datetime="2016-04-01T13:01:54Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks a lot! I fixed it by removing the superfluous <code>let mut a = ("hello", 42); a.1 += 1;</code> snippet (see <a rel="nofollow" href="https://github.com/phil-opp/blog_os/pull/153">PR #153</a>).</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-105" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="3cd28d3824e1"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="36" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="4" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="20" width="8" height="8" style="fill: #5698c4"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">tsurai</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-105" class="permalink"><time title="Wed Jul 13 2016 12:58:22 GMT+0200 (Central European Summer Time)" datetime="2016-06-03T10:58:22Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>I think that libcore needs both SSE and SSE2 to be supported. Shouldn't you check the SSE2 CPUID flag to be sure that both SSE and SSE2 is present? Not sure if it could cause any problems within libcore later on</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-106" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-106" class="permalink"><time title="Thu Jul 14 2016 10:04:05 GMT+0200 (Central European Summer Time)" datetime="2016-06-04T08:04:05Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Good catch! However, SSE2 should always be available if the long mode is available. Citing the <a rel="nofollow" href="https://wiki.osdev.org/SSE">OSDev wiki</a>:</p><p></p><blockquote>When the X86-64 architecture was introduced, AMD demanded a minimum level of SSE support to simplify OS code. Any system capable of long mode should support at least SSE and SSE2</blockquote><p></p><p>So SSE and SSE2 should always be available in our case (if the wiki is correct). So we could even remove the SSE check. However, I think it's better to leave it in, because we enable SSE before switching to long mode.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-107" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="4063fb57aa16"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="4" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="20" width="8" height="8" style="fill: #e4bf80"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="12" width="8" height="8" style="fill: #e4bf80"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e4bf80"></rect><rect x="20" y="28" width="8" height="8" style="fill: #e4bf80"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Don Rowe</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-107" class="permalink"><time title="Sat Jul 30 2016 02:33:06 GMT+0200 (Central European Summer Time)" datetime="2016-06-06T00:33:06Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks again for sharing this! FYI, the link https://doc.rust-lang.org/std/rt/unwind/ in <a rel="nofollow" href="../set-up-rust.html#creating-a-cargo-project">http://os.phil-opp.com/set-...</a> is broken.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-108" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="666df3217240"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="28" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-108" class="permalink"><time title="Wed Aug 17 2016 12:36:34 GMT+0200 (Central European Summer Time)" datetime="2016-07-03T10:36:34Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thanks! I've fixed it in <a rel="nofollow" href="https://github.com/phil-opp/blog_os/pull/207">#207</a>.</p><p>Sorry for the delay, your comment got buried in my inbox somehow…</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-109" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="e064491656ac"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="36" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">JamesLewn</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-109" class="permalink"><time title="Sun Nov 27 2016 11:28:12 GMT+0100 (Central European Standard Time)" datetime="2016-10-00T10:28:12Z">vor 3 Jahren</time></a><span class="note"></span></div><div class="text"><p>#CODE FOR ANIMATED TEXT<br>If you want text that is moving around the screen like a snake, get that code and replace you rust_main function with it:</p><p>#[no_mangle]<br>pub extern fn rust_main() {</p><p>    let color_byte: u16 = 0x1f;<br>    let ascii_byte: u16 = 32;<br>    let empty_2byte_character: u16 = (color_byte &lt;&lt; 8) | ascii_byte;</p><p>    let mut poz = 0;<br>    while poz &lt; 4000<br>    {<br>        let buffer = (0xb8000 + poz ) as *mut _;<br>        unsafe{*buffer = empty_2byte_character   };<br>        poz+=2;<br>    }</p><p>    let text = b"ANIMATED TEXT!!!!   -&gt;";<br>    let color_byte = 0x1f;</p><p>    let mut text_colored = [color_byte; 44];<br>    for(i, char_byte) in text.into_iter().enumerate(){<br>        text_colored[i*2] = *char_byte;<br>    }</p><p>    //animate<br>    let mut offset = 0;<br>    let mut done = false;<br>    let mut delay_counter = 0;</p><p>    while !done<br>    {<br>        let poprzedni = (0xb8000 + offset) as *mut _;<br>        unsafe{*poprzedni = empty_2byte_character };</p><p>        offset+=2;</p><p>        let buffer_ptr = (0xb8000 + offset) as *mut _;<br>        unsafe{*buffer_ptr = text_colored };</p><p>        if offset == (4000-44)<br>        {<br>            done = true;<br>        }<br>        while delay_counter &lt; 10000000<br>        {<br>            delay_counter+=1;<br>        }<br>        delay_counter = 0;<br>    }</p><p>    loop<br>    {</p><p>    }</p><p>}</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-110" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="609cc45a3928"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="4" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="36" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="4" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9abf88"></rect><rect x="12" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="28" y="36" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="20" width="8" height="8" style="fill: #9abf88"></rect><rect x="20" y="36" width="8" height="8" style="fill: #9abf88"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Aaron D</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-110" class="permalink"><time title="Sat Dec 17 2016 23:27:40 GMT+0100 (Central European Standard Time)" datetime="2016-11-06T22:27:40Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>With the latest rust nightly I was getting linker errors after pulling in in the rlibc crate:</p><p>target/x86_64-unknown-linux-gnu/debug/libblog_os.a(core-93f19628b61beb76.0.o): In function `core::panicking::panic_fmt':<br>/buildslave/rust-buildbot/slave/nightly-dist-rustc-linux/build/src/libcore/panicking.rs:69: undefined reference to `rust_begin_unwind'<br>make: *** [build/kernel-x86_64.bin] Error 1</p><p>Apparently the later versions of the compiler are pretty strict about mangling almost anything they can for optimization. Usually the panic_fmt symbol becomes rust_begin_unwind (for some reason), but now it's getting mangled and so the linker can't find that symbol - it's a pretty cryptic error with discussion at <a rel="nofollow" href="https://github.com/rust-lang/rust/issues/38281">https://github.com/rust-lan...</a></p><p>To fix it, you need to mark panic_fmt with no_mangle as well, so the line in <a rel="nofollow" href="http://lib.rs">lib.rs</a> becomes:<br>#[lang = "panic_fmt"] #[no_mangle] extern fn panic_fmt() -&gt; ! {loop{}}</p><p>This allows it to build properly.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-111" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="e9385e508c79"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="36" width="8" height="8" style="fill: #5698c4"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">yangxiaoyong</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-111" class="permalink"><time title="Sat Jan 07 2017 05:28:10 GMT+0100 (Central European Standard Time)" datetime="2017-00-06T04:28:10Z">vor 2 Jahren</time></a><span class="note"></span></div><div class="text"><p>Thank you for that!</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div><div id="isso-309" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="9102ac4c5e91"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="36" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="4" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="4" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="12" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="20" width="8" height="8" style="fill: #5698c4"></rect><rect x="12" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="28" y="28" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="4" width="8" height="8" style="fill: #5698c4"></rect><rect x="20" y="28" width="8" height="8" style="fill: #5698c4"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">toor_</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-309" class="permalink"><time title="Sat Jul 15 2017 20:13:33 GMT+0200 (Central European Summer Time)" datetime="2017-06-06T18:13:33Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>Hello, I have reached the stage of panic = "abort", but when I make run I get this error: target/x86_64-os/debug/libos.a(core-9a5ada2b08448709.0.o): In function <code>core::panicking::panic_fmt':
+core.cgu-0.rs:(.text.cold._ZN4core9panicking9panic_fmt17h6b6d64bae0e8a2c2E+0x88): undefined reference to</code>rust_begin_unwind', I really have no clue what is happening here as I have exactly the same code as you do above.</p>
+
+<p>EDIT: I have read some of the above comments, turns out that other people were having the same issue as me and I have used their solutions. Sorry to waste your time.</p></div><div class="isso-comment-footer"><span class="votes">-1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-320" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="24a9aa182282"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="36" y="36" width="8" height="8" style="fill: #e279a3"></rect><rect x="12" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="28" y="28" width="8" height="8" style="fill: #e279a3"></rect><rect x="20" y="4" width="8" height="8" style="fill: #e279a3"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Anonym</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-320" class="permalink"><time title="Fri Sep 08 2017 12:46:46 GMT+0200 (Central European Summer Time)" datetime="2017-08-05T10:46:46Z">letztes Jahr</time></a><span class="note"></span></div><div class="text"><p>There is an error when changing the makefile(roughly in the middle of this post). This part </p>
+
+<p>which stands for “garbage collect sections”. Let's add it to the $(kernel) target in our Makefile:
+$(kernel): xargo $(rust_os) $(assembly_object_files) $(linker_script)
+    @ld -n --gc-sections -T $(linker_script) -o $(kernel) \
+         $(assembly_object_files) $(rust_os)</p>
+
+<p>results in "no rule to make target 'xargo'</p>
+
+<p>when changing it to this it works again:</p>
+
+<p>$(kernel): kernel $(rust_os) $(assembly_object_files) $(linker_script)
+    @ld -n --gc-sections -T $(linker_script) -o $(kernel) \
+         $(assembly_object_files) $(rust_os)</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-357" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="12c610920c53"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Max</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-357" class="permalink"><time title="Sat Dec 30 2017 16:30:42 GMT+0100 (Central European Standard Time)" datetime="2017-11-06T15:30:42Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>Hey, loving the tutorials :) though I'm running into an issue when using <code>xargo build</code>.
+When I do <code>xargo build --target=x86_64-blog_os</code>, I get the following error:</p>
+
+<p><code>error: failed to parse manifest at '/home/max/TesterOS/src/Cargo.toml'</code></p>
+
+<p><code>caused by:</code>
+<code>can't find library 'blog_os', rename file to 'src/lib.rs' or specify lib.path</code></p>
+
+<p>Could this be because of where I've saved my files?
+Because when I saw <code>src/lib.rs</code> in the tutorial, I just saved <code>lib.rs</code> in the src file we created.
+Is it something to do with where I placed my <code>Cargo.toml</code> or/and <code>x86_64-blog_os.json</code> file?</p>
+
+<p>Really confused here.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"><div id="isso-358" class="isso-comment"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="5db23f819f9f"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="4" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="36" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="12" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="20" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="12" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="28" y="36" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="4" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="28" width="8" height="8" style="fill: #447c69"></rect><rect x="20" y="36" width="8" height="8" style="fill: #447c69"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-358" class="permalink"><time title="Sat Dec 30 2017 18:04:21 GMT+0100 (Central European Standard Time)" datetime="2017-11-06T17:04:21Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>Cargo assumes that the lib.rs file is in a subfolder named src. So it doesn't work if you put the lib.rs next to the Cargo.toml.</p></div><div class="isso-comment-footer"><span class="votes">1</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-359" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="12c610920c53"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="36" y="4" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="12" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="28" y="20" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="12" width="8" height="8" style="fill: #9163b6"></rect><rect x="20" y="28" width="8" height="8" style="fill: #9163b6"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Max</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-359" class="permalink"><time title="Sat Dec 30 2017 20:44:13 GMT+0100 (Central European Standard Time)" datetime="2017-11-06T19:44:13Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>Thanks a million, it's all sorted now :). One more issue though.
+About the <code>rlibc</code>... <code>make run</code> seems to work fine without <code>extern crate rlibc</code>... But fails when I do add it in, saying it can't compile <code>rlibc</code>. </p>
+
+<p>Sorry to be a bother lol I'm a newb.</p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div><div id="isso-365" class="isso-comment isso-no-votes"><div class="avatar"><svg version="1.1" viewBox="0 0 48 48" preserveAspectRatio="xMinYMin meet" shape-rendering="crispEdges" data-hash="c8fed02ed154"><rect x="0" y="0" width="56" height="56" style="fill: #f0f0f0"></rect><rect x="4" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="20" width="8" height="8" style="fill: #be5168"></rect><rect x="4" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="36" y="28" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="4" width="8" height="8" style="fill: #be5168"></rect><rect x="12" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="28" y="36" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="12" width="8" height="8" style="fill: #be5168"></rect><rect x="20" y="28" width="8" height="8" style="fill: #be5168"></rect></svg></div><div class="text-wrapper"><div role="meta" class="isso-comment-header"><span class="author">Philipp Oppermann</span><span class="spacer">•</span><a rel="nofollow" href="index.html#isso-365" class="permalink"><time title="Sun Jan 07 2018 21:34:22 GMT+0100 (Central European Standard Time)" datetime="2018-00-00T20:34:22Z">vor 12 Monaten</time></a><span class="note"></span></div><div class="text"><p>There is currently a problem with cargo/xargo, maybe this is affects you: <a rel="nofollow" href="https://github.com/phil-opp/blog_os/issues/379">https://github.com/phil-opp/blog_os/issues/379</a></p></div><div class="isso-comment-footer"><span class="votes">0</span><a rel="nofollow" href="index.html#" class="upvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,18.299c-0.651-0.669-7.512-7.203-7.512-7.203C 16.912,10.739, 16.456,10.56, 16,10.56c-0.458,0-0.914,0.179-1.261,0.536 c0,0-6.861,6.534-7.514,7.203c-0.651,0.669-0.696,1.872,0,2.586c 0.698,0.712, 1.669,0.77, 2.522,0L 16,14.89l 6.251,5.995 c 0.854,0.77, 1.827,0.712, 2.522,0C 25.47,20.17, 25.427,18.966, 24.773,18.299z">
+    </path>
+  </g>
+</svg>
+</a><span class="spacer">|</span><a rel="nofollow" href="index.html#" class="downvote"><!-- Generator: IcoMoon.io --><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" fill="gray">
+  <g>
+    <path d="M 24.773,13.701c-0.651,0.669-7.512,7.205-7.512,7.205C 16.912,21.262, 16.456,21.44, 16,21.44c-0.458,0-0.914-0.178-1.261-0.534 c0,0-6.861-6.536-7.514-7.205c-0.651-0.669-0.696-1.87,0-2.586c 0.698-0.714, 1.669-0.77, 2.522,0L 16,17.112l 6.251-5.995 c 0.854-0.77, 1.827-0.714, 2.522,0C 25.47,11.83, 25.427,13.034, 24.773,13.701z">
+    </path>
+  </g>
+</svg>
+</a><a rel="nofollow" href="index.html#" class="reply">Antworten</a></div><div class="isso-follow-up"></div></div></div></div></div></div></div>
+
+
+    
+</section>
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2017">2017</time>. All rights reserved.
+                <a href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

@@ -1,0 +1,949 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This post shows how to implement paging support in our kernel. It first explores different techniques to make the physical page table frames accessibl…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Paging Implementation | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#introduction">Introduction</a>
+            
+        </li><li>
+            <a href="index.html#accessing-page-tables">Accessing Page Tables</a>
+            <ol>
+                <li>
+                    <a href="index.html#identity-mapping">Identity Mapping</a>
+                </li><li>
+                    <a href="index.html#map-at-a-fixed-offset">Map at a Fixed Offset</a>
+                </li><li>
+                    <a href="index.html#map-the-complete-physical-memory">Map the Complete Physical Memory</a>
+                </li><li>
+                    <a href="index.html#temporary-mapping">Temporary Mapping</a>
+                </li><li>
+                    <a href="index.html#recursive-page-tables">Recursive Page Tables</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#bootloader-support">Bootloader Support</a>
+            <ol>
+                <li>
+                    <a href="index.html#boot-information">Boot Information</a>
+                </li><li>
+                    <a href="index.html#the-entry-point-macro">The entry_point Macro</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#implementation">Implementation</a>
+            <ol>
+                <li>
+                    <a href="index.html#accessing-the-page-tables">Accessing the Page Tables</a>
+                </li><li>
+                    <a href="index.html#translating-addresses">Translating Addresses</a>
+                </li><li>
+                    <a href="index.html#using-offsetpagetable">Using OffsetPageTable</a>
+                </li><li>
+                    <a href="index.html#creating-a-new-mapping">Creating a new Mapping</a>
+                </li><li>
+                    <a href="index.html#allocating-frames">Allocating Frames</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>Paging Implementation</h1>
+    <time datetime="2019-03-14" class="post-date">
+        Mar 14, 2019
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>This post shows how to implement paging support in our kernel. It first explores different techniques to make the physical page table frames accessible to the kernel and discusses their respective advantages and drawbacks. It then implements an address translation function and a function to create a new mapping.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-09"><code>post-09</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#introduction">Introduction</a>
+                
+            </li><li>
+                <a href="index.html#accessing-page-tables">Accessing Page Tables</a>
+                <ul>
+                    <li>
+                        <a href="index.html#identity-mapping">Identity Mapping</a>
+                    </li><li>
+                        <a href="index.html#map-at-a-fixed-offset">Map at a Fixed Offset</a>
+                    </li><li>
+                        <a href="index.html#map-the-complete-physical-memory">Map the Complete Physical Memory</a>
+                    </li><li>
+                        <a href="index.html#temporary-mapping">Temporary Mapping</a>
+                    </li><li>
+                        <a href="index.html#recursive-page-tables">Recursive Page Tables</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#bootloader-support">Bootloader Support</a>
+                <ul>
+                    <li>
+                        <a href="index.html#boot-information">Boot Information</a>
+                    </li><li>
+                        <a href="index.html#the-entry-point-macro">The entry_point Macro</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#implementation">Implementation</a>
+                <ul>
+                    <li>
+                        <a href="index.html#accessing-the-page-tables">Accessing the Page Tables</a>
+                    </li><li>
+                        <a href="index.html#translating-addresses">Translating Addresses</a>
+                    </li><li>
+                        <a href="index.html#using-offsetpagetable">Using OffsetPageTable</a>
+                    </li><li>
+                        <a href="index.html#creating-a-new-mapping">Creating a new Mapping</a>
+                    </li><li>
+                        <a href="index.html#allocating-frames">Allocating Frames</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="introduction"><a class="zola-anchor" href="index.html#introduction" aria-label="Anchor link for: introduction">🔗</a>Introduction</h2>
+<p>The <a href="../paging-introduction/index.html">previous post</a> gave an introduction to the concept of paging. It motivated paging by comparing it with segmentation, explained how paging and page tables work, and then introduced the 4-level page table design of <code>x86_64</code>. We found out that the bootloader already set up a page table hierarchy for our kernel, which means that our kernel already runs on virtual addresses. This improves safety since illegal memory accesses cause page fault exceptions instead of modifying arbitrary physical memory.</p>
+<p>The post ended with the problem that we <a href="../paging-introduction/index.html#accessing-the-page-tables">can’t access the page tables from our kernel</a> because they are stored in physical memory and our kernel already runs on virtual addresses. This post explores different approaches to making the page table frames accessible to our kernel. We will discuss the advantages and drawbacks of each approach and then decide on an approach for our kernel.</p>
+<p>To implement the approach, we will need support from the bootloader, so we’ll configure it first. Afterward, we will implement a function that traverses the page table hierarchy in order to translate virtual to physical addresses. Finally, we learn how to create new mappings in the page tables and how to find unused memory frames for creating new page tables.</p>
+<h2 id="accessing-page-tables"><a class="zola-anchor" href="index.html#accessing-page-tables" aria-label="Anchor link for: accessing-page-tables">🔗</a>Accessing Page Tables</h2>
+<p>Accessing the page tables from our kernel is not as easy as it may seem. To understand the problem, let’s take a look at the example 4-level page table hierarchy from the previous post again:</p>
+<p><img src="../paging-introduction/x86_64-page-table-translation.svg" alt="An example 4-level page hierarchy with each page table shown in physical memory" /></p>
+<p>The important thing here is that each page entry stores the <em>physical</em> address of the next table. This avoids the need to run a translation for these addresses too, which would be bad for performance and could easily cause endless translation loops.</p>
+<p>The problem for us is that we can’t directly access physical addresses from our kernel since our kernel also runs on top of virtual addresses. For example, when we access address <code>4 KiB</code> we access the <em>virtual</em> address <code>4 KiB</code>, not the <em>physical</em> address <code>4 KiB</code> where the level 4 page table is stored. When we want to access the physical address <code>4 KiB</code>, we can only do so through some virtual address that maps to it.</p>
+<p>So in order to access page table frames, we need to map some virtual pages to them. There are different ways to create these mappings that all allow us to access arbitrary page table frames.</p>
+<h3 id="identity-mapping"><a class="zola-anchor" href="index.html#identity-mapping" aria-label="Anchor link for: identity-mapping">🔗</a>Identity Mapping</h3>
+<p>A simple solution is to <strong>identity map all page tables</strong>:</p>
+<p><img src="identity-mapped-page-tables.svg" alt="A virtual and a physical address space with various virtual pages mapped to the physical frame with the same address" /></p>
+<p>In this example, we see various identity-mapped page table frames. This way, the physical addresses of page tables are also valid virtual addresses so that we can easily access the page tables of all levels starting from the CR3 register.</p>
+<p>However, it clutters the virtual address space and makes it more difficult to find continuous memory regions of larger sizes. For example, imagine that we want to create a virtual memory region of size 1000 KiB in the above graphic, e.g., for <a href="https://en.wikipedia.org/wiki/Memory-mapped_file">memory-mapping a file</a>. We can’t start the region at <code>28 KiB</code> because it would collide with the already mapped page at <code>1004 KiB</code>. So we have to look further until we find a large enough unmapped area, for example at <code>1008 KiB</code>. This is a similar fragmentation problem as with <a href="../paging-introduction/index.html#fragmentation">segmentation</a>.</p>
+<p>Equally, it makes it much more difficult to create new page tables because we need to find physical frames whose corresponding pages aren’t already in use. For example, let’s assume that we reserved the <em>virtual</em> 1000 KiB memory region starting at <code>1008 KiB</code> for our memory-mapped file. Now we can’t use any frame with a <em>physical</em> address between <code>1000 KiB</code> and <code>2008 KiB</code> anymore, because we can’t identity map it.</p>
+<h3 id="map-at-a-fixed-offset"><a class="zola-anchor" href="index.html#map-at-a-fixed-offset" aria-label="Anchor link for: map-at-a-fixed-offset">🔗</a>Map at a Fixed Offset</h3>
+<p>To avoid the problem of cluttering the virtual address space, we can <strong>use a separate memory region for page table mappings</strong>. So instead of identity mapping page table frames, we map them at a fixed offset in the virtual address space. For example, the offset could be 10 TiB:</p>
+<p><img src="page-tables-mapped-at-offset.svg" alt="The same figure as for the identity mapping, but each mapped virtual page is offset by 10 TiB." /></p>
+<p>By using the virtual memory in the range <code>10 TiB..(10 TiB + physical memory size)</code> exclusively for page table mappings, we avoid the collision problems of the identity mapping. Reserving such a large region of the virtual address space is only possible if the virtual address space is much larger than the physical memory size. This isn’t a problem on x86_64 since the 48-bit address space is 256 TiB large.</p>
+<p>This approach still has the disadvantage that we need to create a new mapping whenever we create a new page table. Also, it does not allow accessing page tables of other address spaces, which would be useful when creating a new process.</p>
+<h3 id="map-the-complete-physical-memory"><a class="zola-anchor" href="index.html#map-the-complete-physical-memory" aria-label="Anchor link for: map-the-complete-physical-memory">🔗</a>Map the Complete Physical Memory</h3>
+<p>We can solve these problems by <strong>mapping the complete physical memory</strong> instead of only page table frames:</p>
+<p><img src="map-complete-physical-memory.svg" alt="The same figure as for the offset mapping, but every physical frame has a mapping (at 10 TiB + X) instead of only page table frames." /></p>
+<p>This approach allows our kernel to access arbitrary physical memory, including page table frames of other address spaces. The reserved virtual memory range has the same size as before, with the difference that it no longer contains unmapped pages.</p>
+<p>The disadvantage of this approach is that additional page tables are needed for storing the mapping of the physical memory. These page tables need to be stored somewhere, so they use up a part of physical memory, which can be a problem on devices with a small amount of memory.</p>
+<p>On x86_64, however, we can use <a href="https://en.wikipedia.org/wiki/Page_%28computer_memory%29#Multiple_page_sizes">huge pages</a> with a size of 2 MiB for the mapping, instead of the default 4 KiB pages. This way, mapping 32 GiB of physical memory only requires 132 KiB for page tables since only one level 3 table and 32 level 2 tables are needed. Huge pages are also more cache efficient since they use fewer entries in the translation lookaside buffer (TLB).</p>
+<h3 id="temporary-mapping"><a class="zola-anchor" href="index.html#temporary-mapping" aria-label="Anchor link for: temporary-mapping">🔗</a>Temporary Mapping</h3>
+<p>For devices with very small amounts of physical memory, we could <strong>map the page table frames only temporarily</strong> when we need to access them. To be able to create the temporary mappings, we only need a single identity-mapped level 1 table:</p>
+<p><img src="temporarily-mapped-page-tables.svg" alt="A virtual and a physical address space with an identity mapped level 1 table, which maps its 0th entry to the level 2 table frame, thereby mapping that frame to the page with address 0" /></p>
+<p>The level 1 table in this graphic controls the first 2 MiB of the virtual address space. This is because it is reachable by starting at the CR3 register and following the 0th entry in the level 4, level 3, and level 2 page tables. The entry with index <code>8</code> maps the virtual page at address <code>32 KiB</code> to the physical frame at address <code>32 KiB</code>, thereby identity mapping the level 1 table itself. The graphic shows this identity-mapping by the horizontal arrow at <code>32 KiB</code>.</p>
+<p>By writing to the identity-mapped level 1 table, our kernel can create up to 511 temporary mappings (512 minus the entry required for the identity mapping). In the above example, the kernel created two temporary mappings:</p>
+<ul>
+<li>By mapping the 0th entry of the level 1 table to the frame with address <code>24 KiB</code>, it created a temporary mapping of the virtual page at <code>0 KiB</code> to the physical frame of the level 2 page table, indicated by the dashed arrow.</li>
+<li>By mapping the 9th entry of the level 1 table to the frame with address <code>4 KiB</code>, it created a temporary mapping of the virtual page at <code>36 KiB</code> to the physical frame of the level 4 page table, indicated by the dashed arrow.</li>
+</ul>
+<p>Now the kernel can access the level 2 page table by writing to page <code>0 KiB</code> and the level 4 page table by writing to page <code>36 KiB</code>.</p>
+<p>The process for accessing an arbitrary page table frame with temporary mappings would be:</p>
+<ul>
+<li>Search for a free entry in the identity-mapped level 1 table.</li>
+<li>Map that entry to the physical frame of the page table that we want to access.</li>
+<li>Access the target frame through the virtual page that maps to the entry.</li>
+<li>Set the entry back to unused, thereby removing the temporary mapping again.</li>
+</ul>
+<p>This approach reuses the same 512 virtual pages for creating the mappings and thus requires only 4 KiB of physical memory. The drawback is that it is a bit cumbersome, especially since a new mapping might require modifications to multiple table levels, which means that we would need to repeat the above process multiple times.</p>
+<h3 id="recursive-page-tables"><a class="zola-anchor" href="index.html#recursive-page-tables" aria-label="Anchor link for: recursive-page-tables">🔗</a>Recursive Page Tables</h3>
+<p>Another interesting approach, which requires no additional page tables at all, is to <strong>map the page table recursively</strong>. The idea behind this approach is to map an entry from the level 4 page table to the level 4 table itself. By doing this, we effectively reserve a part of the virtual address space and map all current and future page table frames to that space.</p>
+<p>Let’s go through an example to understand how this all works:</p>
+<p><img src="recursive-page-table.png" alt="An example 4-level page hierarchy with each page table shown in physical memory. Entry 511 of the level 4 page is mapped to frame 4KiB, the frame of the level 4 table itself." /></p>
+<p>The only difference to the <a href="index.html#accessing-page-tables">example at the beginning of this post</a> is the additional entry at index <code>511</code> in the level 4 table, which is mapped to physical frame <code>4 KiB</code>, the frame of the level 4 table itself.</p>
+<p>By letting the CPU follow this entry on a translation, it doesn’t reach a level 3 table but the same level 4 table again. This is similar to a recursive function that calls itself, therefore this table is called a <em>recursive page table</em>. The important thing is that the CPU assumes that every entry in the level 4 table points to a level 3 table, so it now treats the level 4 table as a level 3 table. This works because tables of all levels have the exact same layout on x86_64.</p>
+<p>By following the recursive entry one or multiple times before we start the actual translation, we can effectively shorten the number of levels that the CPU traverses. For example, if we follow the recursive entry once and then proceed to the level 3 table, the CPU thinks that the level 3 table is a level 2 table. Going further, it treats the level 2 table as a level 1 table and the level 1 table as the mapped frame. This means that we can now read and write the level 1 page table because the CPU thinks that it is the mapped frame. The graphic below illustrates the five translation steps:</p>
+<p><img src="recursive-page-table-access-level-1.png" alt="The above example 4-level page hierarchy with 5 arrows: “Step 0” from CR4 to level 4 table, “Step 1” from level 4 table to level 4 table, “Step 2” from level 4 table to level 3 table, “Step 3” from level 3 table to level 2 table, and “Step 4” from level 2 table to level 1 table." /></p>
+<p>Similarly, we can follow the recursive entry twice before starting the translation to reduce the number of traversed levels to two:</p>
+<p><img src="recursive-page-table-access-level-2.png" alt="The same 4-level page hierarchy with the following 4 arrows: “Step 0” from CR4 to level 4 table, “Steps 1&amp;2” from level 4 table to level 4 table, “Step 3” from level 4 table to level 3 table, and “Step 4” from level 3 table to level 2 table." /></p>
+<p>Let’s go through it step by step: First, the CPU follows the recursive entry on the level 4 table and thinks that it reaches a level 3 table. Then it follows the recursive entry again and thinks that it reaches a level 2 table. But in reality, it is still on the level 4 table. When the CPU now follows a different entry, it lands on a level 3 table but thinks it is already on a level 1 table. So while the next entry points to a level 2 table, the CPU thinks that it points to the mapped frame, which allows us to read and write the level 2 table.</p>
+<p>Accessing the tables of levels 3 and 4 works in the same way. To access the level 3 table, we follow the recursive entry three times, tricking the CPU into thinking it is already on a level 1 table. Then we follow another entry and reach a level 3 table, which the CPU treats as a mapped frame. For accessing the level 4 table itself, we just follow the recursive entry four times until the CPU treats the level 4 table itself as the mapped frame (in blue in the graphic below).</p>
+<p><img src="recursive-page-table-access-level-3.png" alt="The same 4-level page hierarchy with the following 3 arrows: “Step 0” from CR4 to level 4 table, “Steps 1,2,3” from level 4 table to level 4 table, and “Step 4” from level 4 table to level 3 table. In blue, the alternative “Steps 1,2,3,4” arrow from level 4 table to level 4 table." /></p>
+<p>It might take some time to wrap your head around the concept, but it works quite well in practice.</p>
+<p>In the section below, we explain how to construct virtual addresses for following the recursive entry one or multiple times. We will not use recursive paging for our implementation, so you don’t need to read it to continue with the post. If it interests you, just click on <em>“Address Calculation”</em> to expand it.</p>
+<hr />
+<details>
+<summary><h4>Address Calculation</h4></summary>
+<p>We saw that we can access tables of all levels by following the recursive entry once or multiple times before the actual translation. Since the indexes into the tables of the four levels are derived directly from the virtual address, we need to construct special virtual addresses for this technique. Remember, the page table indexes are derived from the address in the following way:</p>
+<p><img src="../paging-introduction/x86_64-table-indices-from-address.svg" alt="Bits 0–12 are the page offset, bits 12–21 the level 1 index, bits 21–30 the level 2 index, bits 30–39 the level 3 index, and bits 39–48 the level 4 index" /></p>
+<p>Let’s assume that we want to access the level 1 page table that maps a specific page. As we learned above, this means that we have to follow the recursive entry once before continuing with the level 4, level 3, and level 2 indexes. To do that, we move each block of the address one block to the right and set the original level 4 index to the index of the recursive entry:</p>
+<p><img src="table-indices-from-address-recursive-level-1.svg" alt="Bits 0–12 are the offset into the level 1 table frame, bits 12–21 the level 2 index, bits 21–30 the level 3 index, bits 30–39 the level 4 index, and bits 39–48 the index of the recursive entry" /></p>
+<p>For accessing the level 2 table of that page, we move each index block two blocks to the right and set both the blocks of the original level 4 index and the original level 3 index to the index of the recursive entry:</p>
+<p><img src="table-indices-from-address-recursive-level-2.svg" alt="Bits 0–12 are the offset into the level 2 table frame, bits 12–21 the level 3 index, bits 21–30 the level 4 index, and bits 30–39 and bits 39–48 are the index of the recursive entry" /></p>
+<p>Accessing the level 3 table works by moving each block three blocks to the right and using the recursive index for the original level 4, level 3, and level 2 address blocks:</p>
+<p><img src="table-indices-from-address-recursive-level-3.svg" alt="Bits 0–12 are the offset into the level 3 table frame, bits 12–21 the level 4 index, and bits 21–30, bits 30–39 and bits 39–48 are the index of the recursive entry" /></p>
+<p>Finally, we can access the level 4 table by moving each block four blocks to the right and using the recursive index for all address blocks except for the offset:</p>
+<p><img src="table-indices-from-address-recursive-level-4.svg" alt="Bits 0–12 are the offset into the level l table frame and bits 12–21, bits 21–30, bits 30–39, and bits 39–48 are the index of the recursive entry" /></p>
+<p>We can now calculate virtual addresses for the page tables of all four levels. We can even calculate an address that points exactly to a specific page table entry by multiplying its index by 8, the size of a page table entry.</p>
+<p>The table below summarizes the address structure for accessing the different kinds of frames:</p>
+<table><thead><tr><th>Virtual Address for</th><th>Address Structure (<a href="https://en.wikipedia.org/wiki/Octal">octal</a>)</th></tr></thead><tbody>
+<tr><td>Page</td><td><code>0o_SSSSSS_AAA_BBB_CCC_DDD_EEEE</code></td></tr>
+<tr><td>Level 1 Table Entry</td><td><code>0o_SSSSSS_RRR_AAA_BBB_CCC_DDDD</code></td></tr>
+<tr><td>Level 2 Table Entry</td><td><code>0o_SSSSSS_RRR_RRR_AAA_BBB_CCCC</code></td></tr>
+<tr><td>Level 3 Table Entry</td><td><code>0o_SSSSSS_RRR_RRR_RRR_AAA_BBBB</code></td></tr>
+<tr><td>Level 4 Table Entry</td><td><code>0o_SSSSSS_RRR_RRR_RRR_RRR_AAAA</code></td></tr>
+</tbody></table>
+<p>Whereas <code>AAA</code> is the level 4 index, <code>BBB</code> the level 3 index, <code>CCC</code> the level 2 index, and <code>DDD</code> the level 1 index of the mapped frame, and <code>EEEE</code> the offset into it. <code>RRR</code> is the index of the recursive entry. When an index (three digits) is transformed to an offset (four digits), it is done by multiplying it by 8 (the size of a page table entry). With this offset, the resulting address directly points to the respective page table entry.</p>
+<p><code>SSSSSS</code> are sign extension bits, which means that they are all copies of bit 47. This is a special requirement for valid addresses on the x86_64 architecture. We explained it in the <a href="../paging-introduction/index.html#paging-on-x86-64">previous post</a>.</p>
+<p>We use <a href="https://en.wikipedia.org/wiki/Octal">octal</a> numbers for representing the addresses since each octal character represents three bits, which allows us to clearly separate the 9-bit indexes of the different page table levels. This isn’t possible with the hexadecimal system, where each character represents four bits.</p>
+<h5 id="in-rust-code"><a class="zola-anchor" href="index.html#in-rust-code" aria-label="Anchor link for: in-rust-code">🔗</a>In Rust Code</h5>
+<p>To construct such addresses in Rust code, you can use bitwise operations:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// the virtual address whose corresponding page tables you want to access
+</span><span style="color:#569cd6;">let</span><span> addr: </span><span style="color:#569cd6;">usize </span><span>= […];
+</span><span>
+</span><span style="color:#569cd6;">let</span><span> r = </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// recursive index
+</span><span style="color:#569cd6;">let</span><span> sign = </span><span style="color:#b5cea8;">0o177777 </span><span>&lt;&lt; </span><span style="color:#b5cea8;">48</span><span>; </span><span style="color:#608b4e;">// sign extension
+</span><span>
+</span><span style="color:#608b4e;">// retrieve the page table indices of the address that we want to translate
+</span><span style="color:#569cd6;">let</span><span> l4_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// level 4 index
+</span><span style="color:#569cd6;">let</span><span> l3_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// level 3 index
+</span><span style="color:#569cd6;">let</span><span> l2_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// level 2 index
+</span><span style="color:#569cd6;">let</span><span> l1_idx = (addr &gt;&gt; </span><span style="color:#b5cea8;">12</span><span>) </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o777</span><span>; </span><span style="color:#608b4e;">// level 1 index
+</span><span style="color:#569cd6;">let</span><span> page_offset = addr </span><span style="color:#569cd6;">&amp; </span><span style="color:#b5cea8;">0o7777</span><span>;
+</span><span>
+</span><span style="color:#608b4e;">// calculate the table addresses
+</span><span style="color:#569cd6;">let</span><span> level_4_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_3_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_2_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l3_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span><span style="color:#569cd6;">let</span><span> level_1_table_addr =
+</span><span>    sign </span><span style="color:#569cd6;">| </span><span>(r &lt;&lt; </span><span style="color:#b5cea8;">39</span><span>) </span><span style="color:#569cd6;">| </span><span>(l4_idx &lt;&lt; </span><span style="color:#b5cea8;">30</span><span>) </span><span style="color:#569cd6;">| </span><span>(l3_idx &lt;&lt; </span><span style="color:#b5cea8;">21</span><span>) </span><span style="color:#569cd6;">| </span><span>(l2_idx &lt;&lt; </span><span style="color:#b5cea8;">12</span><span>);
+</span></code></pre>
+<p>The above code assumes that the last level 4 entry with index <code>0o777</code> (511) is recursively mapped. This isn’t the case currently, so the code won’t work yet. See below on how to tell the bootloader to set up the recursive mapping.</p>
+<p>Alternatively to performing the bitwise operations by hand, you can use the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.RecursivePageTable.html"><code>RecursivePageTable</code></a> type of the <code>x86_64</code> crate, which provides safe abstractions for various page table operations. For example, the code below shows how to translate a virtual address to its mapped physical address:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::{Mapper, Page, PageTable, RecursivePageTable};
+</span><span style="color:#569cd6;">use </span><span>x86_64::{VirtAddr, PhysAddr};
+</span><span>
+</span><span style="color:#608b4e;">/// Creates a RecursivePageTable instance from the level 4 address.
+</span><span style="color:#569cd6;">let</span><span> level_4_table_addr = […];
+</span><span style="color:#569cd6;">let</span><span> level_4_table_ptr = level_4_table_addr </span><span style="color:#569cd6;">as *mut</span><span> PageTable;
+</span><span style="color:#569cd6;">let</span><span> recursive_page_table = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>    </span><span style="color:#569cd6;">let</span><span> level_4_table = </span><span style="color:#569cd6;">&amp;mut </span><span>*level_4_table_ptr;
+</span><span>    RecursivePageTable::new(level_4_table).unwrap();
+</span><span>}
+</span><span>
+</span><span>
+</span><span style="color:#608b4e;">/// Retrieve the physical address for the given virtual address
+</span><span style="color:#569cd6;">let</span><span> addr: </span><span style="color:#569cd6;">u64 </span><span>= […]
+</span><span style="color:#569cd6;">let</span><span> addr = VirtAddr::new(addr);
+</span><span style="color:#569cd6;">let</span><span> page: Page = Page::containing_address(addr);
+</span><span>
+</span><span style="color:#608b4e;">// perform the translation
+</span><span style="color:#569cd6;">let</span><span> frame = recursive_page_table.translate_page(page);
+</span><span>frame.map(|frame| frame.start_address() + </span><span style="color:#569cd6;">u64</span><span>::from(addr.page_offset()))
+</span></code></pre>
+<p>Again, a valid recursive mapping is required for this code. With such a mapping, the missing <code>level_4_table_addr</code> can be calculated as in the first code example.</p>
+</details>
+<hr />
+<p>Recursive Paging is an interesting technique that shows how powerful a single mapping in a page table can be. It is relatively easy to implement and only requires a minimal amount of setup (just a single recursive entry), so it’s a good choice for first experiments with paging.</p>
+<p>However, it also has some disadvantages:</p>
+<ul>
+<li>It occupies a large amount of virtual memory (512 GiB). This isn’t a big problem in the large 48-bit address space, but it might lead to suboptimal cache behavior.</li>
+<li>It only allows accessing the currently active address space easily. Accessing other address spaces is still possible by changing the recursive entry, but a temporary mapping is required for switching back. We described how to do this in the (outdated) <a href="../remap-the-kernel/index.html#overview"><em>Remap The Kernel</em></a> post.</li>
+<li>It heavily relies on the page table format of x86 and might not work on other architectures.</li>
+</ul>
+<h2 id="bootloader-support"><a class="zola-anchor" href="index.html#bootloader-support" aria-label="Anchor link for: bootloader-support">🔗</a>Bootloader Support</h2>
+<p>All of these approaches require page table modifications for their setup. For example, mappings for the physical memory need to be created or an entry of the level 4 table needs to be mapped recursively. The problem is that we can’t create these required mappings without an existing way to access the page tables.</p>
+<p>This means that we need the help of the bootloader, which creates the page tables that our kernel runs on. The bootloader has access to the page tables, so it can create any mappings that we need. In its current implementation, the <code>bootloader</code> crate has support for two of the above approaches, controlled through <a href="https://doc.rust-lang.org/cargo/reference/features.html#the-features-section">cargo features</a>:</p>
+<ul>
+<li>The <code>map_physical_memory</code> feature maps the complete physical memory somewhere into the virtual address space. Thus, the kernel has access to all physical memory and can follow the <a href="index.html#map-the-complete-physical-memory"><em>Map the Complete Physical Memory</em></a> approach.</li>
+<li>With the <code>recursive_page_table</code> feature, the bootloader maps an entry of the level 4 page table recursively. This allows the kernel to access the page tables as described in the <a href="index.html#recursive-page-tables"><em>Recursive Page Tables</em></a> section.</li>
+</ul>
+<p>We choose the first approach for our kernel since it is simple, platform-independent, and more powerful (it also allows access to non-page-table-frames). To enable the required bootloader support, we add the <code>map_physical_memory</code> feature to our <code>bootloader</code> dependency:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">bootloader </span><span>= { </span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;0.9.23&quot;</span><span>, </span><span style="color:#569cd6;">features </span><span>= [</span><span style="color:#d69d85;">&quot;map_physical_memory&quot;</span><span>]}
+</span></code></pre>
+<p>With this feature enabled, the bootloader maps the complete physical memory to some unused virtual address range. To communicate the virtual address range to our kernel, the bootloader passes a <em>boot information</em> structure.</p>
+<h3 id="boot-information"><a class="zola-anchor" href="index.html#boot-information" aria-label="Anchor link for: boot-information">🔗</a>Boot Information</h3>
+<p>The <code>bootloader</code> crate defines a <a href="https://docs.rs/bootloader/0.9.3/bootloader/bootinfo/struct.BootInfo.html"><code>BootInfo</code></a> struct that contains all the information it passes to our kernel. The struct is still in an early stage, so expect some breakage when updating to future <a href="https://doc.rust-lang.org/stable/cargo/reference/specifying-dependencies.html#caret-requirements">semver-incompatible</a> bootloader versions. With the <code>map_physical_memory</code> feature enabled, it currently has the two fields <code>memory_map</code> and <code>physical_memory_offset</code>:</p>
+<ul>
+<li>The <code>memory_map</code> field contains an overview of the available physical memory. This tells our kernel how much physical memory is available in the system and which memory regions are reserved for devices such as the VGA hardware. The memory map can be queried from the BIOS or UEFI firmware, but only very early in the boot process. For this reason, it must be provided by the bootloader because there is no way for the kernel to retrieve it later. We will need the memory map later in this post.</li>
+<li>The <code>physical_memory_offset</code> tells us the virtual start address of the physical memory mapping. By adding this offset to a physical address, we get the corresponding virtual address. This allows us to access arbitrary physical memory from our kernel.</li>
+<li>This physical memory offset can be customized by adding a <code>[package.metadata.bootloader]</code> table in Cargo.toml and setting the field <code>physical-memory-offset = &quot;0x0000f00000000000&quot;</code> (or any other value). However, note that the bootloader can panic if it runs into physical address values that start to overlap with the the space beyond the offset, i.e., areas it would have previously mapped to some other early physical addresses. So in general, the higher the value (&gt; 1 TiB), the better.</li>
+</ul>
+<p>The bootloader passes the <code>BootInfo</code> struct to our kernel in the form of a <code>&amp;'static BootInfo</code> argument to our <code>_start</code> function. We don’t have this argument declared in our function yet, so let’s add it:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::BootInfo;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{ </span><span style="color:#608b4e;">// new argument
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>It wasn’t a problem to leave off this argument before because the x86_64 calling convention passes the first argument in a CPU register. Thus, the argument is simply ignored when it isn’t declared. However, it would be a problem if we accidentally used a wrong argument type, since the compiler doesn’t know the correct type signature of our entry point function.</p>
+<h3 id="the-entry-point-macro"><a class="zola-anchor" href="index.html#the-entry-point-macro" aria-label="Anchor link for: the-entry-point-macro">🔗</a>The <code>entry_point</code> Macro</h3>
+<p>Since our <code>_start</code> function is called externally from the bootloader, no checking of our function signature occurs. This means that we could let it take arbitrary arguments without any compilation errors, but it would fail or cause undefined behavior at runtime.</p>
+<p>To make sure that the entry point function always has the correct signature that the bootloader expects, the <code>bootloader</code> crate provides an <a href="https://docs.rs/bootloader/0.6.4/bootloader/macro.entry_point.html"><code>entry_point</code></a> macro that provides a type-checked way to define a Rust function as the entry point. Let’s rewrite our entry point function to use this macro:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::{BootInfo, entry_point};
+</span><span>
+</span><span>entry_point!(kernel_main);
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>We no longer need to use <code>extern &quot;C&quot;</code> or <code>no_mangle</code> for our entry point, as the macro defines the real lower level <code>_start</code> entry point for us. The <code>kernel_main</code> function is now a completely normal Rust function, so we can choose an arbitrary name for it. The important thing is that it is type-checked so that a compilation error occurs when we use a wrong function signature, for example by adding an argument or changing the argument type.</p>
+<p>Let’s perform the same change in our <code>lib.rs</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">use </span><span>bootloader::{entry_point, BootInfo};
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>entry_point!(test_kernel_main);
+</span><span>
+</span><span style="color:#608b4e;">/// Entry point for `cargo test`
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_kernel_main(_boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// like before
+</span><span>    init();
+</span><span>    test_main();
+</span><span>    hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>Since the entry point is only used in test mode, we add the <code>#[cfg(test)]</code> attribute to all items. We give our test entry point the distinct name <code>test_kernel_main</code> to avoid confusion with the <code>kernel_main</code> of our <code>main.rs</code>. We don’t use the <code>BootInfo</code> parameter for now, so we prefix the parameter name with a <code>_</code> to silence the unused variable warning.</p>
+<h2 id="implementation"><a class="zola-anchor" href="index.html#implementation" aria-label="Anchor link for: implementation">🔗</a>Implementation</h2>
+<p>Now that we have access to physical memory, we can finally start to implement our page table code. First, we will take a look at the currently active page tables that our kernel runs on. In the second step, we will create a translation function that returns the physical address that a given virtual address is mapped to. As a last step, we will try to modify the page tables in order to create a new mapping.</p>
+<p>Before we begin, we create a new <code>memory</code> module for our code:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>memory;
+</span></code></pre>
+<p>For the module, we create an empty <code>src/memory.rs</code> file.</p>
+<h3 id="accessing-the-page-tables"><a class="zola-anchor" href="index.html#accessing-the-page-tables" aria-label="Anchor link for: accessing-the-page-tables">🔗</a>Accessing the Page Tables</h3>
+<p>At the <a href="../paging-introduction/index.html#accessing-the-page-tables">end of the previous post</a>, we tried to take a look at the page tables our kernel runs on, but failed since we couldn’t access the physical frame that the <code>CR3</code> register points to. We’re now able to continue from there by creating an <code>active_level_4_table</code> function that returns a reference to the active level 4 page table:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::{
+</span><span>    structures::paging::PageTable,
+</span><span>    VirtAddr,
+</span><span>};
+</span><span>
+</span><span style="color:#608b4e;">/// Returns a mutable reference to the active level 4 table.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the
+</span><span style="color:#608b4e;">/// complete physical memory is mapped to virtual memory at the passed
+</span><span style="color:#608b4e;">/// `physical_memory_offset`. Also, this function must be only called once
+</span><span style="color:#608b4e;">/// to avoid aliasing `&amp;mut` references (which is undefined behavior).
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>active_level_4_table(physical_memory_offset: VirtAddr)
+</span><span>    -&gt; </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> PageTable
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control::Cr3;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let </span><span>(level_4_table_frame, </span><span style="color:#569cd6;">_</span><span>) = Cr3::read();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys = level_4_table_frame.start_address();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> virt = physical_memory_offset + phys.as_u64();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page_table_ptr: </span><span style="color:#569cd6;">*mut</span><span> PageTable = virt.as_mut_ptr();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">&amp;mut </span><span>*page_table_ptr </span><span style="color:#608b4e;">// unsafe
+</span><span>}
+</span></code></pre>
+<p>First, we read the physical frame of the active level 4 table from the <code>CR3</code> register. We then take its physical start address, convert it to a <code>u64</code>, and add it to <code>physical_memory_offset</code> to get the virtual address where the page table frame is mapped. Finally, we convert the virtual address to a <code>*mut PageTable</code> raw pointer through the <code>as_mut_ptr</code> method and then unsafely create a <code>&amp;mut PageTable</code> reference from it. We create a <code>&amp;mut</code> reference instead of a <code>&amp;</code> reference because we will mutate the page tables later in this post.</p>
+<p>We don’t need to use an unsafe block here because Rust treats the complete body of an <code>unsafe fn</code> like a large <code>unsafe</code> block. This makes our code more dangerous since we could accidentally introduce an unsafe operation in previous lines without noticing. It also makes it much more difficult to spot unsafe operations in between safe operations. There is an <a href="https://github.com/rust-lang/rfcs/pull/2585">RFC</a> to change this behavior.</p>
+<p>We can now use this function to print the entries of the level 4 table:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::active_level_4_table;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::VirtAddr;
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>    blog_os::init();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> l4_table = </span><span style="color:#569cd6;">unsafe </span><span>{ active_level_4_table(phys_mem_offset) };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, entry) </span><span style="color:#569cd6;">in</span><span> l4_table.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>            println!(</span><span style="color:#d69d85;">&quot;L4 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// as before
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();
+</span><span>}
+</span></code></pre>
+<p>First, we convert the <code>physical_memory_offset</code> of the <code>BootInfo</code> struct to a <a href="https://docs.rs/x86_64/0.14.2/x86_64/addr/struct.VirtAddr.html"><code>VirtAddr</code></a> and pass it to the <code>active_level_4_table</code> function. We then use the <code>iter</code> function to iterate over the page table entries and the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a> combinator to additionally add an index <code>i</code> to each element. We only print non-empty entries because all 512 entries wouldn’t fit on the screen.</p>
+<p>When we run it, we see the following output:</p>
+<p><img src="qemu-print-level-4-table.png" alt="QEMU printing entry 0 (0x2000, PRESENT, WRITABLE, ACCESSED), entry 1 (0x894000, PRESENT, WRITABLE, ACCESSED, DIRTY), entry 31 (0x88e000, PRESENT, WRITABLE, ACCESSED, DIRTY), entry 175 (0x891000, PRESENT, WRITABLE, ACCESSED, DIRTY), and entry 504 (0x897000, PRESENT, WRITABLE, ACCESSED, DIRTY)" /></p>
+<p>We see that there are various non-empty entries, which all map to different level 3 tables. There are so many regions because kernel code, kernel stack, physical memory mapping, and boot information all use separate memory areas.</p>
+<p>To traverse the page tables further and take a look at a level 3 table, we can take the mapped frame of an entry and convert it to a virtual address again:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in the `for` loop in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::PageTable;
+</span><span>
+</span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;L4 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// get the physical address from the entry and convert it
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys = entry.frame().unwrap().start_address();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> virt = phys.as_u64() + boot_info.physical_memory_offset;
+</span><span>    </span><span style="color:#569cd6;">let</span><span> ptr = VirtAddr::new(virt).as_mut_ptr();
+</span><span>    </span><span style="color:#569cd6;">let</span><span> l3_table: </span><span style="color:#569cd6;">&amp;</span><span>PageTable = </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;</span><span>*ptr };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// print non-empty entries of the level 3 table
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, entry) </span><span style="color:#569cd6;">in</span><span> l3_table.iter().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">if !</span><span>entry.is_unused() {
+</span><span>            println!(</span><span style="color:#d69d85;">&quot;  L3 Entry </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">: </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, i, entry);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>For looking at the level 2 and level 1 tables, we repeat that process for the level 3 and level 2 entries. As you can imagine, this gets very verbose very quickly, so we don’t show the full code here.</p>
+<p>Traversing the page tables manually is interesting because it helps to understand how the CPU performs the translation. However, most of the time, we are only interested in the mapped physical address for a given virtual address, so let’s create a function for that.</p>
+<h3 id="translating-addresses"><a class="zola-anchor" href="index.html#translating-addresses" aria-label="Anchor link for: translating-addresses">🔗</a>Translating Addresses</h3>
+<p>To translate a virtual to a physical address, we have to traverse the four-level page table until we reach the mapped frame. Let’s create a function that performs this translation:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::PhysAddr;
+</span><span>
+</span><span style="color:#608b4e;">/// Translates the given virtual address to the mapped physical address, or
+</span><span style="color:#608b4e;">/// `None` if the address is not mapped.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the
+</span><span style="color:#608b4e;">/// complete physical memory is mapped to virtual memory at the passed
+</span><span style="color:#608b4e;">/// `physical_memory_offset`.
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>translate_addr(addr: VirtAddr, physical_memory_offset: VirtAddr)
+</span><span>    -&gt; Option&lt;PhysAddr&gt;
+</span><span>{
+</span><span>    translate_addr_inner(addr, physical_memory_offset)
+</span><span>}
+</span></code></pre>
+<p>We forward the function to a safe <code>translate_addr_inner</code> function to limit the scope of <code>unsafe</code>. As we noted above, Rust treats the complete body of an <code>unsafe fn</code> like a large unsafe block. By calling into a private safe function, we make each <code>unsafe</code> operation explicit again.</p>
+<p>The private inner function contains the real implementation:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Private function that is called by `translate_addr`.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// This function is safe to limit the scope of `unsafe` because Rust treats
+</span><span style="color:#608b4e;">/// the whole body of unsafe functions as an unsafe block. This function must
+</span><span style="color:#608b4e;">/// only be reachable through `unsafe fn` from outside of this module.
+</span><span style="color:#569cd6;">fn </span><span>translate_addr_inner(addr: VirtAddr, physical_memory_offset: VirtAddr)
+</span><span>    -&gt; Option&lt;PhysAddr&gt;
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::page_table::FrameError;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::registers::control::Cr3;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// read the active level 4 frame from the CR3 register
+</span><span>    </span><span style="color:#569cd6;">let </span><span>(level_4_table_frame, </span><span style="color:#569cd6;">_</span><span>) = Cr3::read();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> table_indexes = [
+</span><span>        addr.p4_index(), addr.p3_index(), addr.p2_index(), addr.p1_index()
+</span><span>    ];
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame = level_4_table_frame;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// traverse the multi-level page table
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>index </span><span style="color:#569cd6;">in &amp;</span><span>table_indexes {
+</span><span>        </span><span style="color:#608b4e;">// convert the frame into a page table reference
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = physical_memory_offset + frame.start_address().as_u64();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> table_ptr: </span><span style="color:#569cd6;">*const</span><span> PageTable = virt.as_ptr();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> table = </span><span style="color:#569cd6;">unsafe </span><span>{</span><span style="color:#569cd6;">&amp;</span><span>*table_ptr};
+</span><span>
+</span><span>        </span><span style="color:#608b4e;">// read the page table entry and update `frame`
+</span><span>        </span><span style="color:#569cd6;">let</span><span> entry = </span><span style="color:#569cd6;">&amp;</span><span>table[index];
+</span><span>        frame = </span><span style="color:#569cd6;">match</span><span> entry.frame() {
+</span><span>            Ok(frame) </span><span style="color:#569cd6;">=&gt;</span><span> frame,
+</span><span>            Err(FrameError::FrameNotPresent) </span><span style="color:#569cd6;">=&gt; return </span><span>None,
+</span><span>            Err(FrameError::HugeFrame) </span><span style="color:#569cd6;">=&gt; </span><span>panic!(</span><span style="color:#d69d85;">&quot;huge pages not supported&quot;</span><span>),
+</span><span>        };
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// calculate the physical address by adding the page offset
+</span><span>    Some(frame.start_address() + </span><span style="color:#569cd6;">u64</span><span>::from(addr.page_offset()))
+</span><span>}
+</span></code></pre>
+<p>Instead of reusing our <code>active_level_4_table</code> function, we read the level 4 frame from the <code>CR3</code> register again. We do this because it simplifies this prototype implementation. Don’t worry, we will create a better solution in a moment.</p>
+<p>The <code>VirtAddr</code> struct already provides methods to compute the indexes into the page tables of the four levels. We store these indexes in a small array because it allows us to traverse the page tables using a <code>for</code> loop. Outside of the loop, we remember the last visited <code>frame</code> to calculate the physical address later. The <code>frame</code> points to page table frames while iterating and to the mapped frame after the last iteration, i.e., after following the level 1 entry.</p>
+<p>Inside the loop, we again use the <code>physical_memory_offset</code> to convert the frame into a page table reference. We then read the entry of the current page table and use the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page_table/struct.PageTableEntry.html#method.frame"><code>PageTableEntry::frame</code></a> function to retrieve the mapped frame. If the entry is not mapped to a frame, we return <code>None</code>. If the entry maps a huge 2 MiB or 1 GiB page, we panic for now.</p>
+<p>Let’s test our translation function by translating some addresses:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// new import
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::translate_addr;
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello world and blog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> addresses = [
+</span><span>        </span><span style="color:#608b4e;">// the identity-mapped vga buffer page
+</span><span>        </span><span style="color:#b5cea8;">0xb8000</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// some code page
+</span><span>        </span><span style="color:#b5cea8;">0x201008</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// some stack page
+</span><span>        </span><span style="color:#b5cea8;">0x0100_0020_1a10</span><span>,
+</span><span>        </span><span style="color:#608b4e;">// virtual address mapped to physical address 0
+</span><span>        boot_info.physical_memory_offset,
+</span><span>    ];
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>address </span><span style="color:#569cd6;">in &amp;</span><span>addresses {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = VirtAddr::new(address);
+</span><span>        </span><span style="color:#569cd6;">let</span><span> phys = </span><span style="color:#569cd6;">unsafe </span><span>{ translate_addr(virt, phys_mem_offset) };
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;"> -&gt; </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, virt, phys);
+</span><span>    }
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; printing, and hlt_loop()
+</span><span>}
+</span></code></pre>
+<p>When we run it, we see the following output:</p>
+<p><img src="qemu-translate-addr.png" alt="0xb8000 -&gt; 0xb8000, 0x201008 -&gt; 0x401008, 0x10000201a10 -&gt; 0x279a10, “panicked at ‘huge pages not supported’" /></p>
+<p>As expected, the identity-mapped address <code>0xb8000</code> translates to the same physical address. The code page and the stack page translate to some arbitrary physical addresses, which depend on how the bootloader created the initial mapping for our kernel. It’s worth noting that the last 12 bits always stay the same after translation, which makes sense because these bits are the <a href="../paging-introduction/index.html#paging-on-x86-64"><em>page offset</em></a> and not part of the translation.</p>
+<p>Since each physical address can be accessed by adding the <code>physical_memory_offset</code>, the translation of the <code>physical_memory_offset</code> address itself should point to physical address <code>0</code>. However, the translation fails because the mapping uses huge pages for efficiency, which is not supported in our implementation yet.</p>
+<h3 id="using-offsetpagetable"><a class="zola-anchor" href="index.html#using-offsetpagetable" aria-label="Anchor link for: using-offsetpagetable">🔗</a>Using <code>OffsetPageTable</code></h3>
+<p>Translating virtual to physical addresses is a common task in an OS kernel, therefore the <code>x86_64</code> crate provides an abstraction for it. The implementation already supports huge pages and several other page table functions apart from <code>translate_addr</code>, so we will use it in the following instead of adding huge page support to our own implementation.</p>
+<p>At the basis of the abstraction are two traits that define various page table mapping functions:</p>
+<ul>
+<li>The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html"><code>Mapper</code></a> trait is generic over the page size and provides functions that operate on pages. Examples are <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#tymethod.translate_page"><code>translate_page</code></a>, which translates a given page to a frame of the same size, and <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a>, which creates a new mapping in the page table.</li>
+<li>The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html"><code>Translate</code></a> trait provides functions that work with multiple page sizes, such as <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html#method.translate_addr"><code>translate_addr</code></a> or the general <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html"><code>translate</code></a>.</li>
+</ul>
+<p>The traits only define the interface, they don’t provide any implementation. The <code>x86_64</code> crate currently provides three types that implement the traits with different requirements. The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.OffsetPageTable.html"><code>OffsetPageTable</code></a> type assumes that the complete physical memory is mapped to the virtual address space at some offset. The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MappedPageTable.html"><code>MappedPageTable</code></a> is a bit more flexible: It only requires that each page table frame is mapped to the virtual address space at a calculable address. Finally, the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.RecursivePageTable.html"><code>RecursivePageTable</code></a> type can be used to access page table frames through <a href="index.html#recursive-page-tables">recursive page tables</a>.</p>
+<p>In our case, the bootloader maps the complete physical memory at a virtual address specified by the <code>physical_memory_offset</code> variable, so we can use the <code>OffsetPageTable</code> type. To initialize it, we create a new <code>init</code> function in our <code>memory</code> module:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::OffsetPageTable;
+</span><span>
+</span><span style="color:#608b4e;">/// Initialize a new OffsetPageTable.
+</span><span style="color:#608b4e;">///
+</span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the
+</span><span style="color:#608b4e;">/// complete physical memory is mapped to virtual memory at the passed
+</span><span style="color:#608b4e;">/// `physical_memory_offset`. Also, this function must be only called once
+</span><span style="color:#608b4e;">/// to avoid aliasing `&amp;mut` references (which is undefined behavior).
+</span><span style="color:#569cd6;">pub unsafe fn </span><span>init(physical_memory_offset: VirtAddr) -&gt; OffsetPageTable&lt;</span><span style="color:#569cd6;">&#39;static</span><span>&gt; {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> level_4_table = active_level_4_table(physical_memory_offset);
+</span><span>    OffsetPageTable::new(level_4_table, physical_memory_offset)
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// make private
+</span><span style="color:#569cd6;">unsafe fn </span><span>active_level_4_table(physical_memory_offset: VirtAddr)
+</span><span>    -&gt; </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> PageTable
+</span><span>{…}
+</span></code></pre>
+<p>The function takes the <code>physical_memory_offset</code> as an argument and returns a new <code>OffsetPageTable</code> instance with a <code>'static</code> lifetime. This means that the instance stays valid for the complete runtime of our kernel. In the function body, we first call the <code>active_level_4_table</code> function to retrieve a mutable reference to the level 4 page table. We then invoke the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.OffsetPageTable.html#method.new"><code>OffsetPageTable::new</code></a> function with this reference. As the second parameter, the <code>new</code> function expects the virtual address at which the mapping of the physical memory starts, which is given in the <code>physical_memory_offset</code> variable.</p>
+<p>The <code>active_level_4_table</code> function should only be called from the <code>init</code> function from now on because it can easily lead to aliased mutable references when called multiple times, which can cause undefined behavior. For this reason, we make the function private by removing the <code>pub</code> specifier.</p>
+<p>We can now use the <code>Translate::translate_addr</code> method instead of our own <code>memory::translate_addr</code> function. We only need to change a few lines in our <code>kernel_main</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#608b4e;">// new: different imports
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::{structures::paging::Translate, VirtAddr};
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello world and blog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#608b4e;">// new: initialize a mapper
+</span><span>    </span><span style="color:#569cd6;">let</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> addresses = […]; </span><span style="color:#608b4e;">// same as before
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">for &amp;</span><span>address </span><span style="color:#569cd6;">in &amp;</span><span>addresses {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> virt = VirtAddr::new(address);
+</span><span>        </span><span style="color:#608b4e;">// new: use the `mapper.translate_addr` method
+</span><span>        </span><span style="color:#569cd6;">let</span><span> phys = mapper.translate_addr(virt);
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;"> -&gt; </span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, virt, phys);
+</span><span>    }
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; printing, and hlt_loop()
+</span><span>}
+</span></code></pre>
+<p>We need to import the <code>Translate</code> trait in order to use the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Translate.html#method.translate_addr"><code>translate_addr</code></a> method it provides.</p>
+<p>When we run it now, we see the same translation results as before, with the difference that the huge page translation now also works:</p>
+<p><img src="qemu-mapper-translate-addr.png" alt="0xb8000 -&gt; 0xb8000, 0x201008 -&gt; 0x401008, 0x10000201a10 -&gt; 0x279a10, 0x18000000000 -&gt; 0x0" /></p>
+<p>As expected, the translations of <code>0xb8000</code> and the code and stack addresses stay the same as with our own translation function. Additionally, we now see that the virtual address <code>physical_memory_offset</code> is mapped to the physical address <code>0x0</code>.</p>
+<p>By using the translation function of the <code>MappedPageTable</code> type, we can spare ourselves the work of implementing huge page support. We also have access to other page functions, such as <code>map_to</code>, which we will use in the next section.</p>
+<p>At this point, we no longer need our <code>memory::translate_addr</code> and <code>memory::translate_addr_inner</code> functions, so we can delete them.</p>
+<h3 id="creating-a-new-mapping"><a class="zola-anchor" href="index.html#creating-a-new-mapping" aria-label="Anchor link for: creating-a-new-mapping">🔗</a>Creating a new Mapping</h3>
+<p>Until now, we only looked at the page tables without modifying anything. Let’s change that by creating a new mapping for a previously unmapped page.</p>
+<p>We will use the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a> function of the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html"><code>Mapper</code></a> trait for our implementation, so let’s take a look at that function first. The documentation tells us that it takes four arguments: the page that we want to map, the frame that the page should be mapped to, a set of flags for the page table entry, and a <code>frame_allocator</code>. The frame allocator is needed because mapping the given page might require creating additional page tables, which need unused frames as backing storage.</p>
+<h4 id="a-create-example-mapping-function"><a class="zola-anchor" href="index.html#a-create-example-mapping-function" aria-label="Anchor link for: a-create-example-mapping-function">🔗</a>A <code>create_example_mapping</code> Function</h4>
+<p>The first step of our implementation is to create a new <code>create_example_mapping</code> function that maps a given virtual page to <code>0xb8000</code>, the physical frame of the VGA text buffer. We choose that frame because it allows us to easily test if the mapping was created correctly: We just need to write to the newly mapped page and see whether we see the write appear on the screen.</p>
+<p>The <code>create_example_mapping</code> function looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>x86_64::{
+</span><span>    PhysAddr,
+</span><span>    structures::paging::{Page, PhysFrame, Mapper, Size4KiB, FrameAllocator}
+</span><span>};
+</span><span>
+</span><span style="color:#608b4e;">/// Creates an example mapping for the given page to frame `0xb8000`.
+</span><span style="color:#569cd6;">pub fn </span><span>create_example_mapping(
+</span><span>    page: Page,
+</span><span>    mapper: </span><span style="color:#569cd6;">&amp;mut</span><span> OffsetPageTable,
+</span><span>    frame_allocator: </span><span style="color:#569cd6;">&amp;mut</span><span> impl FrameAllocator&lt;Size4KiB&gt;,
+</span><span>) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::structures::paging::PageTableFlags </span><span style="color:#569cd6;">as</span><span> Flags;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> frame = PhysFrame::containing_address(PhysAddr::new(</span><span style="color:#b5cea8;">0xb8000</span><span>));
+</span><span>    </span><span style="color:#569cd6;">let</span><span> flags = Flags::</span><span style="color:#b4cea8;">PRESENT </span><span style="color:#569cd6;">| </span><span>Flags::</span><span style="color:#b4cea8;">WRITABLE</span><span>;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> map_to_result = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#608b4e;">// FIXME: this is not safe, we do it only for testing
+</span><span>        mapper.map_to(page, frame, flags, frame_allocator)
+</span><span>    };
+</span><span>    map_to_result.expect(</span><span style="color:#d69d85;">&quot;map_to failed&quot;</span><span>).flush();
+</span><span>}
+</span></code></pre>
+<p>In addition to the <code>page</code> that should be mapped, the function expects a mutable reference to an <code>OffsetPageTable</code> instance and a <code>frame_allocator</code>. The <code>frame_allocator</code> parameter uses the <a href="https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters"><code>impl Trait</code></a> syntax to be <a href="https://doc.rust-lang.org/book/ch10-00-generics.html">generic</a> over all types that implement the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/trait.FrameAllocator.html"><code>FrameAllocator</code></a> trait. The trait is generic over the <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/page/trait.PageSize.html"><code>PageSize</code></a> trait to work with both standard 4 KiB pages and huge 2 MiB/1 GiB pages. We only want to create a 4 KiB mapping, so we set the generic parameter to <code>Size4KiB</code>.</p>
+<p>The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a> method is unsafe because the caller must ensure that the frame is not already in use. The reason for this is that mapping the same frame twice could result in undefined behavior, for example when two different <code>&amp;mut</code> references point to the same physical memory location. In our case, we reuse the VGA text buffer frame, which is already mapped, so we break the required condition. However, the <code>create_example_mapping</code> function is only a temporary testing function and will be removed after this post, so it is ok. To remind us of the unsafety, we put a <code>FIXME</code> comment on the line.</p>
+<p>In addition to the <code>page</code> and the <code>unused_frame</code>, the <code>map_to</code> method takes a set of flags for the mapping and a reference to the <code>frame_allocator</code>, which will be explained in a moment. For the flags, we set the <code>PRESENT</code> flag because it is required for all valid entries and the <code>WRITABLE</code> flag to make the mapped page writable. For a list of all possible flags, see the <a href="../paging-introduction/index.html#page-table-format"><em>Page Table Format</em></a> section of the previous post.</p>
+<p>The <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/trait.Mapper.html#method.map_to"><code>map_to</code></a> function can fail, so it returns a <a href="https://doc.rust-lang.org/core/result/enum.Result.html"><code>Result</code></a>. Since this is just some example code that does not need to be robust, we just use <a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.expect"><code>expect</code></a> to panic when an error occurs. On success, the function returns a <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html"><code>MapperFlush</code></a> type that provides an easy way to flush the newly mapped page from the translation lookaside buffer (TLB) with its <a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/paging/mapper/struct.MapperFlush.html#method.flush"><code>flush</code></a> method. Like <code>Result</code>, the type uses the <a href="https://doc.rust-lang.org/std/result/#results-must-be-used"><code>#[must_use]</code></a> attribute to emit a warning when we accidentally forget to use it.</p>
+<h4 id="a-dummy-frameallocator"><a class="zola-anchor" href="index.html#a-dummy-frameallocator" aria-label="Anchor link for: a-dummy-frameallocator">🔗</a>A dummy <code>FrameAllocator</code></h4>
+<p>To be able to call <code>create_example_mapping</code>, we need to create a type that implements the <code>FrameAllocator</code> trait first. As noted above, the trait is responsible for allocating frames for new page tables if they are needed by <code>map_to</code>.</p>
+<p>Let’s start with the simple case and assume that we don’t need to create new page tables. For this case, a frame allocator that always returns <code>None</code> suffices. We create such an <code>EmptyFrameAllocator</code> for testing our mapping function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#608b4e;">/// A FrameAllocator that always returns `None`.
+</span><span style="color:#569cd6;">pub struct </span><span>EmptyFrameAllocator;
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>FrameAllocator&lt;Size4KiB&gt; </span><span style="color:#569cd6;">for </span><span>EmptyFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;PhysFrame&gt; {
+</span><span>        None
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Implementing the <code>FrameAllocator</code> is unsafe because the implementer must guarantee that the allocator yields only unused frames. Otherwise, undefined behavior might occur, for example when two virtual pages are mapped to the same physical frame. Our <code>EmptyFrameAllocator</code> only returns <code>None</code>, so this isn’t a problem in this case.</p>
+<h4 id="choosing-a-virtual-page"><a class="zola-anchor" href="index.html#choosing-a-virtual-page" aria-label="Anchor link for: choosing-a-virtual-page">🔗</a>Choosing a Virtual Page</h4>
+<p>We now have a simple frame allocator that we can pass to our <code>create_example_mapping</code> function. However, the allocator always returns <code>None</code>, so this will only work if no additional page table frames are needed for creating the mapping. To understand when additional page table frames are needed and when not, let’s consider an example:</p>
+<p><img src="required-page-frames-example.svg" alt="A virtual and a physical address space with a single mapped page and the page tables of all four levels" /></p>
+<p>The graphic shows the virtual address space on the left, the physical address space on the right, and the page tables in between. The page tables are stored in physical memory frames, indicated by the dashed lines. The virtual address space contains a single mapped page at address <code>0x803fe00000</code>, marked in blue. To translate this page to its frame, the CPU walks the 4-level page table until it reaches the frame at address 36 KiB.</p>
+<p>Additionally, the graphic shows the physical frame of the VGA text buffer in red. Our goal is to map a previously unmapped virtual page to this frame using our <code>create_example_mapping</code> function. Since our <code>EmptyFrameAllocator</code> always returns <code>None</code>, we want to create the mapping so that no additional frames are needed from the allocator. This depends on the virtual page that we select for the mapping.</p>
+<p>The graphic shows two candidate pages in the virtual address space, both marked in yellow. One page is at address <code>0x803fdfd000</code>, which is 3 pages before the mapped page (in blue). While the level 4 and level 3 page table indices are the same as for the blue page, the level 2 and level 1 indices are different (see the <a href="../paging-introduction/index.html#paging-on-x86-64">previous post</a>). The different index into the level 2 table means that a different level 1 table is used for this page. Since this level 1 table does not exist yet, we would need to create it if we chose that page for our example mapping, which would require an additional unused physical frame. In contrast, the second candidate page at address <code>0x803fe02000</code> does not have this problem because it uses the same level 1 page table as the blue page. Thus, all the required page tables already exist.</p>
+<p>In summary, the difficulty of creating a new mapping depends on the virtual page that we want to map. In the easiest case, the level 1 page table for the page already exists and we just need to write a single entry. In the most difficult case, the page is in a memory region for which no level 3 exists yet, so we need to create new level 3, level 2 and level 1 page tables first.</p>
+<p>For calling our <code>create_example_mapping</code> function with the <code>EmptyFrameAllocator</code>, we need to choose a page for which all page tables already exist. To find such a page, we can utilize the fact that the bootloader loads itself in the first megabyte of the virtual address space. This means that a valid level 1 table exists for all pages in this region. Thus, we can choose any unused page in this memory region for our example mapping, such as the page at address <code>0</code>. Normally, this page should stay unused to guarantee that dereferencing a null pointer causes a page fault, so we know that the bootloader leaves it unmapped.</p>
+<h4 id="creating-the-mapping"><a class="zola-anchor" href="index.html#creating-the-mapping" aria-label="Anchor link for: creating-the-mapping">🔗</a>Creating the Mapping</h4>
+<p>We now have all the required parameters for calling our <code>create_example_mapping</code> function, so let’s modify our <code>kernel_main</code> function to map the page at virtual address <code>0</code>. Since we map the page to the frame of the VGA text buffer, we should be able to write to the screen through it afterward. The implementation looks like this:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::{structures::paging::Page, VirtAddr}; </span><span style="color:#608b4e;">// new import
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// hello world and blog_os::init
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> mapper = </span><span style="color:#569cd6;">unsafe </span><span>{ memory::init(phys_mem_offset) };
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = memory::EmptyFrameAllocator;
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// map an unused page
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page = Page::containing_address(VirtAddr::new(</span><span style="color:#b5cea8;">0</span><span>));
+</span><span>    memory::create_example_mapping(page, </span><span style="color:#569cd6;">&amp;mut</span><span> mapper, </span><span style="color:#569cd6;">&amp;mut</span><span> frame_allocator);
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// write the string `New!` to the screen through the new mapping
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page_ptr: </span><span style="color:#569cd6;">*mut u64 </span><span>= page.start_address().as_mut_ptr();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ page_ptr.offset(</span><span style="color:#b5cea8;">400</span><span>).write_volatile(</span><span style="color:#b5cea8;">0x_f021_f077_f065_f04e</span><span>)};
+</span><span>
+</span><span>    […] </span><span style="color:#608b4e;">// test_main(), &quot;it did not crash&quot; printing, and hlt_loop()
+</span><span>}
+</span></code></pre>
+<p>We first create the mapping for the page at address <code>0</code> by calling our <code>create_example_mapping</code> function with a mutable reference to the <code>mapper</code> and the <code>frame_allocator</code> instances. This maps the page to the VGA text buffer frame, so we should see any write to it on the screen.</p>
+<p>Then we convert the page to a raw pointer and write a value to offset <code>400</code>. We don’t write to the start of the page because the top line of the VGA buffer is directly shifted off the screen by the next <code>println</code>. We write the value <code>0x_f021_f077_f065_f04e</code>, which represents the string <em>“New!”</em> on a white background. As we learned <a href="../vga-text-mode/index.html#volatile">in the <em>“VGA Text Mode”</em> post</a>, writes to the VGA buffer should be volatile, so we use the <a href="https://doc.rust-lang.org/std/primitive.pointer.html#method.write_volatile"><code>write_volatile</code></a> method.</p>
+<p>When we run it in QEMU, we see the following output:</p>
+<p><img src="qemu-new-mapping.png" alt="QEMU printing “It did not crash!” with four completely white cells in the middle of the screen" /></p>
+<p>The <em>“New!”</em> on the screen is caused by our write to page <code>0</code>, which means that we successfully created a new mapping in the page tables.</p>
+<p>Creating that mapping only worked because the level 1 table responsible for the page at address <code>0</code> already exists. When we try to map a page for which no level 1 table exists yet, the <code>map_to</code> function fails because it tries to create new page tables by allocating frames with the <code>EmptyFrameAllocator</code>. We can see that happen when we try to map page <code>0xdeadbeaf000</code> instead of <code>0</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">let</span><span> page = Page::containing_address(VirtAddr::new(</span><span style="color:#b5cea8;">0xdeadbeaf000</span><span>));
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>When we run it, a panic with the following error message occurs:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>panicked at &#39;map_to failed: FrameAllocationFailed&#39;, /…/result.rs:999:5
+</span></code></pre>
+<p>To map pages that don’t have a level 1 page table yet, we need to create a proper <code>FrameAllocator</code>. But how do we know which frames are unused and how much physical memory is available?</p>
+<h3 id="allocating-frames"><a class="zola-anchor" href="index.html#allocating-frames" aria-label="Anchor link for: allocating-frames">🔗</a>Allocating Frames</h3>
+<p>In order to create new page tables, we need to create a proper frame allocator. To do that, we use the <code>memory_map</code> that is passed by the bootloader as part of the <code>BootInfo</code> struct:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::bootinfo::MemoryMap;
+</span><span>
+</span><span style="color:#608b4e;">/// A FrameAllocator that returns usable frames from the bootloader&#39;s memory map.
+</span><span style="color:#569cd6;">pub struct </span><span>BootInfoFrameAllocator {
+</span><span>    memory_map: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> MemoryMap,
+</span><span>    next: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Create a FrameAllocator from the passed memory map.
+</span><span>    </span><span style="color:#608b4e;">///
+</span><span>    </span><span style="color:#608b4e;">/// This function is unsafe because the caller must guarantee that the passed
+</span><span>    </span><span style="color:#608b4e;">/// memory map is valid. The main requirement is that all frames that are marked
+</span><span>    </span><span style="color:#608b4e;">/// as `USABLE` in it are really unused.
+</span><span>    </span><span style="color:#569cd6;">pub unsafe fn </span><span>init(memory_map: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> MemoryMap) -&gt; </span><span style="color:#569cd6;">Self </span><span>{
+</span><span>        BootInfoFrameAllocator {
+</span><span>            memory_map,
+</span><span>            next: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The struct has two fields: A <code>'static</code> reference to the memory map passed by the bootloader and a <code>next</code> field that keeps track of the number of the next frame that the allocator should return.</p>
+<p>As we explained in the <a href="index.html#boot-information"><em>Boot Information</em></a> section, the memory map is provided by the BIOS/UEFI firmware. It can only be queried very early in the boot process, so the bootloader already calls the respective functions for us. The memory map consists of a list of <a href="https://docs.rs/bootloader/0.6.4/bootloader/bootinfo/struct.MemoryRegion.html"><code>MemoryRegion</code></a> structs, which contain the start address, the length, and the type (e.g. unused, reserved, etc.) of each memory region.</p>
+<p>The <code>init</code> function initializes a <code>BootInfoFrameAllocator</code> with a given memory map. The <code>next</code> field is initialized with <code>0</code> and will be increased for every frame allocation to avoid returning the same frame twice. Since we don’t know if the usable frames of the memory map were already used somewhere else, our <code>init</code> function must be <code>unsafe</code> to require additional guarantees from the caller.</p>
+<h4 id="a-usable-frames-method"><a class="zola-anchor" href="index.html#a-usable-frames-method" aria-label="Anchor link for: a-usable-frames-method">🔗</a>A <code>usable_frames</code> Method</h4>
+<p>Before we implement the <code>FrameAllocator</code> trait, we add an auxiliary method that converts the memory map into an iterator of usable frames:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>bootloader::bootinfo::MemoryRegionType;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#608b4e;">/// Returns an iterator over the usable frames specified in the memory map.
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>usable_frames(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; impl Iterator&lt;Item = PhysFrame&gt; {
+</span><span>        </span><span style="color:#608b4e;">// get usable regions from memory map
+</span><span>        </span><span style="color:#569cd6;">let</span><span> regions = self.memory_map.iter();
+</span><span>        </span><span style="color:#569cd6;">let</span><span> usable_regions = regions
+</span><span>            .filter(|r| r.region_type == MemoryRegionType::Usable);
+</span><span>        </span><span style="color:#608b4e;">// map each region to its address range
+</span><span>        </span><span style="color:#569cd6;">let</span><span> addr_ranges = usable_regions
+</span><span>            .map(|r| r.range.start_addr()</span><span style="color:#569cd6;">..</span><span>r.range.end_addr());
+</span><span>        </span><span style="color:#608b4e;">// transform to an iterator of frame start addresses
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame_addresses = addr_ranges.flat_map(|r| r.step_by(</span><span style="color:#b5cea8;">4096</span><span>));
+</span><span>        </span><span style="color:#608b4e;">// create `PhysFrame` types from the start addresses
+</span><span>        frame_addresses.map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This function uses iterator combinator methods to transform the initial <code>MemoryMap</code> into an iterator of usable physical frames:</p>
+<ul>
+<li>First, we call the <code>iter</code> method to convert the memory map to an iterator of <a href="https://docs.rs/bootloader/0.6.4/bootloader/bootinfo/struct.MemoryRegion.html"><code>MemoryRegion</code></a>s.</li>
+<li>Then we use the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.filter"><code>filter</code></a> method to skip any reserved or otherwise unavailable regions. The bootloader updates the memory map for all the mappings it creates, so frames that are used by our kernel (code, data, or stack) or to store the boot information are already marked as <code>InUse</code> or similar. Thus, we can be sure that <code>Usable</code> frames are not used somewhere else.</li>
+<li>Afterwards, we use the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.map"><code>map</code></a> combinator and Rust’s <a href="https://doc.rust-lang.org/core/ops/struct.Range.html">range syntax</a> to transform our iterator of memory regions to an iterator of address ranges.</li>
+<li>Next, we use <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.flat_map"><code>flat_map</code></a> to transform the address ranges into an iterator of frame start addresses, choosing every 4096th address using <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.step_by"><code>step_by</code></a>. Since 4096 bytes (= 4 KiB) is the page size, we get the start address of each frame. The bootloader page-aligns all usable memory areas so that we don’t need any alignment or rounding code here. By using <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.flat_map"><code>flat_map</code></a> instead of <code>map</code>, we get an <code>Iterator&lt;Item = u64&gt;</code> instead of an <code>Iterator&lt;Item = Iterator&lt;Item = u64&gt;&gt;</code>.</li>
+<li>Finally, we convert the start addresses to <code>PhysFrame</code> types to construct an <code>Iterator&lt;Item = PhysFrame&gt;</code>.</li>
+</ul>
+<p>The return type of the function uses the <a href="https://doc.rust-lang.org/book/ch10-02-traits.html#returning-types-that-implement-traits"><code>impl Trait</code></a> feature. This way, we can specify that we return some type that implements the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html"><code>Iterator</code></a> trait with item type <code>PhysFrame</code> but don’t need to name the concrete return type. This is important here because we <em>can’t</em> name the concrete type since it depends on unnamable closure types.</p>
+<h4 id="implementing-the-frameallocator-trait"><a class="zola-anchor" href="index.html#implementing-the-frameallocator-trait" aria-label="Anchor link for: implementing-the-frameallocator-trait">🔗</a>Implementing the <code>FrameAllocator</code> Trait</h4>
+<p>Now we can implement the <code>FrameAllocator</code> trait:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/memory.rs
+</span><span>
+</span><span style="color:#569cd6;">unsafe impl </span><span>FrameAllocator&lt;Size4KiB&gt; </span><span style="color:#569cd6;">for </span><span>BootInfoFrameAllocator {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>allocate_frame(</span><span style="color:#569cd6;">&amp;mut </span><span>self) -&gt; Option&lt;PhysFrame&gt; {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> frame = self.usable_frames().nth(self.next);
+</span><span>        self.next += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>        frame
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>We first use the <code>usable_frames</code> method to get an iterator of usable frames from the memory map. Then, we use the <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.nth"><code>Iterator::nth</code></a> function to get the frame with index <code>self.next</code> (thereby skipping <code>(self.next - 1)</code> frames). Before returning that frame, we increase <code>self.next</code> by one so that we return the following frame on the next call.</p>
+<p>This implementation is not quite optimal since it recreates the <code>usable_frame</code> allocator on every allocation. It would be better to directly store the iterator as a struct field instead. Then we wouldn’t need the <code>nth</code> method and could just call <a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#tymethod.next"><code>next</code></a> on every allocation. The problem with this approach is that it’s not possible to store an <code>impl Trait</code> type in a struct field currently. It might work someday when <a href="https://github.com/rust-lang/rfcs/pull/2071"><em>named existential types</em></a> are fully implemented.</p>
+<h4 id="using-the-bootinfoframeallocator"><a class="zola-anchor" href="index.html#using-the-bootinfoframeallocator" aria-label="Anchor link for: using-the-bootinfoframeallocator">🔗</a>Using the <code>BootInfoFrameAllocator</code></h4>
+<p>We can now modify our <code>kernel_main</code> function to pass a <code>BootInfoFrameAllocator</code> instance instead of an <code>EmptyFrameAllocator</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>kernel_main(boot_info: </span><span style="color:#569cd6;">&amp;&#39;static</span><span> BootInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>blog_os::memory::BootInfoFrameAllocator;
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> frame_allocator = </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        BootInfoFrameAllocator::init(</span><span style="color:#569cd6;">&amp;</span><span>boot_info.memory_map)
+</span><span>    };
+</span><span>    […]
+</span><span>}
+</span></code></pre>
+<p>With the boot info frame allocator, the mapping succeeds and we see the black-on-white <em>“New!”</em> on the screen again. Behind the scenes, the <code>map_to</code> method creates the missing page tables in the following way:</p>
+<ul>
+<li>Use the passed <code>frame_allocator</code> to allocate an unused frame.</li>
+<li>Zero the frame to create a new, empty page table.</li>
+<li>Map the entry of the higher level table to that frame.</li>
+<li>Continue with the next table level.</li>
+</ul>
+<p>While our <code>create_example_mapping</code> function is just some example code, we are now able to create new mappings for arbitrary pages. This will be essential for allocating memory or implementing multithreading in future posts.</p>
+<p>At this point, we should delete the <code>create_example_mapping</code> function again to avoid accidentally invoking undefined behavior, as explained <a href="index.html#a-create-example-mapping-function">above</a>.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>In this post we learned about different techniques to access the physical frames of page tables, including identity mapping, mapping of the complete physical memory, temporary mapping, and recursive page tables. We chose to map the complete physical memory since it’s simple, portable, and powerful.</p>
+<p>We can’t map the physical memory from our kernel without page table access, so we need support from the bootloader. The <code>bootloader</code> crate supports creating the required mapping through optional cargo crate features. It passes the required information to our kernel in the form of a <code>&amp;BootInfo</code> argument to our entry point function.</p>
+<p>For our implementation, we first manually traversed the page tables to implement a translation function, and then used the <code>MappedPageTable</code> type of the <code>x86_64</code> crate. We also learned how to create new mappings in the page table and how to create the necessary <code>FrameAllocator</code> on top of the memory map passed by the bootloader.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>The next post will create a heap memory region for our kernel, which will allow us to <a href="https://doc.rust-lang.org/alloc/boxed/struct.Box.html">allocate memory</a> and use various <a href="https://doc.rust-lang.org/alloc/collections/index.html">collection types</a>.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../paging-introduction/index.html">&laquo; Introduction to Paging</a>
+        
+        
+            <a class="next" href="../heap-allocation/index.html">Heap Allocation &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Paging%20Implementation%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Paging Implementation"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Paging%20Implementation%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="ja" class=""><a href="../ja/paging-implementation/index.html">
+                        Japanese
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

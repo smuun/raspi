@@ -1,0 +1,811 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="在本文中，我们会对可编程的中断控制器进行设置，以将硬件中断转发给CPU，而要处理这些中断，只需要像处理异常一样在中断描述符表中加入一个新条目即可，在这里我们会以获取周期计时器的中断和获取键盘输入为例进行讲解。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>硬件中断 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#qian-yan">前言</a>
+            
+        </li><li>
+            <a href="index.html#the-8259-pic">The 8259 PIC</a>
+            <ol>
+                <li>
+                    <a href="index.html#shi-xian">实现</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#qi-yong-zhong-duan">启用中断</a>
+            
+        </li><li>
+            <a href="index.html#chu-li-ji-shi-qi-zhong-duan">处理计时器中断</a>
+            <ol>
+                <li>
+                    <a href="index.html#jie-shu-zhong-duan">结束中断</a>
+                </li><li>
+                    <a href="index.html#pei-zhi-ji-shi-qi">配置计时器</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#si-suo">死锁</a>
+            <ol>
+                <li>
+                    <a href="index.html#yin-fa-si-suo">引发死锁</a>
+                </li><li>
+                    <a href="index.html#xiu-fu-si-suo">修复死锁</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#xiu-fu-jing-tai-tiao-jian">修复竞态条件</a>
+            
+        </li><li>
+            <a href="index.html#hlt-zhi-ling">hlt 指令</a>
+            
+        </li><li>
+            <a href="index.html#jian-pan-shu-ru">键盘输入</a>
+            <ol>
+                <li>
+                    <a href="index.html#du-qu-sao-miao-ma">读取扫描码</a>
+                </li><li>
+                    <a href="index.html#sao-miao-ma-zhuan-yi">扫描码转义</a>
+                </li><li>
+                    <a href="index.html#pei-zhi-jian-pan">配置键盘</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#xiao-jie">小结</a>
+            
+        </li><li>
+            <a href="index.html#xia-wen-yu-gao">下文预告</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>硬件中断</h1>
+    <time datetime="2018-10-22" class="post-date">
+        Oct 22, 2018
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../hardware-interrupts/index.html">Hardware Interrupts</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/liuyuran">@liuyuran</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/JiangengDong">@JiangengDong</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>在本文中，我们会对可编程的中断控制器进行设置，以将硬件中断转发给CPU，而要处理这些中断，只需要像处理异常一样在中断描述符表中加入一个新条目即可，在这里我们会以获取周期计时器的中断和获取键盘输入为例进行讲解。</p>
+<span id="continue-reading"></span>
+<p>这个系列的 blog 在<a href="https://github.com/phil-opp/blog_os">GitHub</a>上开放开发，如果你有任何问题，请在这里开一个 issue 来讨论。当然你也可以在<a href="index.html#comments">底部</a>留言。你可以在<a href="https://github.com/phil-opp/blog_os/tree/post-07"><code>post-07</code></a>找到这篇文章的完整源码。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#qian-yan">前言</a>
+                
+            </li><li>
+                <a href="index.html#the-8259-pic">The 8259 PIC</a>
+                <ul>
+                    <li>
+                        <a href="index.html#shi-xian">实现</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#qi-yong-zhong-duan">启用中断</a>
+                
+            </li><li>
+                <a href="index.html#chu-li-ji-shi-qi-zhong-duan">处理计时器中断</a>
+                <ul>
+                    <li>
+                        <a href="index.html#jie-shu-zhong-duan">结束中断</a>
+                    </li><li>
+                        <a href="index.html#pei-zhi-ji-shi-qi">配置计时器</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#si-suo">死锁</a>
+                <ul>
+                    <li>
+                        <a href="index.html#yin-fa-si-suo">引发死锁</a>
+                    </li><li>
+                        <a href="index.html#xiu-fu-si-suo">修复死锁</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#xiu-fu-jing-tai-tiao-jian">修复竞态条件</a>
+                
+            </li><li>
+                <a href="index.html#hlt-zhi-ling">hlt 指令</a>
+                
+            </li><li>
+                <a href="index.html#jian-pan-shu-ru">键盘输入</a>
+                <ul>
+                    <li>
+                        <a href="index.html#du-qu-sao-miao-ma">读取扫描码</a>
+                    </li><li>
+                        <a href="index.html#sao-miao-ma-zhuan-yi">扫描码转义</a>
+                    </li><li>
+                        <a href="index.html#pei-zhi-jian-pan">配置键盘</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#xiao-jie">小结</a>
+                
+            </li><li>
+                <a href="index.html#xia-wen-yu-gao">下文预告</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="qian-yan"><a class="zola-anchor" href="index.html#qian-yan" aria-label="Anchor link for: qian-yan">🔗</a>前言</h2>
+<p>中断是其他硬件对CPU发送通知的一种方式，所以除了使用 <a href="https://en.wikipedia.org/wiki/Polling_(computer_science)"><em>轮询</em></a> 进程在内核层面定时检查键盘输入以外，由键盘主动通知内核按键输入的结果也是个可行的方案。相比之下，后者可能还更加有用，此时内核只需要处理接收到的事件即可。这也可以极大降低系统的反应延时，因为内核无需等待下一次轮询周期。</p>
+<p>根据常识，将所有硬件直连CPU是不可能的，所以需要一个统一的 <em>中断控制器</em> 对所有设备中断进行代理，并由它间接通知CPU：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>                                    ____________             _____
+</span><span>               Timer ------------&gt; |            |           |     |
+</span><span>               Keyboard ---------&gt; | Interrupt  |---------&gt; | CPU |
+</span><span>               Other Hardware ---&gt; | Controller |           |_____|
+</span><span>               Etc. -------------&gt; |____________|
+</span><span>
+</span></code></pre>
+<p>绝大多数中断控制器都是可编程的，也就是说可以自行设定中断的优先级，比如我们可以为计时器中断设定比键盘中断更高的优先级，以保证系统时间的精确性。</p>
+<p>和异常不同，硬件中断完全是 <em>异步的</em> ，也就是说它们可以在任何时候发生，且时序完全独立于正在运行的代码。所以我们的内核里就突然添加了一种异步的逻辑形式，并且也引入了所有潜在的与异步逻辑相关的Bug可能性。此时Rust严格的所有权模型此时就开始具备优势，因为它从根本上禁止了可变的全局状态。但尽管如此，死锁很难完全避免，这个问题我们会在文章稍后的部分进行说明。</p>
+<h2 id="the-8259-pic"><a class="zola-anchor" href="index.html#the-8259-pic" aria-label="Anchor link for: the-8259-pic">🔗</a>The 8259 PIC</h2>
+<p><a href="https://en.wikipedia.org/wiki/Intel_8259">Intel 8259</a> 是一款于1976年发布的可编程中断控制器（PIC），事实上，它已经被更先进的 <a href="https://en.wikipedia.org/wiki/Intel_APIC_Architecture">APIC</a> 替代很久了，但其接口依然出于兼容问题被现有系统所支持。但是 8259 PIC 的设置方式比起APIC实在简单太多了，所以我们先以前者为例解说一下基本原理，在下一篇文章中再切换为APIC。</p>
+<p>8529具有8个中断管脚和一个和CPU通信的独立管脚，而当年的典型系统一般会安装两片 8259 PIC ，一个作为主芯片，另一个则作为副芯片，就像下面这样：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>                     ____________                          ____________
+</span><span>Real Time Clock --&gt; |            |   Timer -------------&gt; |            |
+</span><span>ACPI -------------&gt; |            |   Keyboard-----------&gt; |            |      _____
+</span><span>Available --------&gt; | Secondary  |----------------------&gt; | Primary    |     |     |
+</span><span>Available --------&gt; | Interrupt  |   Serial Port 2 -----&gt; | Interrupt  |---&gt; | CPU |
+</span><span>Mouse ------------&gt; | Controller |   Serial Port 1 -----&gt; | Controller |     |_____|
+</span><span>Co-Processor -----&gt; |            |   Parallel Port 2/3 -&gt; |            |
+</span><span>Primary ATA ------&gt; |            |   Floppy disk -------&gt; |            |
+</span><span>Secondary ATA ----&gt; |____________|   Parallel Port 1----&gt; |____________|
+</span><span>
+</span></code></pre>
+<p>上图展示了中断管脚的典型逻辑定义，我们可以看到，实际上可定义的管脚共有15个，例如副PIC的4号管脚被定义为了鼠标。</p>
+<p>每个控制器都可以通过两个 <a href="../../testing/index.html#i-o-ports">I/O 端口</a> 进行配置，一个是“指令”端口，另一个是“数据”端口。对于主控制器，端口地址是 <code>0x20</code>（指令）和 <code>0x21</code>（数据），而对于副控制器，端口地址是 <code>0xa0</code>（指令）和 <code>0xa1</code>（数据）。要查看更多关于PIC配置的细节，请参见 <a href="https://wiki.osdev.org/8259_PIC">article on osdev.org</a>。</p>
+<h3 id="shi-xian"><a class="zola-anchor" href="index.html#shi-xian" aria-label="Anchor link for: shi-xian">🔗</a>实现</h3>
+<p>PIC默认的配置其实是无法使用的，因为它仅仅是将0-15之间的中断向量编号发送给了CPU，然而这些编号已经用在了CPU的异常编号中了，比如8号代指 double fault 异常。要修复这个错误，我们需要对PIC中断序号进行重映射，新的序号只需要避开已被定义的CPU异常即可，CPU定义的异常数量有32个，所以通常会使用32-47这个区段。</p>
+<p>我们需要通过往指令和数据端口写入特定数据才能对配置进行编程，幸运的是已经有了一个名叫 <a href="https://docs.rs/pic8259/0.10.1/pic8259/"><code>pic8259</code></a> 的crate封装了这些东西，我们无需自己去处理这些初始化方面的细节。
+如果你十分好奇其中的细节，这里是 <a href="https://docs.rs/crate/pic8259/0.10.1/source/src/lib.rs">它的源码</a>，他的内部逻辑其实十分简洁，而且具备完善的文档。</p>
+<p>我们可以这样将 crate 作为依赖加入工程中：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">pic8259 </span><span>= </span><span style="color:#d69d85;">&quot;0.10.1&quot;
+</span></code></pre>
+<p>这个 crate 提供的主要抽象结构就是 <a href="https://docs.rs/pic8259/0.10.1/pic8259/struct.ChainedPics.html"><code>ChainedPics</code></a>，用于映射上文所说的主副PIC的映射布局，它可以这样使用：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>pic8259::ChainedPics;
+</span><span style="color:#569cd6;">use</span><span> spin;
+</span><span>
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#b5cea8;">32</span><span>;
+</span><span style="color:#569cd6;">pub const </span><span style="color:#b4cea8;">PIC_2_OFFSET</span><span>: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#b4cea8;">PIC_1_OFFSET </span><span>+ </span><span style="color:#b5cea8;">8</span><span>;
+</span><span>
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">PICS</span><span>: spin::Mutex&lt;ChainedPics&gt; =
+</span><span>    spin::Mutex::new(</span><span style="color:#569cd6;">unsafe </span><span>{ ChainedPics::new(</span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>, </span><span style="color:#b4cea8;">PIC_2_OFFSET</span><span>) });
+</span></code></pre>
+<p>我们成功将PIC的中断编号范围设定为了32–47。我们使用 <code>Mutex</code> 容器包裹了 <code>ChainedPics</code>，这样就可以通过（<a href="https://docs.rs/spin/0.5.2/spin/struct.Mutex.html#method.lock"><code>lock</code> 函数</a>）拿到被定义为安全的变量修改权限，我们在下文会用到这个权限。<code>ChainedPics::new</code> 处于unsafe块，因为错误的偏移量可能会导致一些未定义行为。</p>
+<p>那么现在，我们就可以在 <code>init</code> 函数中初始化 8259 PIC 配置了：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ interrupts::</span><span style="color:#b4cea8;">PICS</span><span>.lock().initialize() }; </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>我们使用 <a href="https://docs.rs/pic8259/0.10.1/pic8259/struct.ChainedPics.html#method.initialize"><code>initialize</code></a> 函数进行PIC的初始化。正如 <code>ChainedPics::new</code> ，这个函数也是 unsafe 的，因为里面的不安全逻辑可能会导致PIC配置失败，进而出现一些未定义行为。</p>
+<p>如果一切顺利，我们在运行 <code>cargo run</code> 后应当能看到诸如 “It did not crash” 此类的输出信息。</p>
+<h2 id="qi-yong-zhong-duan"><a class="zola-anchor" href="index.html#qi-yong-zhong-duan" aria-label="Anchor link for: qi-yong-zhong-duan">🔗</a>启用中断</h2>
+<p>不过现在什么都不会发生，因为CPU配置里面中断还是禁用状态呢，也就是说CPU现在根本不会监听来自中断控制器的信息，即任何中断都无法到达CPU。我们来启用它：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>init() {
+</span><span>    gdt::init();
+</span><span>    interrupts::init_idt();
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{ interrupts::</span><span style="color:#b4cea8;">PICS</span><span>.lock().initialize() };
+</span><span>    x86_64::instructions::interrupts::enable();     </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p><code>x86_64</code> crate 中的 <code>interrupts::enable</code> 会执行特殊的 <code>sti</code> (“set interrupts”) 指令来启用外部中断。当我们试着执行 <code>cargo run</code> 后，double fault 异常几乎是立刻就被抛出了：</p>
+<p><img src="qemu-hardware-timer-double-fault.png" alt="QEMU printing EXCEPTION: DOUBLE FAULT because of hardware timer" /></p>
+<p>其原因就是硬件计时器（准确的说，是<a href="https://en.wikipedia.org/wiki/Intel_8253">Intel 8253</a>）默认是被启用的，所以在启用中断控制器之后，CPU开始接收到计时器中断信号，而我们又并未设定相对应的处理函数，所以就抛出了 double fault 异常。</p>
+<h2 id="chu-li-ji-shi-qi-zhong-duan"><a class="zola-anchor" href="index.html#chu-li-ji-shi-qi-zhong-duan" aria-label="Anchor link for: chu-li-ji-shi-qi-zhong-duan">🔗</a>处理计时器中断</h2>
+<p>我们已经知道 <a href="index.html#the-8259-pic">计时器组件</a> 使用了主PIC的0号管脚，根据上文中我们定义的序号偏移量32，所以计时器对应的中断序号也是32。但是不要将32硬编码进去，我们将其存储到枚举类型 <code>InterruptIndex</code> 中：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>InterruptIndex {
+</span><span>    Timer = </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>InterruptIndex {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>as_u8(self) -&gt; </span><span style="color:#569cd6;">u8 </span><span>{
+</span><span>        self </span><span style="color:#569cd6;">as u8
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>as_usize(self) -&gt; </span><span style="color:#569cd6;">usize </span><span>{
+</span><span>        </span><span style="color:#569cd6;">usize</span><span>::from(self.as_u8())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>这是一个 <a href="https://doc.rust-lang.org/reference/items/enumerations.html#custom-discriminant-values-for-fieldless-enumerations">C语言风格的枚举</a>，我们可以为每个枚举值指定其对应的数值，<code>repr(u8)</code> 开关使枚举值对应的数值以 <code>u8</code> 格式进行存储，这样未来我们可以在这里加入更多的中断枚举。</p>
+<p>那么开始为计时器中断添加一个处理函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">use crate</span><span>::print;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        […]
+</span><span>        idt[InterruptIndex::Timer.as_usize()]
+</span><span>            .set_handler_fn(timer_interrupt_handler); </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>timer_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;.&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p><code>timer_interrupt_handler</code> 和错误处理函数具有相同的函数签名，这是因为CPU对异常和外部中断的处理方式是相同的（除了个别异常会传入错误码以外）。<a href="https://docs.rs/x86_64/0.14.2/x86_64/structures/idt/struct.InterruptDescriptorTable.html"><code>InterruptDescriptorTable</code></a> 结构实现了 <a href="https://doc.rust-lang.org/core/ops/trait.IndexMut.html"><code>IndexMut</code></a> trait，所以我们可以通过序号来单独修改某一个条目。</p>
+<p>在我们刚刚写好的处理函数中，我们会往屏幕上输出一个点，随着计时器中断周期性触发，我们应该能看到每一个计时周期过后屏幕上都会多出一个点。然而事实却并不是如此，我们只能在屏幕上看到一个点：</p>
+<p><img src="qemu-single-dot-printed.png" alt="QEMU printing only a single dot for hardware timer" /></p>
+<h3 id="jie-shu-zhong-duan"><a class="zola-anchor" href="index.html#jie-shu-zhong-duan" aria-label="Anchor link for: jie-shu-zhong-duan">🔗</a>结束中断</h3>
+<p>这是因为PIC还在等着我们的处理函数返回 “中断结束” (EOI) 信号。该信号会通知控制器终端已处理，系统已准备好接收下一个中断。所以如果始终不发送EOI信号，那么PIC就会认为我们还在一直处理第一个计时器中断，然后暂停了后续的中断信号发送，直到接收到EOI信号。</p>
+<p>要发送EOI信号，我们可以再使用一下 <code>PICS</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>timer_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;.&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>notify_end_of_interrupt</code> 会自行判断中断信号发送的源头（主PIC或者副PIC），并使用指令和数据端口将信号发送到目标控制器。当然，如果是要发送到副PIC，那么结果上必然等同于同时发送到两个PIC，因为副PIC的输入管脚连在主PIC上面。</p>
+<p>请注意，这里的中断编码一定不可以写错，不然可能会导致某个中断信号迟迟得不到回应导致系统整体挂起。这也是该函数被标记为不安全的原因。</p>
+<p>现在我们再次运行 <code>cargo run</code>，就可以看到屏幕上开始正常输出点号了：</p>
+<p><img src="qemu-hardware-timer-dots.gif" alt="QEMU printing consecutive dots showing the hardware timer" /></p>
+<h3 id="pei-zhi-ji-shi-qi"><a class="zola-anchor" href="index.html#pei-zhi-ji-shi-qi" aria-label="Anchor link for: pei-zhi-ji-shi-qi">🔗</a>配置计时器</h3>
+<p>我们所使用的硬件计时器叫做 <em>可编程周期计时器</em> （PIT），就如同字面上的意思一样，其两次中断之间的间隔是可配置的。当然，不会在此展开说，因为我们很快就会使用 <a href="https://wiki.osdev.org/APIC_timer">APIC计时器</a> 来代替它，但是你可以在OSDev wiki中找到一些关于<a href="https://wiki.osdev.org/Programmable_Interval_Timer">配置PIT计时器</a>的拓展文章。</p>
+<h2 id="si-suo"><a class="zola-anchor" href="index.html#si-suo" aria-label="Anchor link for: si-suo">🔗</a>死锁</h2>
+<p>现在，我们的内核里就出现了一种全新的异步逻辑：计时器中断是异步的，所以它可能会在任何时候中断 <code>_start</code> 函数的运行。幸运的是Rust的所有权体系为我们在编译期避免了相当比例的bug，其中最典型的就是死锁 —— 当一个线程试图使用一个永远不会被释放的锁时，这个线程就会被永久性挂起。</p>
+<p>我们可以在内核里主动引发一次死锁看看，请回忆一下，我们的 <code>println</code> 宏调用了 <code>vga_buffer::_print</code> 函数，而这个函数又使用了 <a href="../../vga-text-mode/index.html#spinlocks"><code>WRITER</code></a> 变量，该变量被定义为带同步锁的变量：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>[…]
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>获取到 <code>WRITER</code> 变量的锁后，调用其内部的 <code>write_fmt</code> 函数，然后在结尾隐式解锁该变量。但是假如在函数执行一半的时候，中断处理函数触发，同样试图打印日志的话：</p>
+<table><thead><tr><th>Timestep</th><th>_start</th><th>interrupt_handler</th></tr></thead><tbody>
+<tr><td>0</td><td>calls <code>println!</code></td><td> </td></tr>
+<tr><td>1</td><td><code>print</code> locks <code>WRITER</code></td><td> </td></tr>
+<tr><td>2</td><td></td><td><strong>interrupt occurs</strong>, handler begins to run</td></tr>
+<tr><td>3</td><td></td><td>calls <code>println!</code></td></tr>
+<tr><td>4</td><td></td><td><code>print</code> tries to lock <code>WRITER</code> (already locked)</td></tr>
+<tr><td>5</td><td></td><td><code>print</code> tries to lock <code>WRITER</code> (already locked)</td></tr>
+<tr><td>…</td><td></td><td>…</td></tr>
+<tr><td><em>never</em></td><td><em>unlock <code>WRITER</code></em></td><td></td></tr>
+</tbody></table>
+<p><code>WRITER</code> 被锁定，所以中断处理函数就会一直等待到它被解锁为止，然而后续永远不会发生了，因为只有当中断处理函数返回，<code>_start</code> 函数才会继续运行，<code>WRITER</code> 才可能被解锁，所以整个系统就这么挂起了。</p>
+<h3 id="yin-fa-si-suo"><a class="zola-anchor" href="index.html#yin-fa-si-suo" aria-label="Anchor link for: yin-fa-si-suo">🔗</a>引发死锁</h3>
+<p>基于这个原理，我们可以通过在 <code>_start</code> 函数中构建一个输出循环来很轻易地触发死锁：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{
+</span><span>        </span><span style="color:#569cd6;">use </span><span>blog_os::print;
+</span><span>        print!(</span><span style="color:#d69d85;">&quot;-&quot;</span><span>);        </span><span style="color:#608b4e;">// new
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>在QEMU中运行后，输出是这样的：</p>
+<p><img src="qemu-deadlock.png" alt="QEMU output with many rows of hyphens and no dots" /></p>
+<p>我们可以看到，这段程序只输出了有限的中划线，在第一次计时器中断触发后就不再动弹了，这是因为计时器中断对应的处理函数触发了输出宏中潜在的死锁，这也是为什么我们没有在上面的输出中看到点号的原因。</p>
+<p>由于计时器中断是完全异步的，所以每次运行能够输出的中划线数量都是不确定的，这种特性也导致和并发相关的bug非常难以调试。</p>
+<h3 id="xiu-fu-si-suo"><a class="zola-anchor" href="index.html#xiu-fu-si-suo" aria-label="Anchor link for: xiu-fu-si-suo">🔗</a>修复死锁</h3>
+<p>要避免死锁，我们可以在 <code>Mutex</code> 被锁定时禁用中断：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Prints the given formatted string to the VGA text buffer
+</span><span style="color:#608b4e;">/// through the global `WRITER` instance.
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;   </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    interrupts::without_interrupts(|| {     </span><span style="color:#608b4e;">// new
+</span><span>        </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p><a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/interrupts/fn.without_interrupts.html"><code>without_interrupts</code></a> 函数可以使一个 <a href="https://doc.rust-lang.org/book/ch13-01-closures.html">闭包</a> 代码块在无中断环境下执行，由此我们可以让 <code>Mutex</code> 变量在锁定期间的执行逻辑不会被中断信号打断。再次运行我们的内核，此时程序就不会被挂起了。（然而我们依然不会看到任何点号，因为输出速度实在是太快了，试着降低一下输出速度就可以了，比如在循环里插入一句 <code>for _ in 0..10000 {}</code>。）</p>
+<p>我们也可以在串行输出函数里也加入同样的逻辑来避免死锁：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: ::core::fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;       </span><span style="color:#608b4e;">// new
+</span><span>
+</span><span>    interrupts::without_interrupts(|| {         </span><span style="color:#608b4e;">// new
+</span><span>        </span><span style="color:#b4cea8;">SERIAL1
+</span><span>            .lock()
+</span><span>            .write_fmt(args)
+</span><span>            .expect(</span><span style="color:#d69d85;">&quot;Printing to serial failed&quot;</span><span>);
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>但请注意，禁用中断不应是被广泛使用的手段，它可能会造成中断的处理延迟增加，比如操作系统是依靠中断信号进行计时的。因此，中断仅应在极短的时间内被禁用。</p>
+<h2 id="xiu-fu-jing-tai-tiao-jian"><a class="zola-anchor" href="index.html#xiu-fu-jing-tai-tiao-jian" aria-label="Anchor link for: xiu-fu-jing-tai-tiao-jian">🔗</a>修复竞态条件</h2>
+<p>如果你运行 <code>cargo test</code> 命令，则会发现<code>test_println_output</code> 测试执行失败：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test --lib
+</span><span>[…]
+</span><span>Running 4 tests
+</span><span>test_breakpoint_exception...[ok]
+</span><span>test_println... [ok]
+</span><span>test_println_many... [ok]
+</span><span>test_println_output... [failed]
+</span><span>
+</span><span>Error: panicked at &#39;assertion failed: `(left == right)`
+</span><span>  left: `&#39;.&#39;`,
+</span><span> right: `&#39;S&#39;`&#39;, src/vga_buffer.rs:205:9
+</span></code></pre>
+<p>其原因就是测试函数和计时器中断处理函数出现了 <em>竞态条件</em>，测试函数是这样的：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s);
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> screen_char = </span><span style="color:#b4cea8;">WRITER</span><span>.lock().buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>        assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>该测试将一串字符打印到VGA缓冲区，并通过一个循环检测 <code>buffer_chars</code> 数组的内容。竞态条件出现的原因就是在 <code>println</code> 和检测逻辑之间触发了计时器中断，其处理函数同样调用了输出语句。不过这并非危险的 <em>数据竞争</em>，该种竞争可以被Rust语言在编译期完全避免。如果你对此感兴趣，可以查阅一下 <a href="https://doc.rust-lang.org/nomicon/races.html"><em>Rustonomicon</em></a>。</p>
+<p>要修复这个问题，我们需要让 <code>WRITER</code> 加锁的范围扩大到整个测试函数，使计时器中断处理函数无法输出 <code>.</code>，就像这样：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::interrupts;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    interrupts::without_interrupts(|| {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> writer = </span><span style="color:#b4cea8;">WRITER</span><span>.lock();
+</span><span>        writeln!(writer, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s).expect(</span><span style="color:#d69d85;">&quot;writeln failed&quot;</span><span>);
+</span><span>        </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>            </span><span style="color:#569cd6;">let</span><span> screen_char = writer.buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>            assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>        }
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>我们进行了如下修改：</p>
+<ul>
+<li>我们使用 <code>lock()</code> 函数显式加锁，然后将 <code>println</code> 改为 <a href="https://doc.rust-lang.org/core/macro.writeln.html"><code>writeln</code></a> 宏，以此绕开输出必须加锁的限制。</li>
+<li>为了避免死锁，我们同时在测试函数执行期间禁用中断，否则中断处理函数可能会意外被触发。</li>
+<li>为了防止在测试执行前计时器中断被触发所造成的干扰，我们先输出一句 <code>\n</code>，即可避免行首出现多余的 <code>.</code> 造成的干扰。</li>
+</ul>
+<p>经过以上修改，<code>cargo test</code> 就可以正确运行了。</p>
+<p>好在这是一种十分无害的竞态条件，仅仅会导致测试失败，但如你所想，其它形式的竞态条件可能会更加难以调试。幸运的是，更加恶性的数据竞争已经被Rust从根本上避免了，大部分数据竞争都会造成无法预知的行为，比如系统崩溃，或者悄无声息的内存破坏。</p>
+<h2 id="hlt-zhi-ling"><a class="zola-anchor" href="index.html#hlt-zhi-ling" aria-label="Anchor link for: hlt-zhi-ling">🔗</a><code>hlt</code> 指令</h2>
+<p>目前我们在 <code>_start</code> 和 <code>panic</code> 函数的末尾都使用了一个空白的循环，这的确能让整体逻辑正常运行，但也会让CPU全速运转 —— 尽管此时并没有什么需要计算的工作。如果你在执行内核时打开任务管理器，便会发现QEMU的CPU占用率全程高达100%。</p>
+<p>但是，我们可以让CPU在下一个中断触发之前休息一下，也就是进入休眠状态来节省一点点能源。[<code>hlt</code> instruction][<code>hlt</code> 指令] 可以让我们做到这一点，那就来用它写一个节能的无限循环：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>hlt_loop() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{
+</span><span>        x86_64::instructions::hlt();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><code>instructions::hlt</code> 只是对应汇编指令的 <a href="https://github.com/rust-osdev/x86_64/blob/5e8e218381c5205f5777cb50da3ecac5d7e3b1ab/src/instructions/mod.rs#L16-L22">薄包装</a>，并且它是内存安全的，没有破坏内存的风险。</p>
+<p>现在我们来试着在 <code>_start</code> 和 <code>panic</code> 中使用 <code>hlt_loop</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    […]
+</span><span>
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;It did not crash!&quot;</span><span>);
+</span><span>    blog_os::hlt_loop();            </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span>
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    blog_os::hlt_loop();            </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span></code></pre>
+<p>接下来再更新一下 <code>lib.rs</code> ：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#608b4e;">/// Entry point for `cargo test`
+</span><span>#[cfg(test)]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    init();
+</span><span>    test_main();
+</span><span>    hlt_loop();         </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_panic_handler(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    hlt_loop();         </span><span style="color:#608b4e;">// new
+</span><span>}
+</span></code></pre>
+<p>再次在QEMU中执行我们的内核，CPU使用率已经降低到了比较低的水平了。</p>
+<h2 id="jian-pan-shu-ru"><a class="zola-anchor" href="index.html#jian-pan-shu-ru" aria-label="Anchor link for: jian-pan-shu-ru">🔗</a>键盘输入</h2>
+<p>现在，我们已经知道了如何接收外部设备的中断信号，我们可以进一步对键盘添加支持，由此我们可以与内核进行交互。</p>
+<aside class="post_aside">
+<p>注意，我们仅仅会讲解 <a href="https://en.wikipedia.org/wiki/PS/2_port">PS/2</a> 键盘的兼容方式，而非USB键盘。不过好在主板往往会将USB键盘模拟为 PS/2 设备来支持旧时代的软件，所以我们暂时可以不考虑USB键盘这种情况。</p>
+</aside>
+<p>就如同硬件计时器一样，键盘控制器也是默认启用的，所以当你敲击键盘上某个按键时，键盘控制器就会经由PIC向CPU发送中断信号。然而CPU此时是无法在IDT找到相关的中断处理函数的，所以 double fault 异常会被抛出。</p>
+<p>所以我们需要为键盘中断添加一个处理函数，它十分类似于计时器中断处理的实现，只不过需要对中断编号做出一点小小的修改：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>InterruptIndex {
+</span><span>    Timer = </span><span style="color:#b4cea8;">PIC_1_OFFSET</span><span>,
+</span><span>    Keyboard, </span><span style="color:#608b4e;">// new
+</span><span>}
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">IDT</span><span>: InterruptDescriptorTable = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> idt = InterruptDescriptorTable::new();
+</span><span>        idt.breakpoint.set_handler_fn(breakpoint_handler);
+</span><span>        […]
+</span><span>        </span><span style="color:#608b4e;">// new
+</span><span>        idt[InterruptIndex::Keyboard.as_usize()]
+</span><span>            .set_handler_fn(keyboard_interrupt_handler);
+</span><span>
+</span><span>        idt
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;k&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p><a href="index.html#the-8259-pic">上文</a> 提到，键盘使用的是主PIC的1号管脚，在CPU的中断编号为33（1 + 偏移量32）。我们需要在 <code>InterruptIndex</code> 枚举类型里添加一个 <code>Keyboard</code>，但是无需显式指定对应值，因为在默认情况下，它的对应值是上一个枚举对应值加一也就是33。在处理函数中，我们先输出一个 <code>k</code>，并发送结束信号来结束中断。</p>
+<p>现在当我们按下任意一个按键，就会在屏幕上输出一个 <code>k</code>，然而这只会生效一次，因为键盘控制器在我们 <em>获取扫描码</em> 之前，是不会发送下一个中断的。</p>
+<h3 id="du-qu-sao-miao-ma"><a class="zola-anchor" href="index.html#du-qu-sao-miao-ma" aria-label="Anchor link for: du-qu-sao-miao-ma">🔗</a>读取扫描码</h3>
+<p>要找到哪个按键被按下，我们还需要询问一下键盘控制器，我们可以从 PS/2 控制器（即地址为 <code>0x60</code> 的 <a href="../../testing/index.html#i-o-ports">I/O端口</a>）的数据端口获取到该信息：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, scancode);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>我们使用了 <code>x86_64</code> crate 中的 <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/port/struct.Port.html"><code>Port</code></a> 来从键盘数据端口中读取名为 [<em>扫描码</em>] 的随着按键按下/释放而不断变化的数字。我们暂且不处理它，只是在屏幕上打印出来：</p>
+<p><img src="qemu-printing-scancodes.gif" alt="QEMU printing scancodes to the screen when keys are pressed" /></p>
+<p>在上图中，演示的正是缓慢输入 <code>123</code> 的结果。我们可以看到，相邻的按键具备相邻的扫描码，而按下按键和松开按键也会出现不同的扫描码，那么问题来了，我们该如何对这些扫描码进行译码？</p>
+<h3 id="sao-miao-ma-zhuan-yi"><a class="zola-anchor" href="index.html#sao-miao-ma-zhuan-yi" aria-label="Anchor link for: sao-miao-ma-zhuan-yi">🔗</a>扫描码转义</h3>
+<p>关于按键与键位码之间的映射关系，目前存在三种不同的标准（所谓的 <em>扫描码映射集</em>）。三种标准都可以追溯到早期的IBM电脑键盘：<a href="https://en.wikipedia.org/wiki/IBM_Personal_Computer_XT">IBM XT</a>、 <a href="https://en.wikipedia.org/wiki/IBM_3270_PC">IBM 3270 PC</a>和<a href="https://en.wikipedia.org/wiki/IBM_Personal_Computer/AT">IBM AT</a>。好在之后的电脑并未另起炉灶定义新的扫描码映射集，但也对现有类型进行模拟并加以扩展，如今的绝大多数键盘都可以模拟成这三种类型之一。</p>
+<p>默认情况下，PS/2 键盘会模拟Set-1（XT），在该布局下，扫描码的低7位表示按键，而其他的比特位则定义了是按下（0）还是释放（1）。不过这些按键并非都存在于原本的 <a href="https://en.wikipedia.org/wiki/IBM_Personal_Computer_XT">IBM XT</a> 键盘上，比如小键盘的回车键，此时就会连续生成两个扫描码：<code>0xe0</code> 以及一个自定义的代表该键位的数字。<a href="https://wiki.osdev.org/Keyboard#Scan_Code_Set_1">OSDev Wiki</a> 可以查阅到Set-1下的扫描码对照表。</p>
+<p>要将扫描码译码成按键，我们可以用一个match匹配语句：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>
+</span><span>    </span><span style="color:#608b4e;">// new
+</span><span>    </span><span style="color:#569cd6;">let</span><span> key = </span><span style="color:#569cd6;">match</span><span> scancode {
+</span><span>        </span><span style="color:#b5cea8;">0x02 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;1&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x03 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;2&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x04 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;3&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x05 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;4&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x06 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;5&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x07 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;6&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x08 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;7&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x09 </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;8&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x0a </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;9&#39;</span><span>),
+</span><span>        </span><span style="color:#b5cea8;">0x0b </span><span style="color:#569cd6;">=&gt; </span><span>Some(</span><span style="color:#d69d85;">&#39;0&#39;</span><span>),
+</span><span>        </span><span style="color:#569cd6;">_ =&gt; </span><span>None,
+</span><span>    };
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>Some(key) = key {
+</span><span>        print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, key);
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>以上代码可以对数字按键0-9进行转义，并忽略其他键位。具体到程序逻辑中，就是使用 <a href="https://doc.rust-lang.org/book/ch06-02-match.html">match</a> 匹配映射数字0-9，对于其他扫描码则返回 <code>None</code>，然后使用 <a href="https://doc.rust-lang.org/book/ch18-01-all-the-places-for-patterns.html#conditional-if-let-expressions"><code>if let</code></a> 语句对 <code>key</code> 进行解构取值，在这个语法中，代码块中的 <code>key</code> 会 <a href="https://doc.rust-lang.org/book/ch03-01-variables-and-mutability.html#shadowing">遮蔽</a> 掉代码块外的同名 <code>Option</code> 型变量。</p>
+<p>现在我们就可以向控制台写入数字了：</p>
+<p><img src="qemu-printing-numbers.gif" alt="QEMU printing numbers to the screen" /></p>
+<p>其他扫描码也可以通过同样的手段进行译码，不过真的很麻烦，好在 <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/"><code>pc-keyboard</code></a> crate 已经帮助我们实现了Set-1和Set-2的译码工作，所以无需自己去实现。所以我们只需要将下述内容添加到 <code>Cargo.toml</code>，并在 <code>lib.rs</code> 里进行引用：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">pc-keyboard </span><span>= </span><span style="color:#d69d85;">&quot;0.5.0&quot;
+</span></code></pre>
+<p>现在我们可以使用新的crate对 <code>keyboard_interrupt_handler</code> 进行改写：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in/src/interrupts.rs
+</span><span>
+</span><span style="color:#569cd6;">extern </span><span style="color:#d69d85;">&quot;x86-interrupt&quot; </span><span style="color:#569cd6;">fn </span><span>keyboard_interrupt_handler(
+</span><span>    _stack_frame: InterruptStackFrame)
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+</span><span>    </span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    lazy_static! {
+</span><span>        </span><span style="color:#569cd6;">static ref </span><span style="color:#b4cea8;">KEYBOARD</span><span>: Mutex&lt;Keyboard&lt;layouts::Us104Key, ScancodeSet1&gt;&gt; =
+</span><span>            Mutex::new(Keyboard::new(layouts::Us104Key, ScancodeSet1,
+</span><span>                HandleControl::Ignore)
+</span><span>            );
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> keyboard = </span><span style="color:#b4cea8;">KEYBOARD</span><span>.lock();
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0x60</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">let</span><span> scancode: </span><span style="color:#569cd6;">u8 </span><span>= </span><span style="color:#569cd6;">unsafe </span><span>{ port.read() };
+</span><span>    </span><span style="color:#569cd6;">if let </span><span>Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+</span><span>        </span><span style="color:#569cd6;">if let </span><span>Some(key) = keyboard.process_keyevent(key_event) {
+</span><span>            </span><span style="color:#569cd6;">match</span><span> key {
+</span><span>                DecodedKey::Unicode(character) </span><span style="color:#569cd6;">=&gt; </span><span>print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, character),
+</span><span>                DecodedKey::RawKey(key) </span><span style="color:#569cd6;">=&gt; </span><span>print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{:?}</span><span style="color:#d69d85;">&quot;</span><span>, key),
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#b4cea8;">PICS</span><span>.lock()
+</span><span>            .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>首先我们使用 <code>lazy_static</code> 宏创建一个受到Mutex同步锁保护的 <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html"><code>Keyboard</code></a> 对象，初始化参数为美式键盘布局以及Set-1。至于 <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/enum.HandleControl.html"><code>HandleControl</code></a>，它可以设定为将 <code>ctrl+[a-z]</code> 映射为Unicode字符 <code>U+0001</code> 至 <code>U+001A</code>，但我们不想这样，所以使用了 <code>Ignore</code> 选项让 <code>ctrl</code> 仅仅表现为一个正常键位。</p>
+<p>对于每一个中断，我们都会为 KEYBOARD 加锁，从键盘控制器获取扫描码并将其传入 <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html#method.add_byte"><code>add_byte</code></a> 函数，并将其转化为 <code>Option&lt;KeyEvent&gt;</code> 结构。<a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.KeyEvent.html"><code>KeyEvent</code></a> 包括了触发本次中断的按键信息，以及子动作是按下还是释放。</p>
+<p>要处理KeyEvent，我们还需要将其传入 <a href="https://docs.rs/pc-keyboard/0.5.0/pc_keyboard/struct.Keyboard.html#method.process_keyevent"><code>process_keyevent</code></a> 函数，将其转换为人类可读的字符，若果有必要，也会对字符进行一些处理。典型例子就是，要判断 <code>A</code> 键按下后输入的是小写 <code>a</code> 还是大写 <code>A</code>，这要取决于shift键是否同时被按下。</p>
+<p>进行这些修改之后，我们就可以正常输入英文了：</p>
+<p><img src="qemu-typing.gif" alt="Typing “Hello World” in QEMU" /></p>
+<h3 id="pei-zhi-jian-pan"><a class="zola-anchor" href="index.html#pei-zhi-jian-pan" aria-label="Anchor link for: pei-zhi-jian-pan">🔗</a>配置键盘</h3>
+<p>PS/2 键盘可以配置的地方其实还有很多，比如设定它使用何种扫描码映射集，然而这篇文章已经够长了，就不在此展开说明，如果有兴趣，可以在OSDev wiki查看<a href="https://wiki.osdev.org/PS/2_Keyboard#Commands">更详细的资料</a>。</p>
+<h2 id="xiao-jie"><a class="zola-anchor" href="index.html#xiao-jie" aria-label="Anchor link for: xiao-jie">🔗</a>小结</h2>
+<p>本文描述了如何启用并处理外部中断。我们学习了关于8259 PIC的主副布局、重映射中断编号以及结束中断信号的基础知识，实现了简单的硬件计时器和键盘的中断处理器，以及如何使用 <code>hlt</code> 指令让CPU休眠至下次接收到中断信号。</p>
+<p>现在我们已经可以和内核进行交互，满足了创建简易控制台或简易游戏的基础条件。</p>
+<h2 id="xia-wen-yu-gao"><a class="zola-anchor" href="index.html#xia-wen-yu-gao" aria-label="Anchor link for: xia-wen-yu-gao">🔗</a>下文预告</h2>
+<p>计时器中断对操作系统而言至关重要，它可以使内核定期重新获得控制权，由此内核可以对线程进行调度，创造出多个线程并行执行的错觉。</p>
+<p>然而在我们创建进程或线程之前，我们还需要解决内存分配问题。下一篇文章中，我们就会对内存管理进行阐述，以提供后续功能会使用到的基础设施。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../double-fault-exceptions/index.html">&laquo; Double Faults</a>
+        
+        
+            <a class="next" href="../paging-introduction/index.html">内存分页初探 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Hardware%20Interrupts%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Hardware Interrupts (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Hardware%20Interrupts%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../hardware-interrupts/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/hardware-interrupts/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/hardware-interrupts/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/hardware-interrupts/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

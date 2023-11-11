@@ -1,0 +1,100 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>Cross Compile Binutils | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Cross Compile Binutils</h1>
+    <p>The <a href="https://www.gnu.org/software/binutils/">GNU Binutils</a> are a collection of various binary tools such as <code>ld</code>, <code>as</code>, <code>objdump</code>, or <code>readelf</code>. These tools are platform-specific, so you need to compile them again if your host system and target system are different. In our case, we need <code>ld</code> and <code>objdump</code> for the x86_64 architecture.</p>
+<h2 id="building-setup"><a class="zola-anchor" href="index.html#building-setup" aria-label="Anchor link for: building-setup">🔗</a>Building Setup</h2>
+<p>First, you need to download a current binutils version from <a href="ftp://sourceware.org/pub/binutils/snapshots">here</a> (the latest one is near the bottom). After extracting, you should have a folder named <code>binutils-2.X</code> where <code>X</code> is for example <code>25.1</code>. Now can create and switch to a new folder for building (recommended):</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>mkdir build-binutils
+</span><span>cd build-binutils
+</span></code></pre>
+<h2 id="configuration"><a class="zola-anchor" href="index.html#configuration" aria-label="Anchor link for: configuration">🔗</a>Configuration</h2>
+<p>We execute binutils’s <code>configure</code> and pass a lot of arguments to it (replace the <code>X</code> with the version number):</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>../binutils-2.X/configure --target=x86_64-elf --prefix=</span><span style="color:#d69d85;">&quot;$</span><span>HOME</span><span style="color:#d69d85;">/opt/cross&quot; </span><span>\
+</span><span>    --disable-nls --disable-werror \
+</span><span>    --disable-gdb --disable-libdecnumber --disable-readline --disable-sim
+</span></code></pre>
+<ul>
+<li>The <code>target</code> argument specifies the the x86_64 target architecture.</li>
+<li>The <code>prefix</code> argument selects the installation directory, you can change it if you like. But be careful that you do not overwrite your system’s binutils.</li>
+<li>The <code>disable-nls</code> flag disables native language support (so you’ll get the same english error messages). It also reduces build dependencies.</li>
+<li>The <code>disable-werror</code> turns all warnings into errors.</li>
+<li>The last line disables features we don’t need to reduce compile time.</li>
+</ul>
+<h2 id="building-it"><a class="zola-anchor" href="index.html#building-it" aria-label="Anchor link for: building-it">🔗</a>Building it</h2>
+<p>Now we can build and install it to the location supplied as <code>prefix</code> (it will take a while):</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span>make
+</span><span>make install
+</span></code></pre>
+<p>Now you should have multiple <code>x86_64-elf-XXX</code> files in <code>$HOME/opt/cross/bin</code>.</p>
+<h2 id="adding-it-to-the-path"><a class="zola-anchor" href="index.html#adding-it-to-the-path" aria-label="Anchor link for: adding-it-to-the-path">🔗</a>Adding it to the PATH</h2>
+<p>To use the tools from the command line easily, you should add the <code>bin</code> folder to your PATH:</p>
+<pre data-lang="bash" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-bash "><code class="language-bash" data-lang="bash"><span style="color:#569cd6;">export </span><span>PATH=</span><span style="background-color:#282828;color:#d69d85;">&quot;$</span><span style="background-color:#282828;color:#dcdcdc;">HOME</span><span style="background-color:#282828;color:#d69d85;">/opt/cross/bin:$</span><span style="background-color:#282828;color:#dcdcdc;">PATH</span><span style="background-color:#282828;color:#d69d85;">&quot;</span><span>
+</span></code></pre>
+<p>If you add this line to your e.g. <code>.bashrc</code>, the <code>x86_64-elf-XXX</code> commands are always available.</p>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

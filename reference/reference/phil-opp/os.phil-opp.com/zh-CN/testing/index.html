@@ -1,0 +1,1042 @@
+<!doctype html>
+
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="本文主要讲述了在no_std环境下进行单元测试和集成测试的方法。我们将通过Rust的自定义测试框架来在我们的内核中执行一些测试函数。为了将结果反馈到QEMU上，我们需要使用QEMU的一些其他的功能以及bootimage工具。
+">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>内核测试 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="https://os.phil-opp.com/zh-CN" title="All Posts">« 所有文章</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>目录</h2>
+    <ol>
+        <li>
+            <a href="index.html#yue-du-yao-qiu">阅读要求</a>
+            
+        </li><li>
+            <a href="index.html#rustzhong-de-ce-shi">Rust中的测试</a>
+            <ol>
+                <li>
+                    <a href="index.html#zi-ding-yi-ce-shi-kuang-jia">自定义测试框架</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#tui-chu-qemu">退出QEMU</a>
+            <ol>
+                <li>
+                    <a href="index.html#i-o-duan-kou">I/O 端口</a>
+                </li><li>
+                    <a href="index.html#shi-yong-tui-chu-exit-she-bei">使用退出(Exit)设备</a>
+                </li><li>
+                    <a href="index.html#cheng-gong-tui-chu-exit-dai-ma">成功退出(Exit)代码</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#da-yin-dao-kong-zhi-tai">打印到控制台</a>
+            <ol>
+                <li>
+                    <a href="index.html#chuan-kou">串口</a>
+                </li><li>
+                    <a href="index.html#qemucan-shu">QEMU参数</a>
+                </li><li>
+                    <a href="index.html#zai-panicshi-da-yin-yi-ge-cuo-wu-xin-xi">在panic时打印一个错误信息</a>
+                </li><li>
+                    <a href="index.html#yin-cang-qemu">隐藏 QEMU</a>
+                </li><li>
+                    <a href="index.html#chao-shi">超时</a>
+                </li><li>
+                    <a href="index.html#zi-dong-tian-jia-da-yin-yu-ju">自动添加打印语句</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#ce-shi-vgahuan-chong-qu">测试VGA缓冲区</a>
+            
+        </li><li>
+            <a href="index.html#ji-cheng-ce-shi">集成测试</a>
+            <ol>
+                <li>
+                    <a href="index.html#chuang-jian-yi-ge-ku">创建一个库</a>
+                </li><li>
+                    <a href="index.html#wan-cheng-ji-cheng-ce-shi">完成集成测试</a>
+                </li><li>
+                    <a href="index.html#wei-lai-de-ce-shi">未来的测试</a>
+                </li><li>
+                    <a href="index.html#na-xie-ying-gai-panicde-ce-shi">那些应该Panic的测试</a>
+                </li><li>
+                    <a href="index.html#wu-yue-shu-ce-shi">无约束测试</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#zong-jie">总结</a>
+            
+        </li><li>
+            <a href="index.html#xia-qi-yu-gao">下期预告</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>内核测试</h1>
+    <time datetime="2019-04-27" class="post-date">
+        Apr 27, 2019
+        
+    </time>
+    </div>
+
+    
+        <div class="warning">
+            
+            
+            <p>
+            <b>翻译内容：</b>
+            这是对原文章 <strong><a href="../../testing/index.html">Testing</a></strong> 的社区中文翻译。它可能不完整，过时或者包含错误。可以在 <a href="https://github.com/phil-opp/blog_os/issues/961">这个 Issue</a> 上评论和提问！
+            </p>
+            <p>
+                翻译者： <a href="https://github.com/luojia65">@luojia65</a>, <a href="https://github.com/Rustin-Liu">@Rustin-Liu</a> 和 <a href="https://github.com/liuyuran">@liuyuran</a>.
+                <span class="translation_contributors">
+                    With contributions from <a href="https://github.com/JiangengDong">@JiangengDong</a>.
+                </span>
+                </p>
+            </div>
+    
+
+    <div class="">
+    <p>本文主要讲述了在<code>no_std</code>环境下进行单元测试和集成测试的方法。我们将通过Rust的自定义测试框架来在我们的内核中执行一些测试函数。为了将结果反馈到QEMU上，我们需要使用QEMU的一些其他的功能以及<code>bootimage</code>工具。</p>
+<span id="continue-reading"></span>
+<p>这个系列的blog在<a href="https://github.com/phil-opp/blog_os">GitHub</a>上开放开发，如果你有任何问题，请在这里开一个issue来讨论。当然你也可以在<a href="index.html#comments">底部</a>留言。你可以在<a href="https://github.com/phil-opp/blog_os/tree/post-04"><code>post-04</code></a>找到这篇文章的完整源码。</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>目录</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#yue-du-yao-qiu">阅读要求</a>
+                
+            </li><li>
+                <a href="index.html#rustzhong-de-ce-shi">Rust中的测试</a>
+                <ul>
+                    <li>
+                        <a href="index.html#zi-ding-yi-ce-shi-kuang-jia">自定义测试框架</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#tui-chu-qemu">退出QEMU</a>
+                <ul>
+                    <li>
+                        <a href="index.html#i-o-duan-kou">I/O 端口</a>
+                    </li><li>
+                        <a href="index.html#shi-yong-tui-chu-exit-she-bei">使用退出(Exit)设备</a>
+                    </li><li>
+                        <a href="index.html#cheng-gong-tui-chu-exit-dai-ma">成功退出(Exit)代码</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#da-yin-dao-kong-zhi-tai">打印到控制台</a>
+                <ul>
+                    <li>
+                        <a href="index.html#chuan-kou">串口</a>
+                    </li><li>
+                        <a href="index.html#qemucan-shu">QEMU参数</a>
+                    </li><li>
+                        <a href="index.html#zai-panicshi-da-yin-yi-ge-cuo-wu-xin-xi">在panic时打印一个错误信息</a>
+                    </li><li>
+                        <a href="index.html#yin-cang-qemu">隐藏 QEMU</a>
+                    </li><li>
+                        <a href="index.html#chao-shi">超时</a>
+                    </li><li>
+                        <a href="index.html#zi-dong-tian-jia-da-yin-yu-ju">自动添加打印语句</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#ce-shi-vgahuan-chong-qu">测试VGA缓冲区</a>
+                
+            </li><li>
+                <a href="index.html#ji-cheng-ce-shi">集成测试</a>
+                <ul>
+                    <li>
+                        <a href="index.html#chuang-jian-yi-ge-ku">创建一个库</a>
+                    </li><li>
+                        <a href="index.html#wan-cheng-ji-cheng-ce-shi">完成集成测试</a>
+                    </li><li>
+                        <a href="index.html#wei-lai-de-ce-shi">未来的测试</a>
+                    </li><li>
+                        <a href="index.html#na-xie-ying-gai-panicde-ce-shi">那些应该Panic的测试</a>
+                    </li><li>
+                        <a href="index.html#wu-yue-shu-ce-shi">无约束测试</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#zong-jie">总结</a>
+                
+            </li><li>
+                <a href="index.html#xia-qi-yu-gao">下期预告</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">评论</a></li>
+        </ul>
+    </details>
+
+<h2 id="yue-du-yao-qiu"><a class="zola-anchor" href="index.html#yue-du-yao-qiu" aria-label="Anchor link for: yue-du-yao-qiu">🔗</a>阅读要求</h2>
+<p>这篇文章替换了此前的(现在已经过时了) <a href="../../unit-testing/index.html"><em>单元测试(Unit Testing)</em></a> 和 <a href="../../integration-tests/index.html"><em>集成测试(Integration Tests)</em></a> 两篇文章。这里我将假定你是在2019-04-27日后阅读的<a href="../../minimal-rust-kernel/index.html"><em>最小Rust内核</em></a>一文。总而言之，本文要求你已经有一个<a href="../../minimal-rust-kernel/index.html#set-a-default-target">已设置默认目标</a>的 <code>.cargo/config</code> 文件且<a href="../../minimal-rust-kernel/index.html#using-cargo-run">定义了一个runner可执行文件</a>。</p>
+<h2 id="rustzhong-de-ce-shi"><a class="zola-anchor" href="index.html#rustzhong-de-ce-shi" aria-label="Anchor link for: rustzhong-de-ce-shi">🔗</a>Rust中的测试</h2>
+<p>Rust有一个<strong>内置的测试框架</strong>（<a href="https://doc.rust-lang.org/book/second-edition/ch11-00-testing.html">built-in test framework</a>）：无需任何设置就可以进行单元测试，只需要创建一个通过assert来检查结果的函数并在函数的头部加上 <code>#[test]</code> 属性即可。然后 <code>cargo test</code> 会自动找到并执行你的crate中的所有测试函数。</p>
+<p>不幸的是，对于一个 <code>no_std</code> 的应用，比如我们的内核，这就有点复杂了。现在的问题是，Rust的测试框架会隐式的调用内置的<a href="https://doc.rust-lang.org/test/index.html"><code>test</code></a>库，但是这个库依赖于标准库。这也就是说我们的 <code>#[no_std]</code> 内核无法使用默认的测试框架。</p>
+<p>当我们试图在我们的项目中执行 <code>cargo test</code> 时，我们可以看到如下信息:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>   Compiling blog_os v0.1.0 (/…/blog_os)
+</span><span>error[E0463]: can&#39;t find crate for `test`
+</span></code></pre>
+<p>由于 <code>test</code> 库依赖于标准库，所以它在我们的裸机目标上并不可用。虽然将 <code>test</code> 库移植到一个 <code>#[no_std]</code> 上下文环境中是<a href="https://github.com/japaric/utest">可能的</a>，但是这样做是高度不稳定的，并且还会需要一些特殊的hacks，例如重定义 <code>panic</code> 宏。 </p>
+<h3 id="zi-ding-yi-ce-shi-kuang-jia"><a class="zola-anchor" href="index.html#zi-ding-yi-ce-shi-kuang-jia" aria-label="Anchor link for: zi-ding-yi-ce-shi-kuang-jia">🔗</a>自定义测试框架</h3>
+<p>幸运的是，Rust支持通过使用不稳定的<strong>自定义测试框架</strong>（<a href="https://doc.rust-lang.org/unstable-book/language-features/custom-test-frameworks.html"><code>custom_test_frameworks</code></a>） 功能来替换默认的测试框架。该功能不需要额外的库，因此在 <code>#[no_std]</code>环境中它也可以工作。它的工作原理是收集所有标注了 <code>#[test_case]</code>属性的函数，然后将这个测试函数的列表作为参数传递给用户指定的runner函数。因此，它实现了对测试过程的最大控制。</p>
+<p>与默认的测试框架相比，它的缺点是有一些高级功能诸如 <a href="https://doc.rust-lang.org/book/ch11-01-writing-tests.html#checking-for-panics-with-should_panic"><code>should_panic</code> tests</a> 都不可用了。相对的，如果需要这些功能，我们需要自己来实现。当然，这点对我们来说是好事，因为我们的环境非常特殊，在这个环境里，这些高级功能的默认实现无论如何都是无法工作的，举个例子， <code>#[should_panic]</code> 属性依赖于栈展开来捕获内核panic，而我们的内核早已将其禁用了。</p>
+<p>要为我们的内核实现自定义测试框架，我们需要将如下代码添加到我们的 <code>main.rs</code> 中去:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Running </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>我们的runner会打印一个简短的debug信息然后调用列表中的每个测试函数。参数类型 <code>&amp;[&amp;dyn Fn()]</code> 是<a href="https://doc.rust-lang.org/std/ops/trait.Fn.html"><em>Fn()</em></a> trait的 <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/trait-objects.html"><em>trait object</em></a> 引用的一个 <a href="https://doc.rust-lang.org/std/primitive.slice.html"><em>slice</em></a>。它基本上可以被看做一个可以像函数一样被调用的类型的引用列表。由于这个函数在不进行测试的时候没有什么用，这里我们使用 <code>#[cfg(test)]</code>属性保证它只会出现在测试中。 </p>
+<p>现在当我们运行 <code>cargo test</code> ，我们可以发现运行成功了。然而，我们看到的仍然是“Hello World“而不是我们的 <code>test_runner</code>传递来的信息。这是由于我们的入口点仍然是 <code>_start</code> 函数——自定义测试框架会生成一个<code>main</code>函数来调用<code>test_runner</code>，但是由于我们使用了 <code>#[no_main]</code>并提供了我们自己的入口点，所以这个<code>main</code>函数就被忽略了。</p>
+<div class = "warning">
+<p><strong>Note:</strong> cargo目前有个bug，就是某些测试用例会在执行 <code>cargo test</code> 时抛出 <code>duplicate lang item</code> 错误。目前已知的复现条件是在你的 <code>Cargo.toml</code> 中配置 <code>panic = &quot;abort&quot;</code>，只要移除掉，<code>cargo test</code> 即可正常执行。如果你对这个bug感兴趣，可以关注一下这个 <a href="https://github.com/rust-lang/cargo/issues/7359">cargo issue</a>。</p>
+</div>
+<p>为了修复这个问题，我们需要通过 <code>reexport_test_harness_main</code>属性来将生成的函数的名称更改为与<code>main</code>不同的名称。然后我们可以在我们的<code>_start</code>函数里调用这个重命名的函数:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>我们将测试框架的入口函数的名字设置为<code>test_main</code>，并在我们的 <code>_start</code>入口点里调用它。通过使用<strong>条件编译</strong>（<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/conditional-compilation.html">conditional compilation</a>），我们能够只在上下文环境为测试（test）时调用 <code>test_main</code> ，因为该函数将不在非测试上下文中生成。</p>
+<p>现在当我们执行 <code>cargo test</code>时，我们可以看到我们的<code>test_runner</code>将“Running 0 tests“信息显示在屏幕上了。我们可以创建第一个测试函数了:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>现在，当我们运行 <code>cargo test</code> 时，我们可以看到如下输出:</p>
+<p><img src="../../testing/qemu-test-runner-output.png" alt="QEMU printing “Hello World!”, “Running 1 tests”, and “trivial assertion… [ok]”" /></p>
+<p>传递给 <code>test_runner</code>函数的<code>tests</code>切片里包含了一个 <code>trivial_assertion</code> 函数的引用，从屏幕上输出的 <code>trivial assertion... [ok]</code> 信息可见，我们的测试已被调用并且顺利通过。</p>
+<p>在执行完tests后， <code>test_runner</code> 会将结果返回给 <code>test_main</code> 函数，而这个函数又返回到 <code>_start</code> 入口点函数——这样我们就进入了一个死循环，因为入口点函数是不允许返回的。这将导致一个问题：我们希望 <code>cargo test</code> 在所有的测试运行完毕后，直接返回并退出。</p>
+<h2 id="tui-chu-qemu"><a class="zola-anchor" href="index.html#tui-chu-qemu" aria-label="Anchor link for: tui-chu-qemu">🔗</a>退出QEMU</h2>
+<p>现在我们在 <code>_start</code> 函数结束后进入了一个死循环，所以每次执行完 <code>cargo test</code> 后我们都需要手动去关闭QEMU；但是我们还想在没有用户交互的脚本环境下执行 <code>cargo test</code>。解决这个问题的最佳方式，是实现一个合适的方法来关闭我们的操作系统——不幸的是，这个方式实现起来相对有些复杂，因为这要求我们实现对<a href="https://wiki.osdev.org/APM">APM</a>或<a href="https://wiki.osdev.org/ACPI">ACPI</a>电源管理标准的支持。</p>
+<p>幸运的是，还有一个绕开这些问题的办法：QEMU支持一种名为 <code>isa-debug-exit</code> 的特殊设备，它提供了一种从客户系统（guest system）里退出QEMU的简单方式。为了使用这个设备，我们需要向QEMU传递一个 <code>-device</code> 参数。当然，我们也可以通过将 <code>package.metadata.bootimage.test-args</code> 配置关键字添加到我们的 <code>Cargo.toml</code> 来达到目的：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [</span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>]
+</span></code></pre>
+<p><code>bootimage runner</code> 会在QEMU的默认测试命令后添加 <code>test-args</code> 参数。（对于 <code>cargo run</code> 命令，这个参数会被忽略。）</p>
+<p>在传递设备名 (<code>isa-debug-exit</code>)的同时，我们还传递了两个参数，<code>iobase</code> 和 <code>iosize</code> 。这两个参数指定了一个_I/O 端口_，我们的内核将通过它来访问设备。</p>
+<h3 id="i-o-duan-kou"><a class="zola-anchor" href="index.html#i-o-duan-kou" aria-label="Anchor link for: i-o-duan-kou">🔗</a>I/O 端口</h3>
+<p>在x86平台上，CPU和外围硬件通信通常有两种方式，<strong>内存映射I/O</strong>和<strong>端口映射I/O</strong>。之前，我们已经使用内存映射的方式，通过内存地址 <code>0xb8000</code> 访问了[VGA文本缓冲区]。该地址并没有映射到RAM，而是映射到了VGA设备的一部分内存上。</p>
+<p>与内存映射不同，端口映射I/O使用独立的I/O总线来进行通信。每个外围设备都有一个或数个端口号。CPU采用了特殊的<code>in</code>和<code>out</code>指令来和端口通信，这些指令要求一个端口号和一个字节的数据作为参数（有些这种指令的变体也允许发送 <code>u16</code> 或是 <code>u32</code> 长度的数据）。</p>
+<p><code>isa-debug-exit</code> 设备使用的就是端口映射I/O。其中， <code>iobase</code> 参数指定了设备对应的端口地址（在x86中，<code>0xf4</code> 是一个<a href="https://wiki.osdev.org/I/O_Ports#The_list">通常未被使用的端口</a>），而 <code>iosize</code> 则指定了端口的大小（<code>0x04</code> 代表4字节）。</p>
+<h3 id="shi-yong-tui-chu-exit-she-bei"><a class="zola-anchor" href="index.html#shi-yong-tui-chu-exit-she-bei" aria-label="Anchor link for: shi-yong-tui-chu-exit-she-bei">🔗</a>使用退出(Exit)设备</h3>
+<p><code>isa-debug-exit</code> 设备的功能非常简单。当一个 <code>value</code> 写入 <code>iobase</code> 指定的端口时，它会导致QEMU以<strong>退出状态</strong>（<a href="https://en.wikipedia.org/wiki/Exit_status">exit status</a>）<code>(value &lt;&lt; 1) | 1</code> 退出。也就是说，当我们向端口写入 <code>0</code> 时，QEMU将以退出状态 <code>(0 &lt;&lt; 1) | 1 = 1</code> 退出，而当我们向端口写入<code>1</code>时，它将以退出状态 <code>(1 &lt;&lt; 1) | 1 = 3</code> 退出。</p>
+<p>这里我们使用 <a href="https://docs.rs/x86_64/0.14.2/x86_64/"><code>x86_64</code></a> crate提供的抽象，而不是手动调用 <code>in</code> 或 <code>out</code> 指令。为了添加对该crate的依赖，我们可以将其添加到我们的 <code>Cargo.toml</code>中的 <code>dependencies</code> 小节中去:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">x86_64 </span><span>= </span><span style="color:#d69d85;">&quot;0.14.2&quot;
+</span></code></pre>
+<p>现在我们可以使用crate中提供的 <a href="https://docs.rs/x86_64/0.14.2/x86_64/instructions/port/struct.Port.html"><code>Port</code></a> 类型来创建一个 <code>exit_qemu</code> 函数了:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u32)]
+</span><span style="color:#569cd6;">pub enum </span><span>QemuExitCode {
+</span><span>    Success = </span><span style="color:#b5cea8;">0x10</span><span>,
+</span><span>    Failed = </span><span style="color:#b5cea8;">0x11</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>exit_qemu(exit_code: QemuExitCode) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>        port.write(exit_code </span><span style="color:#569cd6;">as u32</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>该函数在 <code>0xf4</code> 处创建了一个新的端口，该端口同时也是 <code>isa-debug-exit</code> 设备的 <code>iobase</code> 。然后它会向端口写入传递的退出代码。这里我们使用 <code>u32</code> 来传递数据，因为我们之前已经将 <code>isa-debug-exit</code> 设备的 <code>iosize</code> 指定为4字节了。上述两个操作都是 <code>unsafe</code> 的，因为I/O端口的写入操作通常会导致一些不可预知的行为。</p>
+<p>为了指定退出状态，我们创建了一个 <code>QemuExitCode</code> 枚举。思路大体上是，如果所有的测试均成功，就以成功退出码退出；否则就以失败退出码退出。这个枚举类型被标记为 <code>#[repr(u32)]</code>，代表每个变量都是一个 <code>u32</code> 的整数类型。我们使用退出代码 <code>0x10</code> 代表成功，<code>0x11</code> 代表失败。 实际的退出代码并不重要，只要它们不与QEMU的默认退出代码冲突即可。 例如，使用退出代码0表示成功可能并不是一个好主意，因为它在转换后就变成了 <code>(0 &lt;&lt; 1) | 1 = 1</code> ，而 <code>1</code> 是QEMU运行失败时的默认退出代码。 这样，我们就无法将QEMU错误与成功的测试运行区分开来了。</p>
+<p>现在我们来更新 <code>test_runner</code> 的代码，让程序在运行所有测试完毕后退出QEMU：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Running </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>    }
+</span><span>    </span><span style="color:#608b4e;">/// new
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p>当我们现在运行 <code>cargo test</code> 时，QEMU会在测试运行后立刻退出。现在的问题是，即使我们传递了表示成功（<code>Success</code>）的退出代码， <code>cargo test</code> 依然会将所有的测试都视为失败：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.03s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-5804fc7d2dd4c9be
+</span><span>Building bootloader
+</span><span>   Compiling bootloader v0.5.3 (/home/philipp/Documents/bootloader)
+</span><span>    Finished release [optimized + debuginfo] target(s) in 1.07s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-5804fc7d2dd4c9be.bin -device isa-debug-exit,iobase=0xf4,
+</span><span>    iosize=0x04`
+</span><span>error: test failed, to rerun pass &#39;--bin blog_os&#39;
+</span></code></pre>
+<p>这里的问题在于，<code>cargo test</code> 会将所有非 <code>0</code> 的错误码都视为测试失败。</p>
+<h3 id="cheng-gong-tui-chu-exit-dai-ma"><a class="zola-anchor" href="index.html#cheng-gong-tui-chu-exit-dai-ma" aria-label="Anchor link for: cheng-gong-tui-chu-exit-dai-ma">🔗</a>成功退出(Exit)代码</h3>
+<p>为了解决这个问题， <code>bootimage</code> 提供了一个 <code>test-success-exit-code</code> 配置项，可以将指定的退出代码映射到退出代码 <code>0</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [</span><span style="color:#ff3333;">…</span><span>]
+</span><span style="color:#569cd6;">test-success-exit-code </span><span>= </span><span style="color:#b5cea8;">33         </span><span style="color:#608b4e;"># (0x10 &lt;&lt; 1) | 1
+</span></code></pre>
+<p>有了这个配置，<code>bootimage</code> 就会将我们的成功退出码映射到退出码0；这样一来， <code>cargo test</code> 就能正确地识别出测试成功的情况，而不会将其视为测试失败。</p>
+<p>我们的 test runner 现在会在正确报告测试结果后自动关闭QEMU。我们可以看到QEMU的窗口只会显示很短的时间——我们很难看清测试的结果。如果测试结果会打印在控制台上而不是QEMU里，让我们能在QEMU退出后仍然能看到测试结果就好了。</p>
+<h2 id="da-yin-dao-kong-zhi-tai"><a class="zola-anchor" href="index.html#da-yin-dao-kong-zhi-tai" aria-label="Anchor link for: da-yin-dao-kong-zhi-tai">🔗</a>打印到控制台</h2>
+<p>要在控制台上查看测试输出，我们需要以某种方式将数据从内核发送到宿主系统。 有多种方法可以实现这一点，例如通过TCP网络接口来发送数据。但是，设置网络堆栈是一项很复杂的任务，这里我们可以选择更简单的解决方案。</p>
+<h3 id="chuan-kou"><a class="zola-anchor" href="index.html#chuan-kou" aria-label="Anchor link for: chuan-kou">🔗</a>串口</h3>
+<p>发送数据的一个简单的方式是通过<a href="https://en.wikipedia.org/wiki/Serial_port">串行端口</a>，这是一个现代电脑中已经不存在的旧标准接口（译者注：玩过单片机的同学应该知道，其实译者上大学的时候有些同学的笔记本电脑还有串口的，没有串口的同学在烧录单片机程序的时候也都会需要usb转串口线，一般是51，像stm32有st-link，这个另说，不过其实也可以用串口来下载）。串口非常易于编程，QEMU可以将通过串口发送的数据重定向到宿主机的标准输出或是文件中。</p>
+<p>用来实现串行接口的芯片被称为 <a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter">UARTs</a>。在x86上，有<a href="https://en.wikipedia.org/wiki/Universal_asynchronous_receiver-transmitter#UART_models">很多UART模型</a>，但是幸运的是，它们之间仅有的那些不同之处都是我们用不到的高级功能。目前通用的UARTs都会兼容<a href="https://en.wikipedia.org/wiki/16550_UART">16550 UART</a>，所以我们在我们测试框架里采用该模型。</p>
+<p>我们使用 <a href="https://docs.rs/uart_16550"><code>uart_16550</code></a> crate来初始化UART，并通过串口来发送数据。为了将该crate添加为依赖，我们需要将 <code>Cargo.toml</code> 和 <code>main.rs</code> 修改为如下:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">uart_16550 </span><span>= </span><span style="color:#d69d85;">&quot;0.2.0&quot;
+</span></code></pre>
+<p><code>uart_16550</code> crate包含了一个代表UART寄存器的 <code>SerialPort</code> 结构体，但是我们仍然需要自己来创建一个相应的实例。我们使用以下代码来创建一个新的串口模块 <code>serial</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">mod </span><span>serial;
+</span></code></pre>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>uart_16550::SerialPort;
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">SERIAL1</span><span>: Mutex&lt;SerialPort&gt; = {
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> serial_port = </span><span style="color:#569cd6;">unsafe </span><span>{ SerialPort::new(</span><span style="color:#b5cea8;">0x3F8</span><span>) };
+</span><span>        serial_port.init();
+</span><span>        Mutex::new(serial_port)
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>就像<a href="../../vga-text-mode/index.html#lazy-statics">VGA文本缓冲区</a>一样，我们使用 <code>lazy_static</code> 和一个自旋锁来创建一个 <code>static</code> writer实例。通过使用 <code>lazy_static</code> ，我们可以保证 <code>init</code> 方法只会在该示例第一次被使用使被调用。</p>
+<p>和 <code>isa-debug-exit</code> 设备一样，UART也是通过I/O端口进行编程的。由于UART相对来讲更加复杂，它使用多个I/O端口来对不同的设备寄存器进行编程。<code>unsafe</code> 的 <code>SerialPort::new</code> 函数需要UART的第一个I/O端口的地址作为参数，从该地址中可以计算出所有所需端口的地址。我们传递的端口地址为 <code>0x3F8</code> ，该地址是第一个串行接口的标准端口号。</p>
+<p>为了使串口更加易用，我们添加了 <code>serial_print!</code> 和 <code>serial_println!</code>宏:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/serial.rs
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: ::core::fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">SERIAL1</span><span>.lock().write_fmt(args).expect(</span><span style="color:#d69d85;">&quot;Printing to serial failed&quot;</span><span>);
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Prints to the host through the serial interface.
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>        $crate::serial::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Prints to the host through the serial interface, appending a newline.
+</span><span>#[macro_export]
+</span><span>macro_rules! serial_println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>)));
+</span><span>    ($fmt:</span><span style="color:#569cd6;">expr</span><span>, </span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::serial_print</span><span style="color:#569cd6;">!</span><span>(
+</span><span>        concat!($fmt, </span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>), </span><span style="color:#569cd6;">$</span><span>($arg)*));
+</span><span>}
+</span></code></pre>
+<p>该实现和我们此前的 <code>print</code> 和 <code>println</code> 宏的实现非常类似。 由于 <code>SerialPort</code> 类型已经实现了 <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>fmt::Write</code></a> trait，所以我们不需要提供我们自己的实现了。</p>
+<p>现在我们可以从测试代码里向串行接口打印而不是向VGA文本缓冲区打印了:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    […]
+</span><span>}
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>注意，由于我们使用了 <code>#[macro_export]</code> 属性， <code>serial_println</code> 宏直接位于根命名空间下，所以通过 <code>use crate::serial::serial_println</code> 来导入该宏是不起作用的。</p>
+<h3 id="qemucan-shu"><a class="zola-anchor" href="index.html#qemucan-shu" aria-label="Anchor link for: qemucan-shu">🔗</a>QEMU参数</h3>
+<p>为了查看QEMU的串行输出，我们需要使用 <code>-serial</code> 参数将输出重定向到stdout：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [
+</span><span>    </span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>, </span><span style="color:#d69d85;">&quot;-serial&quot;</span><span>, </span><span style="color:#d69d85;">&quot;stdio&quot;
+</span><span>]
+</span></code></pre>
+<p>现在，当我们运行 <code>cargo test</code> 时，我们可以直接在控制台里看到测试输出了:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-7b7c37b4ad62551a
+</span><span>Building bootloader
+</span><span>    Finished release [optimized + debuginfo] target(s) in 0.02s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-7b7c37b4ad62551a.bin -device
+</span><span>    isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio`
+</span><span>Running 1 tests
+</span><span>trivial assertion... [ok]
+</span></code></pre>
+<p>然而，当测试失败时，我们仍然会在QEMU内看到输出结果，因为我们的panic handler还是用了 <code>println</code>。为了模拟这个过程，我们将我们的 <code>trivial_assertion</code> test中的断言(assertion)修改为 <code>assert_eq!(0, 1)</code>:</p>
+<p><img src="../../testing/qemu-failed-test.png" alt="QEMU printing “Hello World!” and “panicked at ‘assertion failed: (left == right) left: 0, right: 1’, src/main.rs:55:5" /></p>
+<p>可以看到，panic信息被打印到了VGA缓冲区里，而测试输出则被打印到串口上了。panic信息非常有用，所以我们希望能够在控制台中来查看它。</p>
+<h3 id="zai-panicshi-da-yin-yi-ge-cuo-wu-xin-xi"><a class="zola-anchor" href="index.html#zai-panicshi-da-yin-yi-ge-cuo-wu-xin-xi" aria-label="Anchor link for: zai-panicshi-da-yin-yi-ge-cuo-wu-xin-xi">🔗</a>在panic时打印一个错误信息</h3>
+<p>为了在panic时使用错误信息来退出QEMU，我们可以使用<strong>条件编译</strong>（<a href="https://doc.rust-lang.org/1.30.0/book/first-edition/conditional-compilation.html">conditional compilation</a>）在测试模式下使用（与非测试模式下）不同的panic处理方式:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#608b4e;">// our existing panic handler
+</span><span>#[cfg(not(test))] </span><span style="color:#608b4e;">// new attribute
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">// our panic handler in test mode
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>在我们的测试panic处理中，我们用 <code>serial_println</code> 来代替 <code>println</code> 并使用失败代码来退出QEMU。注意，在 <code>exit_qemu</code> 调用后，我们仍然需要一个无限循环的 <code>loop</code> 因为编译器并不知道 <code>isa-debug-exit</code> 设备会导致程序退出。</p>
+<p>现在，即使在测试失败的情况下QEMU仍然会退出，并会将一些有用的错误信息打印到控制台：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>&gt; cargo test
+</span><span>    Finished dev [unoptimized + debuginfo] target(s) in 0.02s
+</span><span>     Running target/x86_64-blog_os/debug/deps/blog_os-7b7c37b4ad62551a
+</span><span>Building bootloader
+</span><span>    Finished release [optimized + debuginfo] target(s) in 0.02s
+</span><span>Running: `qemu-system-x86_64 -drive format=raw,file=/…/target/x86_64-blog_os/debug/
+</span><span>    deps/bootimage-blog_os-7b7c37b4ad62551a.bin -device
+</span><span>    isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio`
+</span><span>Running 1 tests
+</span><span>trivial assertion... [failed]
+</span><span>
+</span><span>Error: panicked at &#39;assertion failed: `(left == right)`
+</span><span>  left: `0`,
+</span><span> right: `1`&#39;, src/main.rs:65:5
+</span></code></pre>
+<p>由于现在所有的测试都将输出到控制台上，我们不再需要让QEMU窗口弹出一小会儿了——我们完全可以把窗口藏起来。</p>
+<h3 id="yin-cang-qemu"><a class="zola-anchor" href="index.html#yin-cang-qemu" aria-label="Anchor link for: yin-cang-qemu">🔗</a>隐藏 QEMU</h3>
+<p>由于我们使用 <code>isa-debug-exit</code> 设备和串行端口来报告完整的测试结果，所以我们不再需要QEMU的窗口了。我们可以通过向QEMU传递 <code>-display none</code> 参数来将其隐藏:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-args </span><span>= [
+</span><span>    </span><span style="color:#d69d85;">&quot;-device&quot;</span><span>, </span><span style="color:#d69d85;">&quot;isa-debug-exit,iobase=0xf4,iosize=0x04&quot;</span><span>, </span><span style="color:#d69d85;">&quot;-serial&quot;</span><span>, </span><span style="color:#d69d85;">&quot;stdio&quot;</span><span>,
+</span><span>    </span><span style="color:#d69d85;">&quot;-display&quot;</span><span>, </span><span style="color:#d69d85;">&quot;none&quot;
+</span><span>]
+</span></code></pre>
+<p>现在QEMU完全在后台运行,且没有任何窗口会被打开。这不仅很清爽，还允许我们的测试框架在没有图形界面的环境里，诸如CI服务器或是<a href="https://en.wikipedia.org/wiki/Secure_Shell">SSH</a>连接里运行。</p>
+<h3 id="chao-shi"><a class="zola-anchor" href="index.html#chao-shi" aria-label="Anchor link for: chao-shi">🔗</a>超时</h3>
+<p>由于 <code>cargo test</code> 会等待test runner退出，如果一个测试永远不返回那么它就会一直阻塞test runner。幸运的是，在实际应用中这并不是一个大问题，因为无限循环通常是很容易避免的。在我们的这个例子里，无限循环会发生在以下几种不同的情况中：</p>
+<ul>
+<li>bootloader加载内核失败，导致系统不停重启；</li>
+<li>BIOS/UEFI固件加载bootloader失败，同样会导致无限重启；</li>
+<li>CPU在某些函数结束时进入一个 <code>loop {}</code> 语句，例如因为QEMU的exit设备无法正常工作而导致死循环；</li>
+<li>硬件触发了系统重置，例如未捕获CPU异常时（后续的文章将会详细解释）。</li>
+</ul>
+<p>由于无限循环可能会在各种情况中发生，因此， <code>bootimage</code> 工具默认为每个可执行测试设置了一个长度为5分钟的超时时间。如果测试未在此时间内完成，则将其标记为失败，并向控制台输出“Timed Out（超时）“错误。这个功能确保了那些卡在无限循环里的测试不会一直阻塞 <code>cargo test</code>。</p>
+<p>你可以将<code>loop {}</code>语句添加到 <code>trivial_assertion</code> 测试中来进行尝试。当你运行 <code>cargo test</code> 时，你可以发现该测试会在五分钟后被标记为超时。超时持续的时间可以通过Cargo.toml中的 <code>test-timeout</code> 配置项来进行<a href="https://github.com/rust-osdev/bootimage#configuration">配置</a>：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">package.metadata.bootimage</span><span>]
+</span><span style="color:#569cd6;">test-timeout </span><span>= </span><span style="color:#b5cea8;">300          </span><span style="color:#608b4e;"># (in seconds)
+</span></code></pre>
+<p>如果你不想为了观察 <code>trivial_assertion</code> 测试超时等待5分钟之久，你可以将这个配置数值调低一些。</p>
+<h3 id="zi-dong-tian-jia-da-yin-yu-ju"><a class="zola-anchor" href="index.html#zi-dong-tian-jia-da-yin-yu-ju" aria-label="Anchor link for: zi-dong-tian-jia-da-yin-yu-ju">🔗</a>自动添加打印语句</h3>
+<p><code>trivial_assertion</code> 测试仅能使用 <code>serial_print!</code>/<code>serial_println!</code> 输出自己的状态信息：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;trivial assertion... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>为每一个测试手动添加固定的日志实在是太烦琐了，所以我们可以修改一下 <code>test_runner</code> 把这部分逻辑改进一下，使其可以自动添加日志输出。那么我们先建立一个 <code>Testable</code> trait：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">pub trait </span><span>Testable {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; ();
+</span><span>}
+</span></code></pre>
+<p>下面这个 trick 将会实现上面书写的 trait，并约束只有满足 <a href="https://doc.rust-lang.org/stable/core/ops/trait.Fn.html"><code>Fn()</code> trait</a> 的泛型可使用这个实现：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;T&gt; Testable </span><span style="color:#569cd6;">for </span><span>T
+</span><span style="color:#569cd6;">where
+</span><span>    T: Fn(),
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) {
+</span><span>        serial_print!(</span><span style="color:#d69d85;">&quot;{}...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>, core::any::type_name::&lt;T&gt;());
+</span><span>        self();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>我们实现的 <code>run</code> 函数中，首先使用 <a href="https://doc.rust-lang.org/stable/core/any/fn.type_name.html"><code>any::type_name</code></a> 输出了函数名，这个函数事实上是被编译器实现的，可以返回任意类型的字符串形式。对于函数而言，其类型的字符串形式就是它的函数名，而函数名也正是我们想要的测试用例名称。至于 <code>\t</code> 则代表 <a href="https://en.wikipedia.org/wiki/Tab_key#Tab_characters">制表符</a>，其作用是为后面的 <code>[ok]</code> 输出增加一点左边距。</p>
+<p>输出函数名之后，我们通过 <code>self()</code> 调用了测试函数本身，该调用方式属于 <code>Fn()</code> trait 独有，如果测试函数顺利执行完毕，则 <code>[ok]</code> 也会被输出出来。</p>
+<p>最后一步就是给 <code>test_runner</code> 的参数附加上 <code>Testable</code> trait：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[cfg(test)]
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Testable]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test.run(); </span><span style="color:#608b4e;">// new
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p>仅有的两处修改，就是将 <code>tests</code> 参数的类型从 <code>&amp;[&amp;dyn Fn()]</code> 改为了 <code>&amp;[&amp;dyn Testable]</code>，以及将函数调用方式从 <code>test()</code> 改成了 <code>test.run()</code>。</p>
+<p>由于我们已经完成了首尾输出的自动化，所以 <code>trivial_assertion</code> 里那两行输出语句也就可以删掉了：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>trivial_assertion() {
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">1</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span></code></pre>
+<p>现在 <code>cargo test</code> 的输出就变成了下面这样：</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>Running 1 tests
+</span><span>blog_os::trivial_assertion...	[ok]
+</span></code></pre>
+<p>如你所见，自动生成的函数名包含了完整的内部路径，但是也因此可以区分不同模块下的同名函数。除此之外，其输出和之前看起来完全相同，我们也就不再需要在测试函数内部加输出语句了。</p>
+<h2 id="ce-shi-vgahuan-chong-qu"><a class="zola-anchor" href="index.html#ce-shi-vgahuan-chong-qu" aria-label="Anchor link for: ce-shi-vgahuan-chong-qu">🔗</a>测试VGA缓冲区</h2>
+<p>现在我们已经有了一个可以工作的测试框架了，我们可以为我们的VGA缓冲区实现创建一些测试。首先，我们创建了一个非常简单的测试来验证 <code>println</code>是否正常运行而不会panic：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_simple() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;test_println_simple output&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>这个测试所做的仅仅是将一些内容打印到VGA缓冲区。如果它正常结束并且没有panic，也就意味着 <code>println</code> 调用也没有panic。</p>
+<p>为了确保即使打印很多行且有些行超出屏幕的情况下也没有panic发生，我们可以创建另一个测试：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_many() {
+</span><span>    </span><span style="color:#569cd6;">for _ in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b5cea8;">200 </span><span>{
+</span><span>        println!(</span><span style="color:#d69d85;">&quot;test_println_many output&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>我们还可以创建另一个测试函数，来验证打印的几行字符是否真的出现在了屏幕上:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println_output() {
+</span><span>    </span><span style="color:#569cd6;">let</span><span> s = </span><span style="color:#d69d85;">&quot;Some test string that fits on a single line&quot;</span><span>;
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, s);
+</span><span>    </span><span style="color:#569cd6;">for </span><span>(i, c) </span><span style="color:#569cd6;">in</span><span> s.chars().enumerate() {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> screen_char = </span><span style="color:#b4cea8;">WRITER</span><span>.lock().buffer.chars[</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">2</span><span>][i].read();
+</span><span>        assert_eq!(</span><span style="color:#569cd6;">char</span><span>::from(screen_char.ascii_character), c);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>该函数定义了一个测试字符串，并通过 <code>println</code>将其输出，然后遍历静态 <code>WRITER</code> 也就是vga字符缓冲区的屏幕字符。由于 <code>println</code> 在将字符串打印到屏幕上最后一行后会立刻附加一个新行(即输出完后有一个换行符)，所以这个字符串应该会出现在第 <code>BUFFER_HEIGHT - 2</code>行。</p>
+<p>通过使用<a href="https://doc.rust-lang.org/core/iter/trait.Iterator.html#method.enumerate"><code>enumerate</code></a> ，我们统计了变量 <code>i</code> 的迭代次数，然后用它来加载对应于<code>c</code>的屏幕字符。 通过比较屏幕字符的 <code>ascii_character</code> 和 <code>c</code> ，我们可以确保字符串的每个字符确实出现在vga文本缓冲区中。</p>
+<p>如你所想，我们可以创建更多的测试函数：例如一个用来测试当打印一个很长的且包装正确的行时是否会发生panic的函数，或是一个用于测试换行符、不可打印字符、非unicode字符是否能被正确处理的函数。</p>
+<p>在这篇文章的剩余部分，我们还会解释如何创建一个_集成测试_以测试不同组建之间的交互。 </p>
+<h2 id="ji-cheng-ce-shi"><a class="zola-anchor" href="index.html#ji-cheng-ce-shi" aria-label="Anchor link for: ji-cheng-ce-shi">🔗</a>集成测试</h2>
+<p>在Rust中，<strong>集成测试</strong>（<a href="https://doc.rust-lang.org/book/ch11-03-test-organization.html#integration-tests">integration tests</a>）的约定是将其放到项目根目录中的 <code>tests</code> 目录下(即 <code>src</code> 的同级目录)。无论是默认测试框架还是自定义测试框架都将自动获取并执行该目录下所有的测试。</p>
+<p>所有的集成测试都是它们自己的可执行文件，并且与我们的 <code>main.rs</code> 完全独立。这也就意味着每个测试都需要定义它们自己的函数入口点。让我们创建一个名为 <code>basic_boot</code> 的例子来看看集成测试的工作细节吧：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span>#[no_mangle] </span><span style="color:#608b4e;">// don&#39;t mangle the name of this function
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    unimplemented!();
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>由于集成测试都是单独的可执行文件，所以我们需要再次提供所有的crate属性(<code>no_std</code>, <code>no_main</code>, <code>test_runner</code>, 等等)。我们还需要创建一个新的入口点函数 <code>_start</code>，用于调用测试入口函数 <code>test_main</code>。我们不需要任何的 <code>cfg(test)</code> 属性，因为集成测试的二进制文件在非测试模式下根本不会被编译构建。 </p>
+<p>这里我们采用<a href="https://doc.rust-lang.org/core/macro.unimplemented.html"><code>unimplemented</code></a>宏，充当 <code>test_runner</code> 暂未实现的占位符；添加简单的 <code>loop {}</code> 循环，作为 <code>panic</code> 处理器的内容。理想情况下，我们希望能向我们在 <code>main.rs</code> 里所做的一样使用 <code>serial_println</code> 宏和 <code>exit_qemu</code> 函数来实现这个函数。但问题是，由于这些测试的构建和我们的 <code>main.rs</code> 的可执行文件是完全独立的，我们没有办法使用这些函数。</p>
+<p>如果现阶段你运行 <code>cargo test</code>，你将进入一个无限循环，因为目前panic的处理就是进入无限循环。你需要使用快捷键 <code>Ctrl+c</code>，才可以退出QEMU。</p>
+<h3 id="chuang-jian-yi-ge-ku"><a class="zola-anchor" href="index.html#chuang-jian-yi-ge-ku" aria-label="Anchor link for: chuang-jian-yi-ge-ku">🔗</a>创建一个库</h3>
+<p>为了让这些函数能在我们的集成测试中使用，我们需要从我们的 <code>main.rs</code> 中分割出一个库，这个库应当可以被其他的crate和集成测试可执行文件使用。为了达成这个目的，我们创建了一个新文件，<code>src/lib.rs</code>：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/lib.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>
+</span></code></pre>
+<p>和 <code>main.rs</code> 一样，<code>lib.rs</code> 也是一个可以被cargo自动识别的特殊文件。该库是一个独立的编译单元，所以我们需要再次指定 <code>#![no_std]</code> 属性。</p>
+<p>为了让我们的库可以和 <code>cargo test</code> 一起协同工作，我们还需要移动以下测试函数和属性:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#![cfg_attr(test, no_main)]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(crate::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span>
+</span><span style="color:#569cd6;">pub trait </span><span>Testable {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) -&gt; ();
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">impl</span><span>&lt;T&gt; Testable </span><span style="color:#569cd6;">for </span><span>T
+</span><span>    </span><span style="color:#569cd6;">where
+</span><span>        T: Fn(),
+</span><span>{
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>run(</span><span style="color:#569cd6;">&amp;</span><span>self) {
+</span><span>        serial_print!(</span><span style="color:#d69d85;">&quot;{}...</span><span style="color:#e3bbab;">\t</span><span style="color:#d69d85;">&quot;</span><span>, core::any::type_name::&lt;T&gt;());
+</span><span>        self();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Testable]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test.run();
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_panic_handler(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[failed]</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>);
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Error: {}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// Entry point for `cargo test`
+</span><span>#[cfg(test)]
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>为了能在可执行文件和集成测试中使用 <code>test_runner</code>，我们不对其应用 <code>cfg(test)</code> 属性，并将其设置为public。同时，我们还将panic的处理程序分解为public函数 <code>test_panic_handler</code>，这样一来它也可以用于可执行文件了。</p>
+<p>由于我们的 <code>lib.rs</code> 是独立于 <code>main.rs</code> 进行测试的，因此当该库实在测试模式下编译时我们需要添加一个 <code>_start</code> 入口点和一个panic处理程序。通过使用<a href="https://doc.rust-lang.org/reference/conditional-compilation.html#the-cfg_attr-attribute"><code>cfg_attr</code></a> ，我们可以在这种情况下有条件地启用 <code>no_main</code> 属性。</p>
+<p>我们还将 <code>QemuExitCode</code> 枚举和 <code>exit_qemu</code> 函数从main.rs移动过来，并将其设置为公有函数：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u32)]
+</span><span style="color:#569cd6;">pub enum </span><span>QemuExitCode {
+</span><span>    Success = </span><span style="color:#b5cea8;">0x10</span><span>,
+</span><span>    Failed = </span><span style="color:#b5cea8;">0x11</span><span>,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>exit_qemu(exit_code: QemuExitCode) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>x86_64::instructions::port::Port;
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">unsafe </span><span>{
+</span><span>        </span><span style="color:#569cd6;">let mut</span><span> port = Port::new(</span><span style="color:#b5cea8;">0xf4</span><span>);
+</span><span>        port.write(exit_code </span><span style="color:#569cd6;">as u32</span><span>);
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>现在，可执行文件和集成测试都可以从库中导入这些函数，而不需要实现自己的定义。为了使 <code>println</code> 和 <code>serial_println</code> 可用，我们将以下的模块声明代码也移动到 <code>lib.rs</code> 中：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/lib.rs
+</span><span>
+</span><span style="color:#569cd6;">pub mod </span><span>serial;
+</span><span style="color:#569cd6;">pub mod </span><span>vga_buffer;
+</span></code></pre>
+<p>我们将这些模块设置为public(公有)，这样一来我们在库的外部也一样能使用它们了。由于这两者都用了该模块内的 <code>_print</code> 函数，所以这也是让 <code>println</code> 和 <code>serial_println</code> 宏可用的必要条件。</p>
+<p>现在我们修改我们的 <code>main.rs</code> 代码来使用该库:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// src/main.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(blog_os::test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::println;
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    #[cfg(test)]
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[cfg(not(test))]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span>#[cfg(test)]
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>可以看到，这个库用起来就像一个普通的外部crate。它的调用方法与其它crate无异；在我们的这个例子中，位置可能为 <code>blog_os</code>。上述代码使用了 <code>test_runner</code> 属性中的 <code>blog_os::test_runner</code> 函数和 <code>cfg(test)</code> 的panic处理中的 <code>blog_os::test_panic_handler</code> 函数。它还导入了 <code>println</code> 宏，这样一来，我们可以在我们的 <code>_start</code> 和 <code>panic</code> 中使用它了。</p>
+<p>与此同时，<code>cargo run</code> 和 <code>cargo test</code>可以再次正常工作了。当然了，<code>cargo test</code>仍然会进入无限循环（你可以通过<code>ctrl+c</code>来退出），接下来我们将在集成测试中通过所需要的库函数来修复这个问题。</p>
+<h3 id="wan-cheng-ji-cheng-ce-shi"><a class="zola-anchor" href="index.html#wan-cheng-ji-cheng-ce-shi" aria-label="Anchor link for: wan-cheng-ji-cheng-ce-shi">🔗</a>完成集成测试</h3>
+<p>就像我们的 <code>src/main.rs</code>，我们的 <code>tests/basic_boot.rs</code> 可执行文件同样可以从我们的新库中导入类型。这也就意味着我们可以导入缺失的组件来完成我们的测试。</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span>#![test_runner(blog_os::test_runner)]
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    blog_os::test_panic_handler(info)
+</span><span>}
+</span></code></pre>
+<p>这里我们使用我们的库中的 <code>test_runner</code> 函数，而不是重新实现一个test runner。至于panic处理，调用 <code>blog_os::test_panic_handler</code> 函数即可，就像我们之前在我们的 <code>main.rs</code> 里面做的一样。</p>
+<p>现在，<code>cargo test</code>又可以正常退出了。当你运行该命令时，你会发现它为我们的 <code>lib.rs</code>, <code>main.rs</code>, 和 <code>basic_boot.rs</code> 分别构建并运行了测试。其中，对于 <code>main.rs</code> 和 <code>basic_boot</code> 的集成测试，它会报告“Running 0 tests“（正在运行0个测试），因为这些文件里面没有任何用 <code>#[test_case]</code>标注的函数。</p>
+<p>现在我们可以在<code>basic_boot.rs</code>中添加测试了。举个例子，我们可以测试<code>println</code>是否能够正常工作而不panic，就像我们之前在vga缓冲区测试中做的那样:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/basic_boot.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::println;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>test_println() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;test_println output&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>现在当我们运行<code>cargo test</code>时，我们可以看到它会寻找并执行这些测试函数。</p>
+<p>由于该测试和vga缓冲区测试中的一个几乎完全相同，所以目前它看起来似乎没什么用。然而在将来，我们的 <code>main.rs</code> 和 <code>lib.rs</code> 中的 <code>_start</code> 函数的内容会不断增长，并且在运行 <code>test_main</code> 之前需要调用一系列的初始化进程，所以这两个测试将会运行在完全不同的环境中(译者注:也就是说虽然现在看起来差不多，但是在将来该测试和vga buffer中的测试会很不一样，有必要单独拿出来，这两者并没有重复)。 </p>
+<p>通过在 <code>basic_boot</code> 环境里不调用任何初始化例程的 <code>_start</code> 中测试 <code>println</code> 函数，我们可以确保 <code>println</code> 在启动（boot）后可以正常工作。这一点非常重要，因为我们有很多部分依赖于 <code>println</code>，例如打印panic信息。</p>
+<h3 id="wei-lai-de-ce-shi"><a class="zola-anchor" href="index.html#wei-lai-de-ce-shi" aria-label="Anchor link for: wei-lai-de-ce-shi">🔗</a>未来的测试</h3>
+<p>集成测试的强大之处在于，它们可以被看成是完全独立的可执行文件；这也给了它们完全控制环境的能力，使得他们能够测试代码和CPU或是其他硬件的交互是否正确。</p>
+<p>我们的 <code>basic_boot</code> 测试正是集成测试的一个非常简单的例子。在将来，我们的内核的功能会变得更多，和硬件交互的方式也会变得多种多样。通过添加集成测试，我们可以保证这些交互按预期工作（并一直保持工作）。下面是一些对于未来的测试的设想：</p>
+<ul>
+<li><strong>CPU异常</strong>：当代码执行无效操作（例如除以零）时，CPU就会抛出异常。内核会为这些异常注册处理函数。集成测试可以验证在CPU异常时是否调用了正确的异常处理程序，或者在可解析的异常之后程序是否能正确执行；</li>
+<li><strong>页表</strong>：页表定义了哪些内存区域是有效且可访问的。通过修改页表，可以重新分配新的内存区域，例如，当你启动一个软件的时候。我们可以在集成测试中调整 <code>_start</code> 函数中的一些页表项，并确认这些改动是否会对 <code>#[test_case]</code> 的函数产生影响；</li>
+<li><strong>用户空间程序</strong>：用户空间程序是只能访问有限的系统资源的程序。例如，他们无法访问内核数据结构或是其他应用程序的内存。集成测试可以启动执行禁止操作的用户空间程序验证认内核是否会将这些操作全都阻止。</li>
+</ul>
+<p>可以想象，还有更多的测试可以进行。通过添加各种各样的测试，我们确保在为我们的内核添加新功能或是重构代码时，不会意外地破坏他们。这一点在我们的内核变得更大和更复杂的时候显得尤为重要。</p>
+<h3 id="na-xie-ying-gai-panicde-ce-shi"><a class="zola-anchor" href="index.html#na-xie-ying-gai-panicde-ce-shi" aria-label="Anchor link for: na-xie-ying-gai-panicde-ce-shi">🔗</a>那些应该Panic的测试</h3>
+<p>标准库的测试框架支持 <a href="https://doc.rust-lang.org/rust-by-example/testing/unit_testing.html#testing-panics"><code>#[should_panic]</code> 属性</a>，这允许我们构造理应失败的测试。这个功能对于验证传递无效参数时函数是否会失败非常有用。不幸的是，这个属性需要标准库的支持，因此，在 <code>#[no_std]</code> 环境下无法使用。</p>
+<p>尽管我们不能在我们的内核中使用 <code>#[should_panic]</code> 属性，但是通过创建一个集成测试我们可以达到类似的效果——该集成测试可以从panic处理程序中返回一个成功错误代码。接下来让我一起来创建一个如上所述名为 <code>should_panic</code> 的测试吧：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{QemuExitCode, exit_qemu, serial_println};
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>这个测试还没有完成，因为它尚未定义 <code>_start</code> 函数或是其他自定义的test runner属性。让我们来补充缺少的内容吧：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![feature(custom_test_frameworks)]
+</span><span>#![test_runner(test_runner)]
+</span><span>#![reexport_test_harness_main </span><span style="color:#569cd6;">= </span><span style="color:#d69d85;">&quot;test_main&quot;</span><span>]
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    test_main();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>test_runner(tests: </span><span style="color:#569cd6;">&amp;</span><span>[</span><span style="color:#569cd6;">&amp;</span><span>dyn Fn()]) {
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;Running {} tests&quot;</span><span>, tests.len());
+</span><span>    </span><span style="color:#569cd6;">for</span><span> test </span><span style="color:#569cd6;">in</span><span> tests {
+</span><span>        test();
+</span><span>        serial_println!(</span><span style="color:#d69d85;">&quot;[test did not panic]&quot;</span><span>);
+</span><span>        exit_qemu(QemuExitCode::Failed);
+</span><span>    }
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>}
+</span></code></pre>
+<p>这个测试定义了自己的 <code>test_runner</code> 函数，而不是复用 <code>lib.rs</code> 中的 <code>test_runner</code>，该函数会在测试没有panic而是正常退出时返回一个错误退出代码(因为这里我们希望测试会panic)。如果没有定义测试函数，runner就会以一个成功错误代码退出。由于这个runner总是在执行完单个的测试后就退出，因此定义超过一个 <code>#[test_case]</code> 的函数都是没有意义的。</p>
+<p>现在我们来创建一个应该失败的测试:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>blog_os::serial_print;
+</span><span>
+</span><span>#[test_case]
+</span><span style="color:#569cd6;">fn </span><span>should_fail() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;should_fail... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">0</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span></code></pre>
+<p>该测试用 <code>assert_eq</code>来断言（assert）<code>0</code> 和 <code>1</code> 是否相等。毫无疑问，这当然会失败(<code>0</code> 当然不等于 <code>1</code>)，所以我们的测试就会像我们想要的那样panic。</p>
+<p>当我们通过 <code>cargo test --test should_panic</code> 运行该测试时，我们会发现测试成功，该测试如我们预期的那样panic了。当我们将断言部分（即 <code>assert_eq!(0, 1);</code>）注释掉后，我们就会发现测试失败，并返回了 <em>“test did not panic”</em> 的信息。</p>
+<p>这种方法的缺点是它只使用于单个的测试函数。对于多个 <code>#[test_case]</code> 函数，它只会执行第一个函数，因为程序无法在panic处理被调用后继续执行。我目前没有想到解决这个问题的方法，如果你有任何想法，请务必告诉我！</p>
+<h3 id="wu-yue-shu-ce-shi"><a class="zola-anchor" href="index.html#wu-yue-shu-ce-shi" aria-label="Anchor link for: wu-yue-shu-ce-shi">🔗</a>无约束测试</h3>
+<p>对于那些只有单个测试函数的集成测试而言(例如我们的 <code>should_panic</code> 测试)，其实并不需要test runner。对于这种情况，我们可以完全禁用test runner，直接在 <code>_start</code> 函数中直接运行我们的测试。</p>
+<p>这里的关键就是在 <code>Cargo.toml</code> 中为测试禁用 <code>harness</code> flag，这个标志（flag）定义了是否将test runner用于集成测试中。如果该标志位被设置为 <code>false</code>，那么默认的test runner和自定义的test runner功能都将被禁用，这样一来该测试就可以像一个普通的可执行程序一样运行了。</p>
+<p>现在为我们的 <code>should_panic</code> 测试禁用 <code>harness</code> flag吧：</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[[</span><span style="color:#808080;">test</span><span>]]
+</span><span style="color:#569cd6;">name </span><span>= </span><span style="color:#d69d85;">&quot;should_panic&quot;
+</span><span style="color:#569cd6;">harness </span><span>= </span><span style="color:#569cd6;">false
+</span></code></pre>
+<p>现在我们通过移除test runner相关的代码，大大简化了我们的 <code>should_panic</code> 测试。结果看起来如下：</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in tests/should_panic.rs
+</span><span>
+</span><span>#![no_std]
+</span><span>#![no_main]
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::panic::PanicInfo;
+</span><span style="color:#569cd6;">use </span><span>blog_os::{QemuExitCode, exit_qemu, serial_println};
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    should_fail();
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[test did not panic]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Failed);
+</span><span>    </span><span style="color:#569cd6;">loop</span><span>{}
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">fn </span><span>should_fail() {
+</span><span>    serial_print!(</span><span style="color:#d69d85;">&quot;should_fail... &quot;</span><span>);
+</span><span>    assert_eq!(</span><span style="color:#b5cea8;">0</span><span>, </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>}
+</span><span>
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(_info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    serial_println!(</span><span style="color:#d69d85;">&quot;[ok]&quot;</span><span>);
+</span><span>    exit_qemu(QemuExitCode::Success);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>现在我们可以通过我们的 <code>_start</code> 函数来直接调用 <code>should_fail</code> 函数了，如果返回则返回一个失败退出代码并退出。现在当我们执行 <code>cargo test --test should_panic</code> 时，我们可以发现测试的行为和之前完全一样。</p>
+<p>除了创建 <code>should_panic</code> 测试，禁用 <code>harness</code> 属性对复杂集成测试也很有用，例如，当单个测试函数会产生一些边际效应，需要通过特定的顺序执行时。</p>
+<h2 id="zong-jie"><a class="zola-anchor" href="index.html#zong-jie" aria-label="Anchor link for: zong-jie">🔗</a>总结</h2>
+<p>测试是一种非常有用的技术，它能确保特定的部件拥有我们期望的行为。即使它们不能显示是否有bug，它们仍然是用来寻找bug的利器，尤其是用来避免回归。</p>
+<p>本文讲述了如何为我们的Rust kernel创建一个测试框架。我们使用Rust的自定义框架功能为我们的裸机环境实现了一个简单的 <code>#[test_case]</code> 属性支持。通过使用QEMU的 <code>isa-debug-exit</code> 设备，我们的test runner可以在运行测试后退出QEMU并报告测试状态。我们还为串行端口实现了一个简单的驱动，使得错误信息可以被打印到控制台而不是VGA buffer中。</p>
+<p>在为我们的 <code>println</code> 宏创建了一些测试后，我们在本文的后半部分还探索了集成测试。我们了解到它们位于 <code>tests</code> 目录中，并被视为完全独立的可执行文件。为了使他们能够使用 <code>exit_qemu</code> 函数和 <code>serial_println</code> 宏，我们将大部分代码移动到一个库里，使其能够被导入到所有可执行文件和集成测试中。由于集成测试在各自独立的环境中运行，所以能够测试与硬件的交互或是创建应该panic的测试。</p>
+<p>我们现在有了一个在QEMU内部真是环境中运行的测试框架。在未来的文章里，我们会创建更多的测试，从而让我们的内核在变得更复杂的同时保持可维护性。</p>
+<h2 id="xia-qi-yu-gao"><a class="zola-anchor" href="index.html#xia-qi-yu-gao" aria-label="Anchor link for: xia-qi-yu-gao">🔗</a>下期预告</h2>
+<p>在下一篇文章中，我们将会探索_CPU异常_。这些异常将在一些非法事件发生时由CPU抛出，例如抛出除以零或是访问没有映射的内存页（通常也被称为 <code>page fault</code> 即页异常）。能够捕获和检查这些异常，对将来的调试来说是非常重要的。异常处理与键盘支持所需的硬件中断处理十分相似。</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../vga-text-mode/index.html">&laquo; VGA 字符模式</a>
+        
+        
+            <a class="next" href="../cpu-exceptions/index.html">CPU异常处理 &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">评论</h2>
+
+        
+            
+            
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Testing%20%28zh-CN%29%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments (translated)"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Testing (zh-CN)"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="zh-CN"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments-translated?discussions_q=%22Testing%20%28zh-CN%29%22"><em>on GitHub</em></a>.
+    </p>
+
+        <p class="">
+            请尽可能使用英语评论。
+        </p>
+        
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="en" class=""><a href="../../testing/index.html">
+                        English (original)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../../ja/testing/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../../fa/testing/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../../ko/testing/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

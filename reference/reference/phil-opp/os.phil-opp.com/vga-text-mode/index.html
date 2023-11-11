@@ -1,0 +1,741 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="The VGA text mode is a simple way to print text to the screen. In this post, we create an interface that makes its usage safe and simple by encapsulat…">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../js/edition-2/main.js"></script>
+
+    <title>VGA Text Mode | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+    <aside id="all-posts-link"><a href="../index.html" title="All Posts">« All Posts</a></aside>
+
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+<aside id="toc-aside" class="">
+        <h2>Table of Contents</h2>
+    <ol>
+        <li>
+            <a href="index.html#the-vga-text-buffer">The VGA Text Buffer</a>
+            
+        </li><li>
+            <a href="index.html#a-rust-module">A Rust Module</a>
+            <ol>
+                <li>
+                    <a href="index.html#colors">Colors</a>
+                </li><li>
+                    <a href="index.html#text-buffer">Text Buffer</a>
+                </li><li>
+                    <a href="index.html#printing">Printing</a>
+                </li><li>
+                    <a href="index.html#volatile">Volatile</a>
+                </li><li>
+                    <a href="index.html#formatting-macros">Formatting Macros</a>
+                </li><li>
+                    <a href="index.html#newlines">Newlines</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#a-global-interface">A Global Interface</a>
+            <ol>
+                <li>
+                    <a href="index.html#lazy-statics">Lazy Statics</a>
+                </li><li>
+                    <a href="index.html#spinlocks">Spinlocks</a>
+                </li><li>
+                    <a href="index.html#safety">Safety</a>
+                </li><li>
+                    <a href="index.html#a-println-macro">A println Macro</a>
+                </li><li>
+                    <a href="index.html#hello-world-using-println">Hello World using println</a>
+                </li><li>
+                    <a href="index.html#printing-panic-messages">Printing Panic Messages</a>
+                </li>
+            </ol>
+        </li><li>
+            <a href="index.html#summary">Summary</a>
+            
+        </li><li>
+            <a href="index.html#what-s-next">What’s next?</a>
+            
+        </li>
+        <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+    </ol>
+</aside>
+
+            <main>
+    <div class="">
+    <h1>VGA Text Mode</h1>
+    <time datetime="2018-02-26" class="post-date">
+        Feb 26, 2018
+        
+    </time>
+    </div>
+
+    
+
+    <div class="">
+    <p>The <a href="https://en.wikipedia.org/wiki/VGA-compatible_text_mode">VGA text mode</a> is a simple way to print text to the screen. In this post, we create an interface that makes its usage safe and simple by encapsulating all unsafety in a separate module. We also implement support for Rust’s <a href="https://doc.rust-lang.org/std/fmt/#related-macros">formatting macros</a>.</p>
+<span id="continue-reading"></span>
+<p>This blog is openly developed on <a href="https://github.com/phil-opp/blog_os">GitHub</a>. If you have any problems or questions, please open an issue there. You can also leave comments <a href="index.html#comments">at the bottom</a>. The complete source code for this post can be found in the <a href="https://github.com/phil-opp/blog_os/tree/post-03"><code>post-03</code></a> branch.</p>
+<!-- fix for zola anchor checker (target is in template): <a id="comments"> -->
+
+    <details id = "toc-inline">
+        <summary><b>Table of Contents</b></summary>
+        <ul>
+            <li>
+                <a href="index.html#the-vga-text-buffer">The VGA Text Buffer</a>
+                
+            </li><li>
+                <a href="index.html#a-rust-module">A Rust Module</a>
+                <ul>
+                    <li>
+                        <a href="index.html#colors">Colors</a>
+                    </li><li>
+                        <a href="index.html#text-buffer">Text Buffer</a>
+                    </li><li>
+                        <a href="index.html#printing">Printing</a>
+                    </li><li>
+                        <a href="index.html#volatile">Volatile</a>
+                    </li><li>
+                        <a href="index.html#formatting-macros">Formatting Macros</a>
+                    </li><li>
+                        <a href="index.html#newlines">Newlines</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#a-global-interface">A Global Interface</a>
+                <ul>
+                    <li>
+                        <a href="index.html#lazy-statics">Lazy Statics</a>
+                    </li><li>
+                        <a href="index.html#spinlocks">Spinlocks</a>
+                    </li><li>
+                        <a href="index.html#safety">Safety</a>
+                    </li><li>
+                        <a href="index.html#a-println-macro">A println Macro</a>
+                    </li><li>
+                        <a href="index.html#hello-world-using-println">Hello World using println</a>
+                    </li><li>
+                        <a href="index.html#printing-panic-messages">Printing Panic Messages</a>
+                    </li>
+                </ul>
+            </li><li>
+                <a href="index.html#summary">Summary</a>
+                
+            </li><li>
+                <a href="index.html#what-s-next">What’s next?</a>
+                
+            </li>
+            <li class="toc-comments-link"><a href="index.html#comments">Comments</a></li>
+        </ul>
+    </details>
+
+<h2 id="the-vga-text-buffer"><a class="zola-anchor" href="index.html#the-vga-text-buffer" aria-label="Anchor link for: the-vga-text-buffer">🔗</a>The VGA Text Buffer</h2>
+<p>To print a character to the screen in VGA text mode, one has to write it to the text buffer of the VGA hardware. The VGA text buffer is a two-dimensional array with typically 25 rows and 80 columns, which is directly rendered to the screen. Each array entry describes a single screen character through the following format:</p>
+<table><thead><tr><th>Bit(s)</th><th>Value</th></tr></thead><tbody>
+<tr><td>0-7</td><td>ASCII code point</td></tr>
+<tr><td>8-11</td><td>Foreground color</td></tr>
+<tr><td>12-14</td><td>Background color</td></tr>
+<tr><td>15</td><td>Blink</td></tr>
+</tbody></table>
+<p>The first byte represents the character that should be printed in the <a href="https://en.wikipedia.org/wiki/ASCII">ASCII encoding</a>. To be more specific, it isn’t exactly ASCII, but a character set named <a href="https://en.wikipedia.org/wiki/Code_page_437"><em>code page 437</em></a> with some additional characters and slight modifications. For simplicity, we will proceed to call it an ASCII character in this post.</p>
+<p>The second byte defines how the character is displayed. The first four bits define the foreground color, the next three bits the background color, and the last bit whether the character should blink. The following colors are available:</p>
+<table><thead><tr><th>Number</th><th>Color</th><th>Number + Bright Bit</th><th>Bright Color</th></tr></thead><tbody>
+<tr><td>0x0</td><td>Black</td><td>0x8</td><td>Dark Gray</td></tr>
+<tr><td>0x1</td><td>Blue</td><td>0x9</td><td>Light Blue</td></tr>
+<tr><td>0x2</td><td>Green</td><td>0xa</td><td>Light Green</td></tr>
+<tr><td>0x3</td><td>Cyan</td><td>0xb</td><td>Light Cyan</td></tr>
+<tr><td>0x4</td><td>Red</td><td>0xc</td><td>Light Red</td></tr>
+<tr><td>0x5</td><td>Magenta</td><td>0xd</td><td>Pink</td></tr>
+<tr><td>0x6</td><td>Brown</td><td>0xe</td><td>Yellow</td></tr>
+<tr><td>0x7</td><td>Light Gray</td><td>0xf</td><td>White</td></tr>
+</tbody></table>
+<p>Bit 4 is the <em>bright bit</em>, which turns, for example, blue into light blue. For the background color, this bit is repurposed as the blink bit.</p>
+<p>The VGA text buffer is accessible via <a href="https://en.wikipedia.org/wiki/Memory-mapped_I/O">memory-mapped I/O</a> to the address <code>0xb8000</code>. This means that reads and writes to that address don’t access the RAM but directly access the text buffer on the VGA hardware. This means we can read and write it through normal memory operations to that address.</p>
+<p>Note that memory-mapped hardware might not support all normal RAM operations. For example, a device could only support byte-wise reads and return junk when a <code>u64</code> is read. Fortunately, the text buffer <a href="https://web.stanford.edu/class/cs140/projects/pintos/specs/freevga/vga/vgamem.htm#manip">supports normal reads and writes</a>, so we don’t have to treat it in a special way.</p>
+<h2 id="a-rust-module"><a class="zola-anchor" href="index.html#a-rust-module" aria-label="Anchor link for: a-rust-module">🔗</a>A Rust Module</h2>
+<p>Now that we know how the VGA buffer works, we can create a Rust module to handle printing:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span style="color:#569cd6;">mod </span><span>vga_buffer;
+</span></code></pre>
+<p>For the content of this module, we create a new <code>src/vga_buffer.rs</code> file. All of the code below goes into our new module (unless specified otherwise).</p>
+<h3 id="colors"><a class="zola-anchor" href="index.html#colors" aria-label="Anchor link for: colors">🔗</a>Colors</h3>
+<p>First, we represent the different colors using an enum:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[allow(dead_code)]
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(u8)]
+</span><span style="color:#569cd6;">pub enum </span><span>Color {
+</span><span>    Black = </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    Blue = </span><span style="color:#b5cea8;">1</span><span>,
+</span><span>    Green = </span><span style="color:#b5cea8;">2</span><span>,
+</span><span>    Cyan = </span><span style="color:#b5cea8;">3</span><span>,
+</span><span>    Red = </span><span style="color:#b5cea8;">4</span><span>,
+</span><span>    Magenta = </span><span style="color:#b5cea8;">5</span><span>,
+</span><span>    Brown = </span><span style="color:#b5cea8;">6</span><span>,
+</span><span>    LightGray = </span><span style="color:#b5cea8;">7</span><span>,
+</span><span>    DarkGray = </span><span style="color:#b5cea8;">8</span><span>,
+</span><span>    LightBlue = </span><span style="color:#b5cea8;">9</span><span>,
+</span><span>    LightGreen = </span><span style="color:#b5cea8;">10</span><span>,
+</span><span>    LightCyan = </span><span style="color:#b5cea8;">11</span><span>,
+</span><span>    LightRed = </span><span style="color:#b5cea8;">12</span><span>,
+</span><span>    Pink = </span><span style="color:#b5cea8;">13</span><span>,
+</span><span>    Yellow = </span><span style="color:#b5cea8;">14</span><span>,
+</span><span>    White = </span><span style="color:#b5cea8;">15</span><span>,
+</span><span>}
+</span></code></pre>
+<p>We use a <a href="https://doc.rust-lang.org/rust-by-example/custom_types/enum/c_like.html">C-like enum</a> here to explicitly specify the number for each color. Because of the <code>repr(u8)</code> attribute, each enum variant is stored as a <code>u8</code>. Actually 4 bits would be sufficient, but Rust doesn’t have a <code>u4</code> type.</p>
+<p>Normally the compiler would issue a warning for each unused variant. By using the <code>#[allow(dead_code)]</code> attribute, we disable these warnings for the <code>Color</code> enum.</p>
+<p>By <a href="https://doc.rust-lang.org/rust-by-example/trait/derive.html">deriving</a> the <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Copy.html"><code>Copy</code></a>, <a href="https://doc.rust-lang.org/nightly/core/clone/trait.Clone.html"><code>Clone</code></a>, <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Debug.html"><code>Debug</code></a>, <a href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html"><code>PartialEq</code></a>, and <a href="https://doc.rust-lang.org/nightly/core/cmp/trait.Eq.html"><code>Eq</code></a> traits, we enable <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/ownership.html#copy-types">copy semantics</a> for the type and make it printable and comparable.</p>
+<p>To represent a full color code that specifies foreground and background color, we create a <a href="https://doc.rust-lang.org/rust-by-example/generics/new_types.html">newtype</a> on top of <code>u8</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>ColorCode(</span><span style="color:#569cd6;">u8</span><span>);
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>ColorCode {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new(foreground: Color, background: Color) -&gt; ColorCode {
+</span><span>        ColorCode((background </span><span style="color:#569cd6;">as u8</span><span>) &lt;&lt; </span><span style="color:#b5cea8;">4 </span><span style="color:#569cd6;">| </span><span>(foreground </span><span style="color:#569cd6;">as u8</span><span>))
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>ColorCode</code> struct contains the full color byte, containing foreground and background color. Like before, we derive the <code>Copy</code> and <code>Debug</code> traits for it. To ensure that the <code>ColorCode</code> has the exact same data layout as a <code>u8</code>, we use the <a href="https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent"><code>repr(transparent)</code></a> attribute.</p>
+<h3 id="text-buffer"><a class="zola-anchor" href="index.html#text-buffer" aria-label="Anchor link for: text-buffer">🔗</a>Text Buffer</h3>
+<p>Now we can add structures to represent a screen character and the text buffer:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+</span><span>#[repr(C)]
+</span><span style="color:#569cd6;">struct </span><span>ScreenChar {
+</span><span>    ascii_character: </span><span style="color:#569cd6;">u8</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>}
+</span><span>
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_HEIGHT</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">25</span><span>;
+</span><span style="color:#569cd6;">const </span><span style="color:#b4cea8;">BUFFER_WIDTH</span><span>: </span><span style="color:#569cd6;">usize </span><span>= </span><span style="color:#b5cea8;">80</span><span>;
+</span><span>
+</span><span>#[repr(transparent)]
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>Since the field ordering in default structs is undefined in Rust, we need the <a href="https://doc.rust-lang.org/nightly/nomicon/other-reprs.html#reprc"><code>repr(C)</code></a> attribute. It guarantees that the struct’s fields are laid out exactly like in a C struct and thus guarantees the correct field ordering. For the <code>Buffer</code> struct, we use <a href="https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent"><code>repr(transparent)</code></a> again to ensure that it has the same memory layout as its single field.</p>
+<p>To actually write to screen, we now create a writer type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub struct </span><span>Writer {
+</span><span>    column_position: </span><span style="color:#569cd6;">usize</span><span>,
+</span><span>    color_code: ColorCode,
+</span><span>    buffer: </span><span style="color:#569cd6;">&amp;&#39;static mut</span><span> Buffer,
+</span><span>}
+</span></code></pre>
+<p>The writer will always write to the last line and shift lines up when a line is full (or on <code>\n</code>). The <code>column_position</code> field keeps track of the current position in the last row. The current foreground and background colors are specified by <code>color_code</code> and a reference to the VGA buffer is stored in <code>buffer</code>. Note that we need an <a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-annotation-syntax">explicit lifetime</a> here to tell the compiler how long the reference is valid. The <a href="https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#the-static-lifetime"><code>'static</code></a> lifetime specifies that the reference is valid for the whole program run time (which is true for the VGA text buffer).</p>
+<h3 id="printing"><a class="zola-anchor" href="index.html#printing" aria-label="Anchor link for: printing">🔗</a>Printing</h3>
+<p>Now we can use the <code>Writer</code> to modify the buffer’s characters. First we create a method to write a single ASCII byte:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">if </span><span>self.column_position &gt;= </span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                    self.new_line();
+</span><span>                }
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> row = </span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>                </span><span style="color:#569cd6;">let</span><span> col = self.column_position;
+</span><span>
+</span><span>                </span><span style="color:#569cd6;">let</span><span> color_code = self.color_code;
+</span><span>                self.buffer.chars[row][col] = ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code,
+</span><span>                };
+</span><span>                self.column_position += </span><span style="color:#b5cea8;">1</span><span>;
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>If the byte is the <a href="https://en.wikipedia.org/wiki/Newline">newline</a> byte <code>\n</code>, the writer does not print anything. Instead, it calls a <code>new_line</code> method, which we’ll implement later. Other bytes get printed to the screen in the second <code>match</code> case.</p>
+<p>When printing a byte, the writer checks if the current line is full. In that case, a <code>new_line</code> call is used to wrap the line. Then it writes a new <code>ScreenChar</code> to the buffer at the current position. Finally, the current column position is advanced.</p>
+<p>To print whole strings, we can convert them to bytes and print them one-by-one:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_string(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> byte </span><span style="color:#569cd6;">in</span><span> s.bytes() {
+</span><span>            </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>                </span><span style="color:#608b4e;">// printable ASCII byte or newline
+</span><span>                </span><span style="color:#b5cea8;">0x20</span><span style="color:#569cd6;">..</span><span>=</span><span style="color:#b5cea8;">0x7e </span><span style="color:#569cd6;">| b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.write_byte(byte),
+</span><span>                </span><span style="color:#608b4e;">// not part of printable ASCII range
+</span><span>                </span><span style="color:#569cd6;">_ =&gt; </span><span>self.write_byte(</span><span style="color:#b5cea8;">0xfe</span><span>),
+</span><span>            }
+</span><span>
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The VGA text buffer only supports ASCII and the additional bytes of <a href="https://en.wikipedia.org/wiki/Code_page_437">code page 437</a>. Rust strings are <a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a> by default, so they might contain bytes that are not supported by the VGA text buffer. We use a <code>match</code> to differentiate printable ASCII bytes (a newline or anything in between a space character and a <code>~</code> character) and unprintable bytes. For unprintable bytes, we print a <code>■</code> character, which has the hex code <code>0xfe</code> on the VGA hardware.</p>
+<h4 id="try-it-out"><a class="zola-anchor" href="index.html#try-it-out" aria-label="Anchor link for: try-it-out">🔗</a>Try it out!</h4>
+<p>To write some characters to the screen, you can create a temporary function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello &quot;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;Wörld!&quot;</span><span>);
+</span><span>}
+</span></code></pre>
+<p>It first creates a new Writer that points to the VGA buffer at <code>0xb8000</code>. The syntax for this might seem a bit strange: First, we cast the integer <code>0xb8000</code> as a mutable <a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#dereferencing-a-raw-pointer">raw pointer</a>. Then we convert it to a mutable reference by dereferencing it (through <code>*</code>) and immediately borrowing it again (through <code>&amp;mut</code>). This conversion requires an <a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html"><code>unsafe</code> block</a>, since the compiler can’t guarantee that the raw pointer is valid.</p>
+<p>Then it writes the byte <code>b'H'</code> to it. The <code>b</code> prefix creates a <a href="https://doc.rust-lang.org/reference/tokens.html#byte-literals">byte literal</a>, which represents an ASCII character. By writing the strings <code>&quot;ello &quot;</code> and <code>&quot;Wörld!&quot;</code>, we test our <code>write_string</code> method and the handling of unprintable characters. To see the output, we need to call the <code>print_something</code> function from our <code>_start</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    vga_buffer::print_something();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>When we run our project now, a <code>Hello W■■rld!</code> should be printed in the <em>lower</em> left corner of the screen in yellow:</p>
+<p><img src="vga-hello.png" alt="QEMU output with a yellow Hello W■■rld! in the lower left corner" /></p>
+<p>Notice that the <code>ö</code> is printed as two <code>■</code> characters. That’s because <code>ö</code> is represented by two bytes in <a href="https://www.fileformat.info/info/unicode/utf8.htm">UTF-8</a>, which both don’t fall into the printable ASCII range. In fact, this is a fundamental property of UTF-8: the individual bytes of multi-byte values are never valid ASCII.</p>
+<h3 id="volatile"><a class="zola-anchor" href="index.html#volatile" aria-label="Anchor link for: volatile">🔗</a>Volatile</h3>
+<p>We just saw that our message was printed correctly. However, it might not work with future Rust compilers that optimize more aggressively.</p>
+<p>The problem is that we only write to the <code>Buffer</code> and never read from it again. The compiler doesn’t know that we really access VGA buffer memory (instead of normal RAM) and knows nothing about the side effect that some characters appear on the screen. So it might decide that these writes are unnecessary and can be omitted. To avoid this erroneous optimization, we need to specify these writes as <em><a href="https://en.wikipedia.org/wiki/Volatile_(computer_programming)">volatile</a></em>. This tells the compiler that the write has side effects and should not be optimized away.</p>
+<p>In order to use volatile writes for the VGA buffer, we use the <a href="https://docs.rs/volatile">volatile</a> library. This <em>crate</em> (this is how packages are called in the Rust world) provides a <code>Volatile</code> wrapper type with <code>read</code> and <code>write</code> methods. These methods internally use the <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.read_volatile.html">read_volatile</a> and <a href="https://doc.rust-lang.org/nightly/core/ptr/fn.write_volatile.html">write_volatile</a> functions of the core library and thus guarantee that the reads/writes are not optimized away.</p>
+<p>We can add a dependency on the <code>volatile</code> crate by adding it to the <code>dependencies</code> section of our <code>Cargo.toml</code>:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">volatile </span><span>= </span><span style="color:#d69d85;">&quot;0.2.6&quot;
+</span></code></pre>
+<p>Make sure to specify <code>volatile</code> version <code>0.2.6</code>. Newer versions of the crate are not compatible with this post.
+<code>0.2.6</code> is the <a href="https://semver.org/">semantic</a> version number. For more information, see the <a href="https://doc.crates.io/specifying-dependencies.html">Specifying Dependencies</a> guide of the cargo documentation.</p>
+<p>Let’s use it to make writes to the VGA buffer volatile. We update our <code>Buffer</code> type as follows:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>volatile::Volatile;
+</span><span>
+</span><span style="color:#569cd6;">struct </span><span>Buffer {
+</span><span>    chars: [[Volatile&lt;ScreenChar&gt;; BUFFER_WIDTH]; BUFFER_HEIGHT],
+</span><span>}
+</span></code></pre>
+<p>Instead of a <code>ScreenChar</code>, we’re now using a <code>Volatile&lt;ScreenChar&gt;</code>. (The <code>Volatile</code> type is <a href="https://doc.rust-lang.org/book/ch10-01-syntax.html">generic</a> and can wrap (almost) any type). This ensures that we can’t accidentally write to it “normally”. Instead, we have to use the <code>write</code> method now.</p>
+<p>This means that we have to update our <code>Writer::write_byte</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">pub fn </span><span>write_byte(</span><span style="color:#569cd6;">&amp;mut </span><span>self, byte: </span><span style="color:#569cd6;">u8</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">match</span><span> byte {
+</span><span>            </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&#39; </span><span style="color:#569cd6;">=&gt; </span><span>self.new_line(),
+</span><span>            byte </span><span style="color:#569cd6;">=&gt; </span><span>{
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>
+</span><span>                self.buffer.chars[row][col].write(ScreenChar {
+</span><span>                    ascii_character: byte,
+</span><span>                    color_code,
+</span><span>                });
+</span><span>                </span><span style="color:#569cd6;">...
+</span><span>            }
+</span><span>        }
+</span><span>    }
+</span><span>    </span><span style="color:#569cd6;">...
+</span><span>}
+</span></code></pre>
+<p>Instead of a typical assignment using <code>=</code>, we’re now using the <code>write</code> method. Now we can guarantee that the compiler will never optimize away this write.</p>
+<h3 id="formatting-macros"><a class="zola-anchor" href="index.html#formatting-macros" aria-label="Anchor link for: formatting-macros">🔗</a>Formatting Macros</h3>
+<p>It would be nice to support Rust’s formatting macros, too. That way, we can easily print different types, like integers or floats. To support them, we need to implement the <a href="https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html"><code>core::fmt::Write</code></a> trait. The only required method of this trait is <code>write_str</code>, which looks quite similar to our <code>write_string</code> method, just with a <code>fmt::Result</code> return type:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>core::fmt;
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>fmt::Write </span><span style="color:#569cd6;">for </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>write_str(</span><span style="color:#569cd6;">&amp;mut </span><span>self, s: </span><span style="color:#569cd6;">&amp;str</span><span>) -&gt; fmt::Result {
+</span><span>        self.write_string(s);
+</span><span>        Ok(())
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>The <code>Ok(())</code> is just a <code>Ok</code> Result containing the <code>()</code> type.</p>
+<p>Now we can use Rust’s built-in <code>write!</code>/<code>writeln!</code> formatting macros:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub fn </span><span>print_something() {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#569cd6;">let mut</span><span> writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>
+</span><span>    writer.write_byte(</span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39;H&#39;</span><span>);
+</span><span>    writer.write_string(</span><span style="color:#d69d85;">&quot;ello! &quot;</span><span>);
+</span><span>    write!(writer, </span><span style="color:#d69d85;">&quot;The numbers are </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;"> and </span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.0</span><span>/</span><span style="color:#b5cea8;">3.0</span><span>).unwrap();
+</span><span>}
+</span></code></pre>
+<p>Now you should see a <code>Hello! The numbers are 42 and 0.3333333333333333</code> at the bottom of the screen. The <code>write!</code> call returns a <code>Result</code> which causes a warning if not used, so we call the <a href="https://doc.rust-lang.org/core/result/enum.Result.html#method.unwrap"><code>unwrap</code></a> function on it, which panics if an error occurs. This isn’t a problem in our case, since writes to the VGA buffer never fail.</p>
+<h3 id="newlines"><a class="zola-anchor" href="index.html#newlines" aria-label="Anchor link for: newlines">🔗</a>Newlines</h3>
+<p>Right now, we just ignore newlines and characters that don’t fit into the line anymore. Instead, we want to move every character one line up (the top line gets deleted) and start at the beginning of the last line again. To do this, we add an implementation for the <code>new_line</code> method of <code>Writer</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>new_line(</span><span style="color:#569cd6;">&amp;mut </span><span>self) {
+</span><span>        </span><span style="color:#569cd6;">for</span><span> row </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">1</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>{
+</span><span>            </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>                </span><span style="color:#569cd6;">let</span><span> character = self.buffer.chars[row][col].read();
+</span><span>                self.buffer.chars[row - </span><span style="color:#b5cea8;">1</span><span>][col].write(character);
+</span><span>            }
+</span><span>        }
+</span><span>        self.clear_row(</span><span style="color:#b4cea8;">BUFFER_HEIGHT </span><span>- </span><span style="color:#b5cea8;">1</span><span>);
+</span><span>        self.column_position = </span><span style="color:#b5cea8;">0</span><span>;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {</span><span style="color:#608b4e;">/* TODO */</span><span>}
+</span><span>}
+</span></code></pre>
+<p>We iterate over all the screen characters and move each character one row up. Note that the upper bound of the range notation (<code>..</code>) is exclusive. We also omit the 0th row (the first range starts at <code>1</code>) because it’s the row that is shifted off screen.</p>
+<p>To finish the newline code, we add the <code>clear_row</code> method:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">impl </span><span>Writer {
+</span><span>    </span><span style="color:#569cd6;">fn </span><span>clear_row(</span><span style="color:#569cd6;">&amp;mut </span><span>self, row: </span><span style="color:#569cd6;">usize</span><span>) {
+</span><span>        </span><span style="color:#569cd6;">let</span><span> blank = ScreenChar {
+</span><span>            ascii_character: </span><span style="color:#569cd6;">b</span><span style="color:#d69d85;">&#39; &#39;</span><span>,
+</span><span>            color_code: self.color_code,
+</span><span>        };
+</span><span>        </span><span style="color:#569cd6;">for</span><span> col </span><span style="color:#569cd6;">in </span><span style="color:#b5cea8;">0</span><span style="color:#569cd6;">..</span><span style="color:#b4cea8;">BUFFER_WIDTH </span><span>{
+</span><span>            self.buffer.chars[row][col].write(blank);
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>This method clears a row by overwriting all of its characters with a space character.</p>
+<h2 id="a-global-interface"><a class="zola-anchor" href="index.html#a-global-interface" aria-label="Anchor link for: a-global-interface">🔗</a>A Global Interface</h2>
+<p>To provide a global writer that can be used as an interface from other modules without carrying a <code>Writer</code> instance around, we try to create a static <code>WRITER</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">pub static </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>    column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>    color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>    buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>};
+</span></code></pre>
+<p>However, if we try to compile it now, the following errors occur:</p>
+<pre style="background-color:#1e1e1e;color:#dcdcdc;"><code><span>error[E0015]: calls in statics are limited to constant functions, tuple structs and tuple variants
+</span><span> --&gt; src/vga_buffer.rs:7:17
+</span><span>  |
+</span><span>7 |     color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>  |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+</span><span>
+</span><span>error[E0396]: raw pointers cannot be dereferenced in statics
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer in constant
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span> --&gt; src/vga_buffer.rs:8:22
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span><span>
+</span><span>error[E0017]: references in statics may only refer to immutable values
+</span><span> --&gt; src/vga_buffer.rs:8:13
+</span><span>  |
+</span><span>8 |     buffer: unsafe { &amp;mut *(0xb8000 as *mut Buffer) },
+</span><span>  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ statics require immutable values
+</span></code></pre>
+<p>To understand what’s happening here, we need to know that statics are initialized at compile time, in contrast to normal variables that are initialized at run time. The component of the Rust compiler that evaluates such initialization expressions is called the “<a href="https://rustc-dev-guide.rust-lang.org/const-eval.html">const evaluator</a>”. Its functionality is still limited, but there is ongoing work to expand it, for example in the “<a href="https://github.com/rust-lang/rfcs/pull/2345">Allow panicking in constants</a>” RFC.</p>
+<p>The issue with <code>ColorCode::new</code> would be solvable by using <a href="https://doc.rust-lang.org/reference/const_eval.html#const-functions"><code>const</code> functions</a>, but the fundamental problem here is that Rust’s const evaluator is not able to convert raw pointers to references at compile time. Maybe it will work someday, but until then, we have to find another solution.</p>
+<h3 id="lazy-statics"><a class="zola-anchor" href="index.html#lazy-statics" aria-label="Anchor link for: lazy-statics">🔗</a>Lazy Statics</h3>
+<p>The one-time initialization of statics with non-const functions is a common problem in Rust. Fortunately, there already exists a good solution in a crate named <a href="https://docs.rs/lazy_static/1.0.1/lazy_static/">lazy_static</a>. This crate provides a <code>lazy_static!</code> macro that defines a lazily initialized <code>static</code>. Instead of computing its value at compile time, the <code>static</code> lazily initializes itself when accessed for the first time. Thus, the initialization happens at runtime, so arbitrarily complex initialization code is possible.</p>
+<p>Let’s add the <code>lazy_static</code> crate to our project:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>
+</span><span>[</span><span style="color:#808080;">dependencies.lazy_static</span><span>]
+</span><span style="color:#569cd6;">version </span><span>= </span><span style="color:#d69d85;">&quot;1.0&quot;
+</span><span style="color:#569cd6;">features </span><span>= [</span><span style="color:#d69d85;">&quot;spin_no_std&quot;</span><span>]
+</span></code></pre>
+<p>We need the <code>spin_no_std</code> feature, since we don’t link the standard library.</p>
+<p>With <code>lazy_static</code>, we can define our static <code>WRITER</code> without problems:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>lazy_static::lazy_static;
+</span><span>
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Writer = Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    };
+</span><span>}
+</span></code></pre>
+<p>However, this <code>WRITER</code> is pretty useless since it is immutable. This means that we can’t write anything to it (since all the write methods take <code>&amp;mut self</code>). One possible solution would be to use a <a href="https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#accessing-or-modifying-a-mutable-static-variable">mutable static</a>. But then every read and write to it would be unsafe since it could easily introduce data races and other bad things. Using <code>static mut</code> is highly discouraged. There were even proposals to <a href="https://internals.rust-lang.org/t/pre-rfc-remove-static-mut/1437">remove it</a>. But what are the alternatives? We could try to use an immutable static with a cell type like <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html#keeping-track-of-borrows-at-runtime-with-refcellt">RefCell</a> or even <a href="https://doc.rust-lang.org/nightly/core/cell/struct.UnsafeCell.html">UnsafeCell</a> that provides <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">interior mutability</a>. But these types aren’t <a href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html">Sync</a> (with good reason), so we can’t use them in statics.</p>
+<h3 id="spinlocks"><a class="zola-anchor" href="index.html#spinlocks" aria-label="Anchor link for: spinlocks">🔗</a>Spinlocks</h3>
+<p>To get synchronized interior mutability, users of the standard library can use <a href="https://doc.rust-lang.org/nightly/std/sync/struct.Mutex.html">Mutex</a>. It provides mutual exclusion by blocking threads when the resource is already locked. But our basic kernel does not have any blocking support or even a concept of threads, so we can’t use it either. However, there is a really basic kind of mutex in computer science that requires no operating system features: the <a href="https://en.wikipedia.org/wiki/Spinlock">spinlock</a>. Instead of blocking, the threads simply try to lock it again and again in a tight loop, thus burning CPU time until the mutex is free again.</p>
+<p>To use a spinning mutex, we can add the <a href="https://crates.io/crates/spin">spin crate</a> as a dependency:</p>
+<pre data-lang="toml" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-toml "><code class="language-toml" data-lang="toml"><span style="color:#608b4e;"># in Cargo.toml
+</span><span>[</span><span style="color:#808080;">dependencies</span><span>]
+</span><span style="color:#569cd6;">spin </span><span>= </span><span style="color:#d69d85;">&quot;0.5.2&quot;
+</span></code></pre>
+<p>Then we can use the spinning mutex to add safe <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">interior mutability</a> to our static <code>WRITER</code>:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span style="color:#569cd6;">use </span><span>spin::Mutex;
+</span><span style="color:#569cd6;">...
+</span><span>lazy_static! {
+</span><span>    </span><span style="color:#569cd6;">pub static ref </span><span style="color:#b4cea8;">WRITER</span><span>: Mutex&lt;Writer&gt; = Mutex::new(Writer {
+</span><span>        column_position: </span><span style="color:#b5cea8;">0</span><span>,
+</span><span>        color_code: ColorCode::new(Color::Yellow, Color::Black),
+</span><span>        buffer: </span><span style="color:#569cd6;">unsafe </span><span>{ </span><span style="color:#569cd6;">&amp;mut </span><span>*(</span><span style="color:#b5cea8;">0xb8000 </span><span style="color:#569cd6;">as *mut</span><span> Buffer) },
+</span><span>    });
+</span><span>}
+</span></code></pre>
+<p>Now we can delete the <code>print_something</code> function and print directly from our <code>_start</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    vga_buffer::</span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_str(</span><span style="color:#d69d85;">&quot;Hello again&quot;</span><span>).unwrap();
+</span><span>    write!(vga_buffer::WRITER.lock(), </span><span style="color:#d69d85;">&quot;, some numbers: </span><span style="color:#b4cea8;">{} {}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#b5cea8;">42</span><span>, </span><span style="color:#b5cea8;">1.337</span><span>).unwrap();
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>We need to import the <code>fmt::Write</code> trait in order to be able to use its functions.</p>
+<h3 id="safety"><a class="zola-anchor" href="index.html#safety" aria-label="Anchor link for: safety">🔗</a>Safety</h3>
+<p>Note that we only have a single unsafe block in our code, which is needed to create a <code>Buffer</code> reference pointing to <code>0xb8000</code>. Afterwards, all operations are safe. Rust uses bounds checking for array accesses by default, so we can’t accidentally write outside the buffer. Thus, we encoded the required conditions in the type system and are able to provide a safe interface to the outside.</p>
+<h3 id="a-println-macro"><a class="zola-anchor" href="index.html#a-println-macro" aria-label="Anchor link for: a-println-macro">🔗</a>A println Macro</h3>
+<p>Now that we have a global writer, we can add a <code>println</code> macro that can be used from anywhere in the codebase. Rust’s <a href="https://doc.rust-lang.org/nightly/book/ch19-06-macros.html#declarative-macros-with-macro_rules-for-general-metaprogramming">macro syntax</a> is a bit strange, so we won’t try to write a macro from scratch. Instead, we look at the source of the <a href="https://doc.rust-lang.org/nightly/std/macro.println!.html"><code>println!</code> macro</a> in the standard library:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>(print!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>Macros are defined through one or more rules, similar to <code>match</code> arms. The <code>println</code> macro has two rules: The first rule is for invocations without arguments, e.g., <code>println!()</code>, which is expanded to <code>print!(&quot;\n&quot;)</code> and thus just prints a newline. The second rule is for invocations with parameters such as <code>println!(&quot;Hello&quot;)</code> or <code>println!(&quot;Number: {}&quot;, 4)</code>. It is also expanded to an invocation of the <code>print!</code> macro, passing all arguments and an additional newline <code>\n</code> at the end.</p>
+<p>The <code>#[macro_export]</code> attribute makes the macro available to the whole crate (not just the module it is defined in) and external crates. It also places the macro at the crate root, which means we have to import the macro through <code>use std::println</code> instead of <code>std::macros::println</code>.</p>
+<p>The <a href="https://doc.rust-lang.org/nightly/std/macro.print!.html"><code>print!</code> macro</a> is defined as:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::io::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span></code></pre>
+<p>The macro expands to a call of the <a href="https://github.com/rust-lang/rust/blob/29f5c699b11a6a148f097f82eaa05202f8799bbc/src/libstd/io/stdio.rs#L698"><code>_print</code> function</a> in the <code>io</code> module. The <a href="https://doc.rust-lang.org/1.30.0/book/first-edition/macros.html#the-variable-crate"><code>$crate</code> variable</a> ensures that the macro also works from outside the <code>std</code> crate by expanding to <code>std</code> when it’s used in other crates.</p>
+<p>The <a href="https://doc.rust-lang.org/nightly/std/macro.format_args.html"><code>format_args</code> macro</a> builds a <a href="https://doc.rust-lang.org/nightly/core/fmt/struct.Arguments.html">fmt::Arguments</a> type from the passed arguments, which is passed to <code>_print</code>. The <a href="https://github.com/rust-lang/rust/blob/29f5c699b11a6a148f097f82eaa05202f8799bbc/src/libstd/io/stdio.rs#L698"><code>_print</code> function</a> of libstd calls <code>print_to</code>, which is rather complicated because it supports different <code>Stdout</code> devices. We don’t need that complexity since we just want to print to the VGA buffer.</p>
+<p>To print to the VGA buffer, we just copy the <code>println!</code> and <code>print!</code> macros, but modify them to use our own <code>_print</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/vga_buffer.rs
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! print {
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::vga_buffer::_print(format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[macro_export]
+</span><span>macro_rules! println {
+</span><span>    () </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>));
+</span><span>    (</span><span style="color:#569cd6;">$</span><span>($arg:</span><span style="color:#569cd6;">tt</span><span>)</span><span style="color:#569cd6;">*</span><span>) </span><span style="color:#569cd6;">=&gt; </span><span>($crate::print</span><span style="color:#569cd6;">!</span><span>(</span><span style="color:#d69d85;">&quot;{}</span><span style="color:#e3bbab;">\n</span><span style="color:#d69d85;">&quot;</span><span>, format_args!(</span><span style="color:#569cd6;">$</span><span>($arg)*)));
+</span><span>}
+</span><span>
+</span><span>#[doc(hidden)]
+</span><span style="color:#569cd6;">pub fn </span><span>_print(args: fmt::Arguments) {
+</span><span>    </span><span style="color:#569cd6;">use </span><span>core::fmt::Write;
+</span><span>    </span><span style="color:#b4cea8;">WRITER</span><span>.lock().write_fmt(args).unwrap();
+</span><span>}
+</span></code></pre>
+<p>One thing that we changed from the original <code>println</code> definition is that we prefixed the invocations of the <code>print!</code> macro with <code>$crate</code> too. This ensures that we don’t need to import the <code>print!</code> macro too if we only want to use <code>println</code>.</p>
+<p>Like in the standard library, we add the <code>#[macro_export]</code> attribute to both macros to make them available everywhere in our crate. Note that this places the macros in the root namespace of the crate, so importing them via <code>use crate::vga_buffer::println</code> does not work. Instead, we have to do <code>use crate::println</code>.</p>
+<p>The <code>_print</code> function locks our static <code>WRITER</code> and calls the <code>write_fmt</code> method on it. This method is from the <code>Write</code> trait, which we need to import. The additional <code>unwrap()</code> at the end panics if printing isn’t successful. But since we always return <code>Ok</code> in <code>write_str</code>, that should not happen.</p>
+<p>Since the macros need to be able to call <code>_print</code> from outside of the module, the function needs to be public. However, since we consider this a private implementation detail, we add the <a href="https://doc.rust-lang.org/nightly/rustdoc/write-documentation/the-doc-attribute.html#hidden"><code>doc(hidden)</code> attribute</a> to hide it from the generated documentation.</p>
+<h3 id="hello-world-using-println"><a class="zola-anchor" href="index.html#hello-world-using-println" aria-label="Anchor link for: hello-world-using-println">🔗</a>Hello World using <code>println</code></h3>
+<p>Now we can use <code>println</code> in our <code>_start</code> function:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in src/main.rs
+</span><span>
+</span><span>#[no_mangle]
+</span><span style="color:#569cd6;">pub extern </span><span style="color:#d69d85;">&quot;C&quot; </span><span style="color:#569cd6;">fn </span><span>_start() {
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;Hello World</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, </span><span style="color:#d69d85;">&quot;!&quot;</span><span>);
+</span><span>
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>Note that we don’t have to import the macro in the main function, because it already lives in the root namespace.</p>
+<p>As expected, we now see a <em>“Hello World!”</em> on the screen:</p>
+<p><img src="vga-hello-world.png" alt="QEMU printing “Hello World!”" /></p>
+<h3 id="printing-panic-messages"><a class="zola-anchor" href="index.html#printing-panic-messages" aria-label="Anchor link for: printing-panic-messages">🔗</a>Printing Panic Messages</h3>
+<p>Now that we have a <code>println</code> macro, we can use it in our panic function to print the panic message and the location of the panic:</p>
+<pre data-lang="rust" style="background-color:#1e1e1e;color:#dcdcdc;" class="language-rust "><code class="language-rust" data-lang="rust"><span style="color:#608b4e;">// in main.rs
+</span><span>
+</span><span style="color:#608b4e;">/// This function is called on panic.
+</span><span>#[panic_handler]
+</span><span style="color:#569cd6;">fn </span><span>panic(info: </span><span style="color:#569cd6;">&amp;</span><span>PanicInfo) -&gt; </span><span style="color:#569cd6;">! </span><span>{
+</span><span>    println!(</span><span style="color:#d69d85;">&quot;</span><span style="color:#b4cea8;">{}</span><span style="color:#d69d85;">&quot;</span><span>, info);
+</span><span>    </span><span style="color:#569cd6;">loop </span><span>{}
+</span><span>}
+</span></code></pre>
+<p>When we now insert <code>panic!(&quot;Some panic message&quot;);</code> in our <code>_start</code> function, we get the following output:</p>
+<p><img src="vga-panic.png" alt="QEMU printing “panicked at ‘Some panic message’, src/main.rs:28:5" /></p>
+<p>So we know not only that a panic has occurred, but also the panic message and where in the code it happened.</p>
+<h2 id="summary"><a class="zola-anchor" href="index.html#summary" aria-label="Anchor link for: summary">🔗</a>Summary</h2>
+<p>In this post, we learned about the structure of the VGA text buffer and how it can be written through the memory mapping at address <code>0xb8000</code>. We created a Rust module that encapsulates the unsafety of writing to this memory-mapped buffer and presents a safe and convenient interface to the outside.</p>
+<p>Thanks to cargo, we also saw how easy it is to add dependencies on third-party libraries. The two dependencies that we added, <code>lazy_static</code> and <code>spin</code>, are very useful in OS development and we will use them in more places in future posts.</p>
+<h2 id="what-s-next"><a class="zola-anchor" href="index.html#what-s-next" aria-label="Anchor link for: what-s-next">🔗</a>What’s next?</h2>
+<p>The next post explains how to set up Rust’s built-in unit test framework. We will then create some basic unit tests for the VGA buffer module from this post.</p>
+
+    </div>
+
+    <div class="post-footer-support">
+        <h2>Support Me</h2>
+        
+<p>
+    Creating and <a href="../status-update/index.html">maintaining</a> this blog and the associated libraries is a lot of work, but I really enjoy doing it. By supporting me, you allow me to invest more time in new content, new features, and continuous maintenance.
+</p>
+<p>
+    The best way to support me is to <a href="https://github.com/sponsors/phil-opp"><em>sponsor me on GitHub</em></a>, since they don't charge any fees. If you prefer other platforms, I also have <a href="https://www.patreon.com/phil_opp"><em>Patreon</em></a> and <a href="https://donorbox.org/phil-opp"><em>Donorbox</em></a> accounts. The latter is the most flexible as it supports multiple currencies and one-time contributions.
+</p>
+<p>
+    Thank you!
+</p>
+
+    </div>
+
+    <hr>
+    <div class="PageNavigation">
+        
+            <a class="prev" href="../minimal-rust-kernel/index.html">&laquo; A Minimal Rust Kernel</a>
+        
+        
+            <a class="next" href="../testing/index.html">Testing &raquo;</a>
+        
+    </div>
+
+    <hr>
+    <section>
+        <h2 id="comments" class="">Comments</h2>
+
+        
+            
+        
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22VGA%20Text%20Mode%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="VGA Text Mode"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22VGA%20Text%20Mode%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+    <aside class="page-aside-right">
+        <div class="block" id="language-selector">
+            <h2>Other Languages</h2>
+            
+            <ul><li data-lang-switch-to="zh-CN" class=""><a href="../zh-CN/vga-text-mode/index.html">
+                        Chinese (simplified)
+                    </a></li><li data-lang-switch-to="ja" class=""><a href="../ja/vga-text-mode/index.html">
+                        Japanese
+                    </a></li><li data-lang-switch-to="fa" class=""><a href="../fa/vga-text-mode/index.html">
+                        Persian
+                    </a></li><li data-lang-switch-to="ko" class=""><a href="../ko/vga-text-mode/index.html">
+                        Korean
+                    </a></li></ul>
+        </div>
+    </aside>
+
+</main>
+        </div>
+
+        <div></div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>

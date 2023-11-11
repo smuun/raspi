@@ -1,0 +1,179 @@
+<!doctype html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="This blog series creates a small operating system in the Rust programming language. Each post is a small tutorial and includes all needed code.">
+    <meta name="author" content="Philipp Oppermann">
+
+    
+        <link rel="canonical" href="index.html" />
+    
+    <link href="../../css/edition-2/main.css" rel="stylesheet">
+
+    <link rel="alternate" type="application/rss+xml" title="RSS feed for os.phil-opp.com" href="../../rss.xml" />
+
+    <script>
+        let theme = localStorage.getItem("theme");
+        if (theme != null) {
+            document.documentElement.setAttribute("data-theme", theme);
+        }
+    </script>
+
+    <script async src="../../js/edition-2/main.js"></script>
+
+    <title>Updates in March 2020 | Writing an OS in Rust</title>
+</head>
+
+<body>
+    <div class="container content">
+        <header class="masthead">
+            <div style="position:relative">
+                <h2 class="masthead-title">
+                    <a href="../../index.html" title="Home">Writing an OS in Rust</a>
+                </h2>
+                <p><small>Philipp&nbsp;Oppermann's&nbsp;blog</small></p>
+                
+            </div>
+        </header>
+
+        <div class="theme-switch">
+            <div class="light-switch" onclick="toggle_lights()" title="Switch between light and dark theme"></div>
+            <div class="light-switch-reset" onclick="clear_theme_override()" title="Clear the theme override and go back to the system theme"></div>
+        </div>
+
+        <div>
+            
+            <main>
+    <h1>Updates in March 2020</h1>
+    <time datetime="2020-04-01" class="post-date">
+        Apr 01, 2020
+        
+    </time>
+    <p>This post gives an overview of the recent updates to the <em>Writing an OS in Rust</em> blog and the corresponding libraries and tools.</p>
+<p>I focused my time this month on finishing the long-planned post about <a href="../../async-await/index.html"><strong>Async/Await</strong></a>. In addition to that, there were a few updates to the crates behind the scenes, including some great contributions and a new <code>vga</code> crate.</p>
+<p>As mentioned in the <em>Async/Await</em> post, I’m currently looking for job in Karlsruhe (Germany) or remote, so please let me know if you’re interested.</p>
+<h2 id="blog-os"><code>blog_os</code></h2>
+<p>The repository of the <em>Writing an OS in Rust</em> blog received the following updates:</p>
+<ul>
+<li><a href="https://github.com/phil-opp/blog_os/pull/763">Update linked_list_allocator to v0.8.0</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/764">Update x86_64 dependency to version 0.9.6</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/767">New post about Async/Await</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/774">Discuss the approach of storing offsets for self-referential structs</a></li>
+<li><a href="https://github.com/phil-opp/blog_os/pull/782">Use a static counter for assigning task IDs</a></li>
+</ul>
+<p>In addition to the changes above, there were a lot of <a href="https://github.com/phil-opp/blog_os/pulls?q=is%3Apr+is%3Aclosed+created%3A2020-03-01..2020-04-02+-author%3Aphil-opp+">typo fixes</a> by external contributors. Thanks a lot!</p>
+<h2 id="x86-64"><code>x86_64</code></h2>
+<p>The <code>x86_64</code> crate provides support for CPU-specific instructions, registers, and data structures of the <code>x86_64</code> architecture. In March, there was only a single addition, which was required for the <em>Async/Await</em> post:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/x86_64/pull/138">Add an enable_interrupts_and_hlt function that executes <code>sti; hlt</code></a> <span class="gray">(released as v0.9.6)</span></li>
+</ul>
+<h2 id="bootloader"><code>bootloader</code></h2>
+<p>The bootloader crate received two contributions this month:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/bootloader/pull/101">Implement boot-info-address</a> by <a href="https://github.com/Darksecond">@Darksecond</a> <span class="gray">(released as v0.8.9)</span></li>
+<li><a href="https://github.com/rust-osdev/bootloader/pull/104">Identity-map complete vga region (0xa0000 to 0xc0000)</a> by <a href="https://github.com/RKennedy9064">@RKennedy9064</a> <span class="gray">(released as v0.9.0)</span></li>
+</ul>
+<h2 id="bootimage"><code>bootimage</code></h2>
+<p>The <code>bootimage</code> tool builds the <code>bootloader</code> and creates a bootable disk image from a kernel. It received a RUSTFLAGS-related bugfix:</p>
+<ul>
+<li><a href="https://github.com/rust-osdev/bootimage/pull/51">Set empty RUSTFLAGS to ensure that no .cargo/config applies</a></li>
+</ul>
+<!--
+
+## `cargo-xbuild`
+
+The `cargo-xbuild` crate provides support for cross-compiling `libcore` and `liballoc`. There were no updates to it this month.
+
+## `uart_16550`
+
+The `uart_16550` crate provides basic support for uart_16550 serial output. It received no updates this month.
+
+## `multiboot2-elf64`
+
+The `multiboot2-elf64` crate provides abstractions for reading the boot information of the multiboot 2 standard, which is implemented by bootloaders like GRUB. There were no updates to the crate in March.
+
+-->
+<h2 id="vga"><code>vga</code></h2>
+<p>There is a new crate under the <code>rust-osdev</code> organization: <a href="https://github.com/rust-osdev/vga"><code>vga</code></a> created by <a href="https://github.com/RKennedy9064">@RKennedy9064</a>. The purpose of the library is to provide abstractions for the VGA hardware. For example, the crate allows to switch the VGA hardware to graphics mode, which makes it possible to draw on a pixel-based framebuffer:</p>
+<p><img src="qemu-vga-crate.png" alt="QEMU printing a box with “Hello World” in it" /></p>
+<p>For more information about the crate, check out its <a href="https://docs.rs/vga/0.2.2/vga/">API documentation</a> and the <a href="https://github.com/rust-osdev/vga">GitHub repository</a>.</p>
+
+
+    <div>
+        <h2>Thank You!</h2>
+        <p>Thanks a lot to all the contributors this month!</p>
+        <p>I also want to thank all the people who support me on <a href="https://github.com/sponsors/phil-opp">GitHub</a>, <a href="https://www.patreon.com/phil_opp">Patreon</a>, and <a href="https://donorbox.org/phil-opp">Donorbox</a>. It means a lot to me!</p>
+    </div>
+</main>
+        </div>
+
+        <div>
+    <hr>
+    <div class="PageNavigation">
+        
+        
+            <a class="next" href="../2020-03-02/index.html">Updates in February 2020 &raquo;</a>
+        
+    </div>
+    <hr>
+    <section>
+        <h2 id="comments">Comments</h2>
+        
+    
+        
+        
+    
+
+    
+        
+        
+    
+
+    <p class="comment-note">
+        Do you have a problem, want to share feedback, or discuss further ideas? Feel free to leave a comment here! Please stick to English and follow Rust's <a href="https://www.rust-lang.org/policies/code-of-conduct">code of conduct</a>. This comment thread directly maps to a <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20March%202020%22"><em>discussion on GitHub</em></a>, so you can also comment there if you prefer.
+    </p>
+
+    <div class="giscus"></div>
+
+    <script src="https://giscus.app/client.js"
+        data-repo="phil-opp/blog_os"
+        data-repo-id="MDEwOlJlcG9zaXRvcnkzOTU3NTEwMQ=="
+        data-category="Post Comments"
+        data-category-id="MDE4OkRpc2N1c3Npb25DYXRlZ29yeTMzMDE4OTg1"
+    
+        data-mapping="specific"
+    
+        data-term="Updates in March 2020"
+        data-reactions-enabled="1"
+        data-emit-metadata="1"
+        data-theme="preferred_color_scheme"
+        data-lang="en"
+        crossorigin="anonymous"
+        async>
+    </script>
+
+    <p class="comment-directly-on-github">
+        Instead of authenticating the <a href="https://giscus.app">giscus</a> application, you can also comment directly <a href="https://github.com/phil-opp/blog_os/discussions/categories/post-comments?discussions_q=%22Updates%20in%20March%202020%22"><em>on GitHub</em></a>.
+    </p>
+
+    </section>
+
+</div>
+
+        <footer class="footer">
+            <hr>
+            <small>
+                &copy; <time datetime="2022">2022</time>. All rights reserved.
+                <a class="spaced" href="https://github.com/phil-opp/blog_os#license">License</a>
+                <a class="spaced" href="../../contact/index.html">Contact</a>
+            </small>
+        </footer>
+    </div>
+</body>
+
+</html>
