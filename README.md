@@ -1,13 +1,22 @@
+# Current status & thoughts
+
+I've reached the limits of the QEMU implementation and my physical board is dead.  Since this is a 10-year-old board anyway, I likely will not do much more work on this.
+
+BlogOS -- Excellent course.  Highly recommended.
+
+Rust -- Ergonomics are great.  Didn't offer many advantages over C for this very low-level project (interrupts, peripherals, etc.) and you still need to learn cc, as, ld.  
+
 # BlogOS
 
 Loosely following https://os.phil-opp.com/.  Adapted for the armv6 CPU in the
 raspberry pi 1 model B+.
 
+
 ## Done:
 - [X] Freestanding executable running on QEMU.  See cargo config and target json
   for details (cross-compilation, custom linker.ld, etc).  Pieced together from
   the internet and the arm reference manual.
-- [X] Bootloader.  See `setup.S` -- no blog-os bootloader crate for ARM, plus it
+- [X] Bootloader from scratch.  See `setup.S` -- no blog-os bootloader crate for ARM, plus it
   was kind of interesting to have to figure it out.
 - [X] Basic input and output over the raspi1's UART (configure the UART and read
   and write characters). This is instead of VGA text mode, which doesn't exist on
@@ -23,7 +32,7 @@ raspberry pi 1 model B+.
 
 ## Currently working on
 - Memory!
-- [ ] virtual addresses.  start googling...
+- [ ] virtual addresses. 
 
 ## TODO (issues)
 - [ ] Bug: if you mash tons of keys the input code gets stuck in a spinlock
