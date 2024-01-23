@@ -2,3 +2,4 @@
 *.htm linguist-vendored
 *.js linguist-vendored
 *.css linguist-vendored
+reference/* linguist-vendored
